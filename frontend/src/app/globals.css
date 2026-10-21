@@ -1,0 +1,376 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens. Light theme is the default; `.dark` on <html> switches to the
+ * dark set. Chart series/status values follow the validated reference palette
+ * (see README "Design tokens").
+ */
+:root {
+  --background: #f6f7f9;
+  --foreground: #0e1726;
+  --card: #ffffff;
+  --card-foreground: #0e1726;
+  --popover: #ffffff;
+  --popover-foreground: #0e1726;
+  --muted: #f1f3f6;
+  --muted-foreground: #5b6675;
+  --subtle-foreground: #8a94a3;
+  --accent: #eef3f7;
+  --accent-foreground: #0e1726;
+  --border: #e4e7ec;
+  --input: #d6dbe2;
+  --ring: #0a8fc4;
+
+  --primary: #0877a6;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e6f3f9;
+
+  --brand-green: #19bd4a;
+  --brand-blue: #0a8fc4;
+
+  --sidebar: #ffffff;
+  --sidebar-border: #e4e7ec;
+
+  /* Status: marks (fills) and text (ink) are separate so text keeps contrast */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --na: #a3abb6;
+  --good-text: #0b6e2c;
+  --warning-text: #8a5300;
+  --critical-text: #b42318;
+  --good-soft: #e8f6ec;
+  --warning-soft: #fdf4e1;
+  --critical-soft: #fcebea;
+  --na-soft: #f1f3f6;
+
+  /* Chart chrome + categorical series (fixed order) */
+  --chart-grid: #eceef1;
+  --chart-axis: #c9ced6;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  --radius: 8px;
+
+  /* Loading placeholders: visible base + moving highlight */
+  --skeleton: #e6e9ee;
+  --skeleton-shine: #f5f7fa;
+}
+
+.dark {
+  --background: #0c1015;
+  --foreground: #e7ecf1;
+  --card: #141a21;
+  --card-foreground: #e7ecf1;
+  --popover: #171e26;
+  --popover-foreground: #e7ecf1;
+  --muted: #1b222b;
+  --muted-foreground: #9aa5b2;
+  --subtle-foreground: #727d8a;
+  --accent: #1d2630;
+  --accent-foreground: #e7ecf1;
+  --border: #252e39;
+  --input: #303a46;
+  --ring: #2ba3d6;
+
+  --primary: #2ba3d6;
+  --primary-foreground: #04131b;
+  --primary-soft: #11293a;
+
+  --sidebar: #11161c;
+  --sidebar-border: #222a34;
+
+  --good-text: #4cc96b;
+  --warning-text: #f2bd4f;
+  --critical-text: #f08080;
+  --good-soft: #0f2a19;
+  --warning-soft: #2e2410;
+  --critical-soft: #331616;
+  --na-soft: #1b222b;
+  --na: #6b7582;
+
+  --chart-grid: #222a33;
+  --chart-axis: #3a444f;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --skeleton: #1f2731;
+  --skeleton-shine: #2b3542;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-brand-green: var(--brand-green);
+  --color-brand-blue: var(--brand-blue);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-serious: var(--serious);
+  --color-critical: var(--critical);
+  --color-na: var(--na);
+  --color-good-text: var(--good-text);
+  --color-warning-text: var(--warning-text);
+  --color-critical-text: var(--critical-text);
+  --color-good-soft: var(--good-soft);
+  --color-warning-soft: var(--warning-soft);
+  --color-critical-soft: var(--critical-soft);
+  --color-na-soft: var(--na-soft);
+  --font-sans: var(--font-inter), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@utility brand-gradient {
+  background-image: linear-gradient(90deg, var(--brand-green), var(--brand-blue));
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Preloader (splash) ---------- */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--background);
+  transition: opacity 450ms ease, visibility 450ms ease;
+}
+html[data-splash="done"] .splash {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.splash-logo {
+  animation: splash-in 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.splash-tagline {
+  animation: splash-fade 600ms ease 350ms both;
+}
+.fibre-track {
+  position: relative;
+  height: 2px;
+  width: 220px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+.fibre-track::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -40%;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--brand-green), var(--brand-blue), transparent);
+  box-shadow: 0 0 10px var(--brand-blue);
+  animation: fibre-pulse 1.1s ease-in-out infinite;
+}
+@keyframes splash-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes splash-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes fibre-pulse {
+  from {
+    left: -40%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+/* ---------- Route progress bar ---------- */
+.route-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 90;
+  height: 2px;
+  background-image: linear-gradient(90deg, var(--brand-green), var(--brand-blue));
+  transition: width 300ms ease, opacity 300ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-logo,
+  .splash-tagline {
+    animation: splash-fade 300ms ease both;
+  }
+  .fibre-track::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    box-shadow: none;
+  }
+  .route-progress {
+    transition: none;
+  }
+}
+
+/* ---------- Loading placeholders ---------- */
+.skeleton {
+  background-color: var(--skeleton);
+  background-image: linear-gradient(90deg, transparent 0%, var(--skeleton-shine) 50%, transparent 100%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+/* Thin top bar while API data is loading (indeterminate – no fake percentage) */
+.data-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 91;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--brand-blue) 15%, transparent);
+}
+.data-progress::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -35%;
+  height: 100%;
+  width: 35%;
+  border-radius: 999px;
+  background-image: linear-gradient(90deg, var(--brand-green), var(--brand-blue));
+  animation: data-progress 1.1s ease-in-out infinite;
+}
+@keyframes data-progress {
+  from {
+    left: -35%;
+  }
+  to {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background-image: none;
+  }
+  .data-progress::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.6;
+  }
+}
+
+/* Table <-> graph flip */
+.flip-in {
+  animation: flip-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transform-origin: center;
+}
+@keyframes flip-in {
+  from {
+    opacity: 0;
+    transform: perspective(1400px) rotateY(-14deg) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flip-in {
+    animation: splash-fade 200ms ease both;
+  }
+}
+
+/* Print: only the report preview */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #report-print-area,
+  #report-print-area * {
+    visibility: visible;
+  }
+  #report-print-area {
+    position: absolute;
+    inset: 0;
+  }
+}

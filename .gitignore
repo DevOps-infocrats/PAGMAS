@@ -1,0 +1,18 @@
+# Company data and secrets stay out of Git (frontend/ and future backend/)
+/data/
+/private/
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+.env
+.env.*
+!.env.example
+
+# Binary workbooks of any kind and local logs
+*.xlsb
+*.log
+
+# Generated decks / reports with client figures stay local (the generator script is committed)
+/docs/*.pptx
+/docs/*.pdf
