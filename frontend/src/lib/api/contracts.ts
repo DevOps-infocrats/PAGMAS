@@ -412,8 +412,9 @@ export interface ReviewHighlightRow {
   code: string;
   name: string;
   currentAmc: number;
-  /** one value per highlightTable.weeks entry: GPs whose AMC date falls in that week */
-  weeklyConversions: number[];
+  /** one value per highlightTable.weeks entry: GPs achieved in that week by Ach Date (GP-wise plan, same as
+   *  AMC Conversion → week achieved); null when the file has no GP-wise plan */
+  weeklyConversions: (number | null)[];
   readyForIncremental: number;
   monthPlan: number | null;
 }
@@ -485,6 +486,10 @@ export interface ReviewRoadmapRow {
   planByMonth: number | null;
   cumulativeMtd: number | null;
   mtdAchieved: number | null;
+  /** achieved against the plan: GPs whose Ach Date (GP-wise plan block) falls in the month, up to achievedAsOf –
+   *  same count as AMC Conversion → "Achieved this month (MTD)"; null when the file has no GP-wise plan */
+  planAchieved?: number | null;
+  planAchievedPct?: number | null;
   gap: number | null;
   pendingAfterMonth: number | null;
   /** one value per roadmap.futureMonths entry */
@@ -495,7 +500,13 @@ export interface ReviewRoadmapRow {
 }
 
 export interface ReviewWeeklyCell {
+  /** new target: GPs with a Planned Date in the week (master data file) */
   target: number | null;
+  /** old target: the manually set weekly closure target (review_plan.json), when there is one */
+  oldTarget?: number | null;
+  /** new − old target; negative = new target below the old one (highlighted) */
+  targetChange?: number | null;
+  /** GPs with an Ach Date in the week, up to the cutoff; null = week not started */
   achieved: number | null;
   achievedPct: number | null;
 }
@@ -505,6 +516,8 @@ export interface ReviewTargetsPage {
   month: string;
   monthLabel: string;
   cutoff: string;
+  /** date the plan achievement (Ach Date) is counted up to */
+  achievedAsOf?: string;
   previousMonthEnd: string;
   daysLeft: number;
   planSource: string | null;
@@ -513,14 +526,14 @@ export interface ReviewTargetsPage {
     subtitle: string;
     planHeader: string;
     liquidationHeader: string;
-    columns: Record<"amcTillPrevMonth" | "mtdPlan" | "projection" | "projectedCoveragePct" | "planByMonth" | "cumulativeMtd" | "gap" | "pendingAfterMonth" | "readyForIncremental", string>;
+    columns: Record<"amcTillPrevMonth" | "mtdPlan" | "planAchieved" | "projection" | "projectedCoveragePct" | "planByMonth" | "cumulativeMtd" | "gap" | "pendingAfterMonth" | "readyForIncremental", string>;
     futureMonths: string[];
     rows: ReviewRoadmapRow[];
     total: ReviewRoadmapRow;
   };
   weekly: {
     title: string;
-    weeks: { id: string; label: string; start: string; end: string; status: "done" | "in progress" | "not started" }[];
+    weeks: { id: string; label: string; start: string; end: string; status: "done" | "in progress" | "not started"; current?: boolean }[];
     rows: { id: string; code: string; name: string; pendingScope: number; frt: number | null; weeks: ReviewWeeklyCell[] }[];
     total: { id: string; code: string; name: string; pendingScope: number; frt: number | null; weeks: ReviewWeeklyCell[] };
   };
@@ -626,7 +639,7 @@ export interface AppUser {
 
 /* ---------------------------------------------------------------- KPI drill-down lists */
 
-export type KpiListKind = "gps-above-98" | "gps-at-zero" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "removed-gps"
+export type KpiListKind = "gps-above-98" | "gps-at-zero" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "hoto-pending-blocks" | "all-blocks" | "non-amc-gps" | "amc-original-gps" | "incremental-gps" | "removed-gps"
   | "amc-plan-month" | "amc-plan-mtd" | "amc-achieved-mtd" | "amc-plan-week" | "amc-achieved-week" | "amc-overdue";
 /** value = the list's measure: MTD availability, HOTO date or HOTO coverage */
 export type KpiListSort = "value-desc" | "value-asc" | "name";
@@ -665,6 +678,10 @@ export interface KpiListItem {
   totalGps?: number;
   hotoGps?: number;
   hotoPct?: number | null;
+  /** HOTO-pending block list: revised existing GPs in the block */
+  revisedGps?: number;
+  /** Non-AMC GP list: "Done" / "Pending" */
+  hotoStatus?: string;
   /** existing-GP / removed-GP lists: In scope / Converted to NP / Closed / Deducted */
   status?: string;
   /** removed-GP list: the source's "Converted to NP & Closed" text */
@@ -830,6 +847,39 @@ export interface AmcPlanTable {
 }
 
 /** Month-wise and week-wise GP-wise AMC plan vs achievement (Planned Date / Ach Date) – counts only. */
+/** One area manager of a state (AMC Conversion → Monthly / Weekly Plan vs Execution). */
+export interface AmcAreaManagerRow {
+  name: string;
+  /** false for "Not assigned" / "Vacant (no AM)" */
+  assigned: boolean;
+  blocks: number;
+  existingGps: number;
+  /** under AMC as of the reporting week's end (same rule as the KPI cards) */
+  amcGps: number;
+  nonAmcGps: number;
+  /** GP-wise plan: Planned Date in the current month / Ach Date from the 1st up to the data date */
+  monthTarget: number;
+  monthAchieved: number;
+  monthAchievedPct: number | null;
+  /** GP-wise plan: Planned Date in the selected week / Ach Date in the week up to the data date */
+  weekTarget: number;
+  weekAchieved: number;
+  weekAchievedPct: number | null;
+}
+
+export interface AmcAreaManagers {
+  circle: { id: string; name: string };
+  /** where the AM names come from: the Escalation Matrix upload, else the master data's AM Name */
+  amSource: "escalation" | "master";
+  amSourceFile: string | null;
+  month: { id: string; label: string; start: string; end: string; asOf: string };
+  week: { id: string; number: number; label: string; start: string; end: string; asOf: string; complete: boolean };
+  amcAsOf: string;
+  rows: AmcAreaManagerRow[];
+  total: AmcAreaManagerRow;
+  warnings: string[];
+}
+
 export interface AmcPlanTimeline {
   hasPlan: boolean;
   /** weeks are counted up to this date (selected week's end, capped at the data date) */
@@ -1045,6 +1095,7 @@ export interface DashboardApi {
   /** GP-wise AMC plan vs achievement of the master data file (live backend only) */
   getAmcPlanSummary(weekId: string): Promise<AmcPlanSummary>;
   getAmcPlanTimeline(weekId: string): Promise<AmcPlanTimeline>;
+  getAmcAreaManagers(weekId: string, circleId: string): Promise<AmcAreaManagers>;
   /** Field Team & Escalation (live backend only) */
   getFieldSummary(weekId: string): Promise<FieldSummary>;
   getFieldLookup(q: FieldQuery): Promise<FieldPage<FieldGp & { fieldComplete: boolean }>>;

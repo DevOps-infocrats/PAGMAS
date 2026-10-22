@@ -364,6 +364,9 @@ def management_review(store: Store, week_code: str, compare_code: str, data_qual
     week, compare = store.week(week_code), store.week(compare_code)
     # Months, previous month to the same day ("Sep-26 TD", same helper as the Insights pages), month TD, weeks.
     periods = _with_previous_td(store, _periods(store, g, week_code))
+    # In the review both month-to-date columns read "MTD": "Sep-26 MTD" (1st .. same day of the previous month)
+    # next to "Oct-26 MTD" – the wording of the client deck.
+    periods = [{**p, "label": f"{p['end']:%b-%y} MTD"} if p["kind"] in ("mtd", "ptd") else p for p in periods]
     td = next(p for p in periods if p["kind"] == "mtd")
     months = [p for p in periods if p["kind"] == "month"]
     last_month = months[-1] if months else None

@@ -14,6 +14,7 @@ import { api, type AmcPlanCell, type AmcPlanPeriod, type AmcPlanTable, type AmcP
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 import { FlipButton } from "@/features/circle-insights/circle-charts";
+import { AreaManagerTable } from "./amc-area-managers";
 import { BODY_ROW, HEAD_ROW, PctValue, RowHead, TOTAL_ROW, TableCard, Td, Th } from "./table-ui";
 
 const dash = (v: number | null | undefined) => (v == null ? "—" : formatCount(v));
@@ -70,13 +71,14 @@ export function AmcPlanTimelineView({ view }: { view: "monthly" | "weekly" }) {
   const unit = view === "monthly" ? "Month" : "Week";
   const periods = r ? (view === "monthly" ? r.monthly.months : r.weekly.weeks) : [];
   const table = r ? (view === "monthly" ? r.monthly : r.weekly) : undefined;
+  const monthly = view === "monthly";
   return (
     <div className="space-y-5">
+      {/* one chip: up to which date achieved is counted (the table descriptions say what target / achieved are) */}
       {r && (
-        <p className="text-sm text-muted-foreground">
-          Achieved counted up to <b className="text-foreground">{formatDate(view === "monthly" ? r.monthAsOf : r.asOf)}</b> · target: GP Wise Data → Planned Date
-          {view === "monthly" && " (months without Planned Dates yet: targets file, marked Plan)"} · achieved: Ach Date
-        </p>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-primary-soft px-2.5 py-1 font-medium text-primary">Latest data {formatDate(monthly ? r.monthAsOf : r.asOf)}</span>
+        </div>
       )}
       {r && r.warnings.length > 0 && (
         <div role="status" className="space-y-1 rounded-lg border border-warning/50 bg-warning-soft px-4 py-3 text-sm text-warning-text">
@@ -85,21 +87,25 @@ export function AmcPlanTimelineView({ view }: { view: "monthly" | "weekly" }) {
           ))}
         </div>
       )}
-      {showGraph && <PlanChart r={r} view={view} loading={!r} toggle={<FlipButton showGraph onToggle={() => setShowGraph(false)} />} />}
-      {showGraph ? null : r && table ? (
-        <>
-          <PlanTable unit={unit} periods={periods} table={table} weekly={view === "weekly"} toggle={<FlipButton showGraph={false} onToggle={() => setShowGraph(true)} />} />
-          {view === "monthly" && (
-            <p className="-mt-2 text-xs text-muted-foreground">
-              <SourceTag source="excel" /> counted from Planned Date in the master data file · <SourceTag source="plan" /> from the targets file
-              {r.targetsSource ? ` (${r.targetsSource})` : ""} – switches to the file&apos;s count as soon as that month&apos;s Planned Dates arrive.
-            </p>
-          )}
-        </>
-      ) : (
-        <Card className="p-4">
-          <TableSkeleton rows={5} />
-        </Card>
+      <section aria-label="By state">
+        {showGraph && <PlanChart r={r} view={view} loading={!r} toggle={<FlipButton showGraph onToggle={() => setShowGraph(false)} />} />}
+        {showGraph ? null : r && table ? (
+          monthly ? (
+            <MonthlyPlanTable periods={periods} table={table} asOf={r.monthAsOf} toggle={<FlipButton showGraph={false} onToggle={() => setShowGraph(true)} />} />
+          ) : (
+            <PlanTable unit={unit} periods={periods} table={table} weekly toggle={<FlipButton showGraph={false} onToggle={() => setShowGraph(true)} />} />
+          )
+        ) : (
+          <Card className="p-4">
+            <TableSkeleton rows={5} />
+          </Card>
+        )}
+      </section>
+      {/* one state selected: the same figures per area manager of that state (current month / selected week) */}
+      {filters.circle && r?.monthly.total.id === filters.circle && (
+        <section aria-label="By area manager">
+          <AreaManagerTable view={view} circleId={filters.circle} />
+        </section>
       )}
     </div>
   );
@@ -159,9 +165,10 @@ function PlanTable({ unit, periods, table, weekly, toggle }: { unit: string; per
         <Td key={`${p.id}-t`} group={j === 0} current={p.current} className={cn(weekly && "px-2")}>
           <span className="inline-flex items-center justify-end gap-1">
             {formatCount(c.target)}
-            {!weekly && c.target > 0 && <SourceTag source={c.targetSource} />}
+            {/* monthly: only the number for file targets; targets-file months keep their PLAN tag */}
+            {!weekly && c.target > 0 && c.targetSource !== "excel" && <SourceTag source={c.targetSource} />}
           </span>
-          {p.status === "in progress" && c.dueTarget != null && <span className="block text-[11px] font-normal text-muted-foreground">{formatCount(c.dueTarget)} due</span>}
+          {weekly && p.status === "in progress" && c.dueTarget != null && <span className="block text-[11px] font-normal text-muted-foreground">{formatCount(c.dueTarget)} due</span>}
         </Td>
       ) : k === "a" ? (
         <Td key={`${p.id}-a`} current={p.current} className={cn("font-semibold", weekly && "px-2")}>
@@ -177,11 +184,7 @@ function PlanTable({ unit, periods, table, weekly, toggle }: { unit: string; per
   return (
     <TableCard
       title={`${unit}-wise target vs achieved – by state`}
-      description={
-        weekly
-          ? "Weeks not started show only their target; “due” = GPs of the target whose Planned Date is already on or before the data date"
-          : "“due” = GPs of the target whose Planned Date is already on or before the data date (shown for the period in progress)"
-      }
+      description={weekly ? "Target = Planned Date in the week · Achieved = Ach Date · “due” = target GPs whose Planned Date has passed" : "Target = Planned Date in the month · Achieved = Ach Date"}
       actions={toggle}
     >
       <div className="overflow-x-auto rounded-lg border border-border">
@@ -233,6 +236,107 @@ function PlanTable({ unit, periods, table, weekly, toggle }: { unit: string; per
           </tfoot>
         </table>
       </div>
+    </TableCard>
+  );
+}
+
+/* ------------------------------------------------------------------ monthly: started months in full, upcoming months grouped */
+
+const greenPct = (v: number | null | undefined) => (v == null ? <span className="text-muted-foreground">—</span> : <span className="font-medium text-good-text">{v.toFixed(1)}%</span>);
+
+/**
+ * Month-wise target vs achieved by state. A month that has started (data for it exists) gets its own Target /
+ * Achieved / Achieved % columns; the months that have not started yet share ONE "Upcoming months – target" group
+ * (one column per month, target only). When a month starts, it moves out of the group by itself.
+ */
+function MonthlyPlanTable({ periods, table, asOf, toggle }: { periods: AmcPlanPeriod[]; table: AmcPlanTable; asOf: string; toggle?: React.ReactNode }) {
+  const idx = periods.map((p, i) => ({ p, i }));
+  const started = idx.filter(({ p }) => p.status !== "not started");
+  const upcoming = idx.filter(({ p }) => p.status === "not started");
+  const fromPlan = upcoming.some(({ i }) => table.total.cells[i]?.targetSource !== "excel");
+
+  const row = (cells: AmcPlanCell[]) => [
+    ...started.flatMap(({ p, i }) => {
+      const c = cells[i];
+      return [
+        <Td key={`${p.id}-t`} group current={p.current} className="font-semibold">
+          {formatCount(c.target)}
+        </Td>,
+        <Td key={`${p.id}-a`} current={p.current} className="font-semibold text-good-text">
+          {dash(c.achieved)}
+        </Td>,
+        <Td key={`${p.id}-p`} current={p.current}>
+          {greenPct(c.achievedPct)}
+        </Td>,
+      ];
+    }),
+    ...upcoming.map(({ p, i }, j) => (
+      <Td key={`${p.id}-t`} group={j === 0}>
+        {formatCount(cells[i].target)}
+      </Td>
+    )),
+  ];
+
+  return (
+    <TableCard title="Month-wise target vs achieved – by state" description={`Target = Planned Date in the month · Achieved = Ach Date (up to ${formatDate(asOf)})`} actions={toggle}>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-[13px]">
+          <caption className="sr-only">Month-wise AMC conversion target vs achieved by state</caption>
+          <thead>
+            <tr className="bg-muted">
+              <Th first rowSpan={2} className="border-b border-border">
+                State
+              </Th>
+              {started.map(({ p }) => (
+                <Th key={p.id} colSpan={3} center group current={p.current}>
+                  {p.label}
+                  <span className="block text-[10px] font-normal normal-case tracking-normal text-subtle-foreground">{p.current ? "current month" : p.status}</span>
+                </Th>
+              ))}
+              {upcoming.length > 0 && (
+                <Th colSpan={upcoming.length} center group>
+                  Upcoming months – target
+                  <span className="block text-[10px] font-normal normal-case tracking-normal text-subtle-foreground">not started yet</span>
+                </Th>
+              )}
+            </tr>
+            <tr className={HEAD_ROW}>
+              {started.flatMap(({ p }) => [
+                <Th key={`${p.id}t`} group current={p.current}>
+                  Target
+                </Th>,
+                <Th key={`${p.id}a`} current={p.current}>
+                  Achieved
+                </Th>,
+                <Th key={`${p.id}p`} current={p.current}>
+                  Achieved %
+                </Th>,
+              ])}
+              {upcoming.map(({ p }, j) => (
+                <Th key={`${p.id}u`} group={j === 0}>
+                  {p.label}
+                </Th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="tabular">
+            {table.rows.map((x) => (
+              <tr key={x.id} className={BODY_ROW}>
+                <RowHead>{x.name}</RowHead>
+                {row(x.cells)}
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="tabular">
+            <tr className={TOTAL_ROW}>
+              <RowHead total>{table.total.name === "Overall" ? "Total" : table.total.name}</RowHead>
+              {row(table.total.cells)}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {/* only when an upcoming target is not from the file's Planned Dates yet */}
+      {fromPlan && <p className="mt-2 px-1 text-xs text-muted-foreground">Upcoming targets from the management plan until their Planned Dates arrive in the data.</p>}
     </TableCard>
   );
 }

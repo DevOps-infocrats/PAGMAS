@@ -1,10 +1,10 @@
 "use client";
 
-import { Activity, AlertOctagon, Boxes, Cable, CircleCheckBig, Gauge, Globe2, ShieldCheck, Users, Wrench } from "lucide-react";
+import { Activity, AlertOctagon, Boxes, CircleCheckBig, CircleDashed, Gauge, Globe2, ShieldCheck, Users, Wrench } from "lucide-react";
 import { StatCard } from "@/components/kpi/stat-card";
 import { useFilters } from "@/hooks/use-filters";
 import type { KpiListKind, OverviewResponse } from "@/lib/api";
-import { KPI_LIST_PATH, KPI_LISTS, kpiListHref } from "@/lib/kpi-lists";
+import { KPI_LIST_PATH, KPI_LISTS, kpiListHref, stateDetailHref, type KpiListGroup } from "@/lib/kpi-lists";
 import { THRESHOLDS } from "@/lib/metrics/definitions";
 import { formatCount, formatDate } from "@/lib/utils/format";
 
@@ -24,14 +24,15 @@ const C = {
   brand: "var(--primary)",
 };
 
-const rkm = (v: number | null | undefined) => (v == null ? "NA" : v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-
-/** The 10 headline KPIs of the Circle Overview, grouped in three rows. */
+/** The 10 headline KPIs of the Circle Overview, grouped in three rows. Cards with a link open the list behind the number. */
 export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?: States; asOf?: string; loading: boolean }) {
   const L = loading || !s;
   const { hrefTo } = useFilters();
   // The cards count all states, so the list opens for all states too (same week as this page).
-  const listHref = (kind: KpiListKind) => kpiListHref(hrefTo(KPI_LIST_PATH, { circle: undefined, district: undefined, block: undefined, gp: undefined }), kind);
+  const listBase = hrefTo(KPI_LIST_PATH, { circle: undefined, district: undefined, block: undefined, gp: undefined });
+  const listHref = (kind: KpiListKind) => kpiListHref(listBase, kind);
+  // HOTO cards open done and pending side by side (tabs); Back returns to this summary.
+  const hotoHref = (group: KpiListGroup) => stateDetailHref(listBase, group);
   const mtd = asOf ? `Month-to-date up to ${formatDate(asOf)}` : "Month-to-date";
   const byState = (pick: (d: States[number]) => number | null) => (states ?? []).map((d) => `${d.name} ${formatCount(pick(d))}`).join(" · ");
 
@@ -39,6 +40,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
     <div className="space-y-6">
       <KpiRow title="Network scope">
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={Globe2}
@@ -49,6 +51,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           caption={(states ?? []).map((d) => d.name).join(" · ")}
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={Boxes}
@@ -57,8 +60,11 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           info="Distinct block codes across all three states."
           value={formatCount(s?.blocks)}
           caption={byState((d) => d.blocks)}
+          href={listHref("all-blocks")}
+          linkLabel={KPI_LISTS["all-blocks"].linkLabel}
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-6"
           layout="split"
@@ -90,6 +96,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
 
       <KpiRow title="Handover & AMC">
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={CircleCheckBig}
@@ -99,10 +106,11 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           value={formatCount(s?.hotoDoneBlocks)}
           unit={`of ${formatCount(s?.blocks)}`}
           caption={s ? `${formatCount(s.hotoPendingBlocks)} blocks pending` : undefined}
-          href={listHref("hoto-blocks")}
-          linkLabel={KPI_LISTS["hoto-blocks"].linkLabel}
+          href={hotoHref("hotoBlocks")}
+          linkLabel="View done & pending"
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={ShieldCheck}
@@ -112,10 +120,11 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           value={formatCount(s?.hotoDoneGps)}
           unit={`of ${formatCount(s?.revisedExisting)}`}
           caption={s ? `${formatCount(s.hotoPendingGps)} GPs pending` : undefined}
-          href={listHref("hoto-gps")}
-          linkLabel={KPI_LISTS["hoto-gps"].linkLabel}
+          href={hotoHref("hotoGps")}
+          linkLabel="View done & pending"
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-6"
           layout="split"
@@ -146,8 +155,9 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
       </KpiRow>
 
-      <KpiRow title="Uptime (MTD) & fibre">
+      <KpiRow title="Uptime (MTD) & Non-AMC">
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={Activity}
@@ -161,6 +171,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           linkLabel={KPI_LISTS["gps-above-98"].linkLabel}
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={AlertOctagon}
@@ -174,6 +185,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           linkLabel={KPI_LISTS["gps-at-zero"].linkLabel}
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
           icon={Gauge}
@@ -187,28 +199,18 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           linkLabel={KPI_LISTS["penalty-blocks"].linkLabel}
         />
         <StatCard
+          compact
           loading={L}
           className="md:col-span-3"
-          icon={Cable}
-          tone={C.blue}
-          label="Total RKM"
-          info={
-            <>
-              <b>Total</b> = Σ TOTAL RKM of all GP rows (the workbook&rsquo;s “Total Scope Fibre”). BSNL and BBNL are the sums of BSNL / BBNL Live KM.
-              {s?.rkmPartsDifference ? ` BSNL + BBNL is ${rkm(Math.abs(s.rkmPartsDifference))} RKM ${s.rkmPartsDifference > 0 ? "more" : "less"} than the total because some GP rows have parts that do not add up (see Data Operations).` : ""}
-            </>
-          }
-          value={rkm(s?.totalRkm)}
-          unit="RKM"
-          total={s ? s.bsnlRkm + s.bbnlRkm : null}
-          bar={[
-            { label: "BSNL", value: s?.bsnlRkm ?? 0, color: C.blue },
-            { label: "BBNL", value: s?.bbnlRkm ?? 0, color: C.aqua },
-          ]}
-          breakdown={[
-            { label: "BSNL RKM", value: s?.bsnlRkm ?? null, display: rkm(s?.bsnlRkm), color: C.blue },
-            { label: "BBNL RKM", value: s?.bbnlRkm ?? null, display: rkm(s?.bbnlRkm), color: C.aqua },
-          ]}
+          icon={CircleDashed}
+          tone="var(--na)"
+          label="Non-AMC GPs"
+          info="Revised existing GPs (not converted to NP / closed / deducted) that are not under AMC on the reporting week end. Same figure as the Non-AMC part of the AMC GPs card."
+          value={formatCount(s?.nonAmcGps)}
+          unit="GPs"
+          caption={s && s.revisedExisting ? `${((s.nonAmcGps / s.revisedExisting) * 100).toFixed(1)}% of revised existing GPs` : undefined}
+          href={listHref("non-amc-gps")}
+          linkLabel={KPI_LISTS["non-amc-gps"].linkLabel}
         />
       </KpiRow>
     </div>

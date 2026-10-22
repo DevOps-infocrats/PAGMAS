@@ -449,6 +449,10 @@ export const mockApi: DashboardApi = {
     throw new ApiError(501, "AMC conversion plan vs execution needs the live backend (NEXT_PUBLIC_API_MODE=live).");
   },
 
+  async getAmcAreaManagers() {
+    throw new ApiError(501, "AMC conversion plan vs execution needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+
   async getAmcPlanSummary() {
     throw new ApiError(501, "AMC conversion plan vs execution needs the live backend (NEXT_PUBLIC_API_MODE=live).");
   },

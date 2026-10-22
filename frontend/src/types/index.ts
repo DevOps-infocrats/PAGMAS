@@ -178,6 +178,10 @@ export interface BlockSummary {
   hotoDone: number;
   hotoPending: number;
   amcGps: number;
+  /** AMC split (same rules as the KPI cards): original list / incremental letter / revised existing not under AMC */
+  amcOriginalGps?: number;
+  incrementalGps?: number;
+  nonAmcGps?: number;
   availability: number | null;
   totalRkm: number;
   revisedExisting?: number;

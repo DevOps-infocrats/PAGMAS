@@ -42,7 +42,7 @@ def _row(section, key):
 
 
 def test_periods_follow_the_om_layout(review):
-    assert [p["label"] for p in review["periods"]] == ["Jun-26", "Jul-26", "Aug-26", "Sep-26", "Sep-26 TD", "Oct-26 TD", "Till W-41", "WK-40", "WK-39", "WK-38"]
+    assert [p["label"] for p in review["periods"]] == ["Jun-26", "Jul-26", "Aug-26", "Sep-26", "Sep-26 MTD", "Oct-26 MTD", "Till W-41", "WK-40", "WK-39", "WK-38"]
     assert [c["code"] for c in review["circles"]] == ["RJ", "HR", "AS"]  # by size, as in the deck
 
 
@@ -74,7 +74,7 @@ def test_one_time_up_comes_from_circle_sheet(review):
     rj = _row(review["sections"]["rajasthan"], "oneTimeUpGps")
     assert rj["source"] == "circle sheet"
     assert rj["values"][:4] == [6142, 5976, 5703, 5635] and rj["values"][6] == 5635
-    assert rj["values"][4] is None  # Sep-26 TD: not in the circle sheet, never estimated
+    assert rj["values"][4] is None  # Sep-26 MTD: not in the circle sheet, never estimated
 
 
 def test_targets_from_om_key_numbers(review):
@@ -135,6 +135,8 @@ def settings_override():
 def test_env_admin_created_and_synced(settings_override):
     s = settings_override
     object.__setattr__(s, "admin_email", "envadmin@pratap-test.in")
+    object.__setattr__(s, "admin_password_hash", None)  # independent of the developer's backend/.env (restored after the test)
+    object.__setattr__(s, "admin_sync_password", False)
     object.__setattr__(s, "admin_password", "First!Env-Pass-123")
     with SessionLocal() as db:
         _ensure_env_admin(db)
@@ -283,12 +285,67 @@ def test_roadmap_formulas(review, imported):
 
 def test_weekly_closure_targets(review):
     wk = review["targetsPage"]["weekly"]
-    assert [w["label"] for w in wk["weeks"]] == ["WK-41", "WK-42", "WK-43", "WK-44"]
-    assert [w["status"] for w in wk["weeks"]] == ["done", "not started", "not started", "not started"]
-    assert [c["target"] for c in wk["total"]["weeks"]] == [367, 457, 431, 520]
-    assert wk["total"]["frt"] == 259  # O&M FRT Count
+    # the first five weeks of the plan (from the first manual week) – plus the reporting week when it comes later
+    assert [w["label"] for w in wk["weeks"]] == ["WK-41", "WK-42", "WK-43", "WK-44", "WK-45"]
+    assert [w["status"] for w in wk["weeks"]] == ["done", "not started", "not started", "not started", "not started"]
+    assert [w["current"] for w in wk["weeks"]] == [True, False, False, False, False]
+    # old target = the manually set plan; new target / achieved come from the GP-wise plan block (Planned / Ach Date),
+    # which this test workbook does not have -> blank, never guessed
+    assert [c["oldTarget"] for c in wk["total"]["weeks"]] == [367, 457, 431, 520, None]
+    assert all(c["target"] is None and c["achieved"] is None for c in wk["total"]["weeks"])
+    assert wk["total"]["frt"] == 259  # O&M FRT Count (kept in the payload, no longer a table column)
     rj = next(x for x in wk["rows"] if x["code"] == "RJ")
-    assert rj["frt"] == 208 and rj["weeks"][0]["achieved"] == 0 and rj["weeks"][1]["achieved"] is None
+    assert rj["frt"] == 208
+
+
+def test_targets_page_counts_the_gp_wise_plan(imported, monkeypatch):
+    """With a GP-wise plan in the file: roadmap "<month> MTD Achieved" and weekly new target / achieved are counted
+    from Planned Date / Ach Date exactly like AMC Conversion; the manual weekly target stays as the old target."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_summary, amc_plan_timeline
+    from app.analytics.review import _circle_list
+    from app.analytics.review_periods import reporting_periods
+    from app.analytics.review_targets import targets_page
+
+    store = imported
+    rj = store.gps.index[store.gps["circle"] == "RAJASTHAN"][:6]
+    hr = store.gps.index[store.gps["circle"] == "HARYANA"][:3]
+    d = dt.date
+    plan = pd.DataFrame(
+        {
+            # W-41 = 2–8 Oct, W-42 = 9–15 Oct (after the data date 8 Oct)
+            "planned_date": [d(2026, 10, 3), d(2026, 10, 4), d(2026, 10, 5), d(2026, 10, 10), d(2026, 10, 12), None, d(2026, 10, 2), d(2026, 10, 11), d(2026, 10, 20)],
+            "ach_date": [d(2026, 10, 3), d(2026, 10, 6), None, None, None, None, d(2026, 10, 7), None, None],
+            "category": "Incremental",
+            "current_status": None,
+            "letter_status": None,
+            "letter_date": None,
+        },
+        index=[*rj, *hr],
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    tp = targets_page(store, reporting_periods(store, store.week("W-41"), store.week("W-40")), _circle_list(store))
+    rows = {x["code"]: x for x in tp["roadmap"]["rows"]}
+    assert (rows["RJ"]["planAchieved"], rows["HR"]["planAchieved"], tp["roadmap"]["total"]["planAchieved"]) == (2, 1, 3)
+    assert tp["roadmap"]["columns"]["planAchieved"] == "Oct-26 MTD Achieved"
+    summary = amc_plan_summary(store, "W-41")
+    assert tp["roadmap"]["total"]["planAchieved"] == summary["total"]["mtdAchieved"]  # same as the dashboard
+
+    wk = tp["weekly"]
+    w41, w42 = wk["total"]["weeks"][0], wk["total"]["weeks"][1]
+    assert (w41["target"], w41["achieved"], w41["oldTarget"]) == (4, 3, 367)  # RJ 3 + HR 1 planned in W-41
+    # new − old target per cell (negative = new target below the manual one → highlighted on the page and in the PPT)
+    assert w41["targetChange"] == 4 - 367
+    for x in [*wk["rows"], wk["total"]]:
+        for c in x["weeks"]:
+            assert c["targetChange"] == (None if c["target"] is None or c["oldTarget"] is None else c["target"] - c["oldTarget"])
+    assert (w42["target"], w42["achieved"]) == (3, None)  # W-42 not started on 8 Oct
+    timeline = amc_plan_timeline(store, "W-41")
+    dash = {w["label"]: c for w, c in zip(timeline["weekly"]["weeks"], timeline["weekly"]["total"]["cells"])}
+    assert (dash["WK-41"]["target"], dash["WK-41"]["achieved"]) == (w41["target"], w41["achieved"])
 
 
 def test_invalid_plan_file_is_rejected_not_trusted(tmp_path, monkeypatch):
@@ -306,7 +363,7 @@ def test_invalid_plan_file_is_rejected_not_trusted(tmp_path, monkeypatch):
 
 def test_critical_table_columns_follow_the_data(review):
     ct = review["sections"]["rajasthan"]["critical"]
-    assert [c["label"] for c in ct["columns"]] == ["Aug-26", "Sep-26", "Sep-26 TD", "Oct-26 MTD", "WK-39", "WK-40", "WK-41"]  # newest week = reporting week
+    assert [c["label"] for c in ct["columns"]] == ["Aug-26", "Sep-26", "Sep-26 MTD", "Oct-26 MTD", "WK-39", "WK-40", "WK-41"]  # newest week = reporting week
     assert ct["title"] == "Monthly & Weekly Performance – Rajasthan"
 
 
@@ -317,14 +374,21 @@ def test_critical_table_values(review, imported):
     row = {r["key"]: r for r in ct["rows"]}
     # O&M / client-deck figures for the completed months
     assert row["gpsAbove98"]["values"][:2] == [2422, 2466]
-    assert row["blocksBelow85"]["values"][:2] == [39, 37]
+    assert "blocksBelow85" not in row  # replaced by the client sheet's "< 90% … Penalty Prone" row
+    assert row["penaltyBlocks"]["label"] == "< 90% Availability Blocks – Penalty Prone"
+    # months: block mean of the workbook's monthly AMC column (GPs under AMC by month end) below 90% – the
+    # 'Master Block' AVERAGEIFS + COUNTIFS("<90") of the client sheet
+    sel = imported.gps["circle"] == "RAJASTHAN"
+    amc_d = pd.to_datetime(imported.gps["amc_date"], errors="coerce")
+    for i, (key, end) in enumerate((("2026-08", "2026-08-31"), ("2026-09", "2026-09-30"))):
+        mv = imported.monthly_amc[key].where(amc_d <= end)[sel]
+        assert row["penaltyBlocks"]["values"][i] == int((mv.groupby(imported.gps.loc[sel, "block_id"]).mean() < 90).sum())
     assert row["gpsAtZero"]["values"][:2] == [10, 1]
     # weeks recomputed from the weekly W-nn column
     wf = imported.week_frame("W-41")
-    sel = imported.gps["circle"] == "RAJASTHAN"
     v = wf["weekly"].where(wf["amc"])[sel]
     assert row["gpsAbove98"]["values"][-1] == int((v > 98).sum())
-    assert row["blocksBelow85"]["values"][-1] == int((v.groupby(imported.gps.loc[sel, "block_id"]).mean() < 85).sum())
+    assert row["penaltyBlocks"]["values"][-1] == int((v.groupby(imported.gps.loc[sel, "block_id"]).mean() < 90).sum())
     amc = pd.to_datetime(imported.gps["amc_date"], errors="coerce")
     inc = sel & (imported.gps["amc_category"] == "INCREMENTAL") & (amc >= "2026-09-25") & (amc <= "2026-10-01")
     assert row["incrementalAdded"]["values"][-2] == int(inc.sum())  # WK-40
@@ -343,17 +407,15 @@ def test_pptx_contains_every_circle_for_page3(imported, client):
 
 
 def test_previous_month_td_column(review, imported, client):
-    """Sep-26 TD = 1-8 Sep (same days as Oct-26 TD), same rules as the TD column; the PPT keeps its layout."""
+    """Sep-26 MTD = 1-8 Sep (same days as Oct-26 MTD), same rules as the MTD column; shown on the web page and in the PPT."""
     import pandas as pd
 
     from app.analytics import views
-    from app.reports.review_pptx import _without_previous_td
-
     ptd = next(p for p in review["periods"] if p["kind"] == "ptd")
-    assert ptd["label"] == "Sep-26 TD" and ptd["endDate"] == "2026-09-08"
+    assert ptd["label"] == "Sep-26 MTD" and ptd["endDate"] == "2026-09-08"
     i = review["periods"].index(ptd)
     rj = review["sections"]["rajasthan"]
-    # same figure as the Circle Insights "Sep-26 TD" column
+    # same figure as the Circle Insights "Sep-26 TD" column (same period, the Insights pages keep their label)
     ci = views.circle_insights(imported, "rajasthan", "W-41", "W-40")["periodTable"]
     j = [p["kind"] for p in ci["periods"]].index("ptd")
     assert rj["gpUptime"]["bands"][0]["values"][i] == ci["gpBands"][j]["counts"][">98%"]
@@ -367,11 +429,54 @@ def test_previous_month_td_column(review, imported, client):
     inc = sel & (imported.gps["amc_category"] == "INCREMENTAL") & (amc >= "2026-09-01") & (amc <= "2026-09-08")
     assert row["incrementalAdded"]["values"][k] == int(inc.sum())
     assert row["oneTimeUpGps"]["values"][k] is None
-    # the deck drops the column everywhere
-    deck = _without_previous_td(review)
-    assert all(p["kind"] != "ptd" for p in deck["periods"])
-    assert len(deck["sections"]["rajasthan"]["gpUptime"]["total"]) == len(deck["periods"])
-    assert all(c["kind"] != "ptd" for c in deck["sections"]["rajasthan"]["critical"]["columns"])
+    # the deck shows the column too (Critical KPI, Block and GP network pages)
+    login(client)
+    p = client.get("/api/v1/reviews/management.pptx", params={"week": "W-41", "compare": "W-40", "sections": "blocks-gps,block-network,gp-network", "circles": "rajasthan"})
+    deck = Presentation(io.BytesIO(p.content))
+    heads = []
+    for slide in deck.slides:
+        for sh in slide.shapes:
+            if sh.has_table:
+                t = sh.table
+                heads.append([t.cell(r, c).text for r in range(min(2, len(t.rows))) for c in range(len(t.columns))])
+    assert sum("Sep-26 MTD" in h for h in heads) == 3
+
+
+def test_daily_history_fills_days_the_file_no_longer_has(imported):
+    """A newer file whose daily columns start later: the missing earlier days come from the upload history; for a
+    day in both, the file with the later data date wins and an older file only fills days not stored yet."""
+    import datetime as dt
+
+    import numpy as np
+    import pandas as pd
+    from sqlalchemy import delete
+
+    from app.ingestion.history import history_frame, merge_daily
+    from app.models import GpDailyHistory
+
+    gps = list(imported.gps.index[:3])
+    with SessionLocal() as db:
+        saved = db.query(GpDailyHistory).all()
+        backup = [(r.month, r.gp_codes, r.periods, r.values, r.data_as_of, r.source_file) for r in saved]
+        try:
+            db.execute(delete(GpDailyHistory))
+            newer = pd.DataFrame({"2026-07-16": [10.0, np.nan, 30.0], "2026-07-17": [11.0, 21.0, 31.0]}, index=gps)
+            older = pd.DataFrame({"2026-07-01": [1.0, 2.0, 3.0], "2026-07-16": [99.0, 99.0, 99.0]}, index=gps)
+            merge_daily(db, newer, dt.date(2026, 8, 21), "new.xlsb")
+            merge_daily(db, older, dt.date(2026, 8, 14), "old.xlsb")  # uploaded later, but older data
+            h = history_frame(db, dt.date(2026, 7, 17))  # the active file starts on 17 Jul
+            assert list(h.columns) == [dt.date(2026, 7, 1), dt.date(2026, 7, 16)]
+            assert h.loc[gps, dt.date(2026, 7, 1)].tolist() == [1.0, 2.0, 3.0]  # only the older file had 1 Jul
+            v16 = h.loc[gps, dt.date(2026, 7, 16)].tolist()
+            assert v16[0] == 10.0 and np.isnan(v16[1]) and v16[2] == 30.0  # newer file wins, its NA stays NA
+            row = db.get(GpDailyHistory, "2026-07")
+            assert row.data_as_of == dt.date(2026, 8, 21) and row.source_file == "new.xlsb; old.xlsb"
+        finally:
+            db.rollback()
+            db.execute(delete(GpDailyHistory))
+            for m, g, p, v, a, s in backup:
+                db.add(GpDailyHistory(month=m, gp_codes=g, periods=p, values=v, data_as_of=a, source_file=s))
+            db.commit()
 
 
 # ---------------------------------------------------------------- AMC conversion: plan vs execution page
@@ -398,7 +503,8 @@ def test_amc_conversion_plan_vs_execution(imported, plan_file, review, client):
     assert [w["label"] for w in wk["weeks"]] == ["WK-41", "WK-42", "WK-43", "WK-44"]
     assert [c["target"] for c in wk["total"]["weeks"]] == [367, 457, 431, 520]
     mr = review["targetsPage"]["weekly"]
-    assert [c["achieved"] for c in wk["total"]["weeks"]][:1] == [c["achieved"] for c in mr["total"]["weeks"]][:1]
+    # the manual weekly targets of this page are the review's "old target" (the review counts new targets from the data)
+    assert [c["target"] for c in wk["total"]["weeks"]] == [c["oldTarget"] for c in mr["total"]["weeks"]][: len(wk["weeks"])]
 
 
 # ---------------------------------------------------------------- AMC conversion: GP-wise plan (Planned Date / Ach Date)
@@ -491,3 +597,86 @@ def test_month_targets_switch_from_plan_file_to_master_data(imported, monkeypatc
     assert (cell("Rajasthan", "2026-11")["target"], cell("Rajasthan", "2026-11")["targetSource"]) == (1063, "plan")  # untouched
     total_nov = r["monthly"]["total"]["cells"][months.index("2026-11")]
     assert total_nov["target"] == 1063 + 2 and total_nov["targetSource"] == "mixed"
+
+
+def test_amc_plan_by_area_manager(imported, client, monkeypatch):
+    """Area-manager table (Monthly / Weekly Plan vs Execution, one state): the AM rows add up to the state's figures
+    on the page – same windows and masks; the endpoint needs a login and validates the state."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_area_managers, amc_plan_summary
+
+    store = imported
+    assert client.get("/api/v1/amc-plan/area-managers", params={"circle": "rajasthan"}).status_code == 401
+    login(client)
+    assert client.get("/api/v1/amc-plan/area-managers", params={"circle": "nowhere", "week": "W-41"}).status_code == 404
+    assert client.get("/api/v1/amc-plan/area-managers", params={"circle": "../etc", "week": "W-41"}).status_code == 422
+    body = client.get("/api/v1/amc-plan/area-managers", params={"circle": "rajasthan", "week": "W-41"}).json()
+    rj = store.gps[store.gps["circle"] == "RAJASTHAN"]
+    assert body["total"]["existingGps"] == len(rj) and body["total"]["blocks"] == rj["block_id"].nunique()
+    assert sum(r["existingGps"] for r in body["rows"]) == len(rj)
+
+    # with a GP-wise plan: AM targets / achievements add up to the state row of the page
+    d = dt.date
+    idx = rj.index[:5]
+    plan = pd.DataFrame(
+        {
+            "planned_date": [d(2026, 10, 3), d(2026, 10, 5), d(2026, 10, 20), d(2026, 9, 30), None],
+            "ach_date": [d(2026, 10, 4), None, None, d(2026, 10, 2), None],
+            "category": "Incremental",
+            "current_status": None,
+            "letter_status": None,
+            "letter_date": None,
+        },
+        index=idx,
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    r = amc_plan_area_managers(store, "W-41", "rajasthan")
+    state = next(x for x in amc_plan_summary(store, "W-41")["rows"] if x["id"] == "rajasthan")
+    t = r["total"]
+    assert (t["monthTarget"], t["monthAchieved"], t["weekTarget"], t["weekAchieved"]) == (state["monthTarget"], state["mtdAchieved"], state["weekTarget"], state["weekAchieved"]) == (3, 2, 2, 2)
+    assert all(not row["assigned"] for row in r["rows"] if row["name"] in ("Not assigned", "Vacant (no AM)"))
+
+
+def test_key_highlights_weeks_count_ach_date(imported, monkeypatch):
+    """Executive Summary → Key Highlights: WK columns = GPs achieved in the week by Ach Date, the same count as
+    AMC Conversion → Weekly; blank (None) when the file has no GP-wise plan – never a made-up 0."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_timeline
+    from app.analytics.review import _circle_list
+    from app.analytics.review_periods import reporting_periods
+    from app.analytics.review_summary import _conversion_cards, _highlight_table
+
+    store = imported
+    p = reporting_periods(store, store.week("W-41"), store.week("W-40"))
+    circles = _circle_list(store)
+    ht = _highlight_table(store, p, circles, _conversion_cards(store, p, circles))
+    assert all(v is None for r in ht["rows"] for v in r["weeklyConversions"])  # this workbook has no plan block
+
+    d = dt.date
+    rj = store.gps.index[store.gps["circle"] == "RAJASTHAN"][:4]
+    hr = store.gps.index[store.gps["circle"] == "HARYANA"][:2]
+    plan = pd.DataFrame(
+        {
+            "planned_date": [d(2026, 10, 3)] * 6,
+            "ach_date": [d(2026, 10, 3), d(2026, 10, 7), d(2026, 9, 26), None, d(2026, 10, 5), d(2026, 9, 20)],  # W-41 ×2, W-40, –, W-41, W-39
+            "category": "Incremental",
+            "current_status": None,
+            "letter_status": None,
+            "letter_date": None,
+        },
+        index=[*rj, *hr],
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    ht = _highlight_table(store, p, circles, _conversion_cards(store, p, circles))
+    labels = [w["label"] for w in ht["weeks"]]
+    t = amc_plan_timeline(store, "W-41")
+    dash = {w["label"]: c["achieved"] for w, c in zip(t["weekly"]["weeks"], t["weekly"]["total"]["cells"])}
+    assert ht["total"]["weeklyConversions"] == [dash.get(lb, 0) or 0 for lb in labels]
+    rows = {r["code"]: r["weeklyConversions"] for r in ht["rows"]}
+    assert rows["RJ"][labels.index("WK-41")] == 2 and rows["RJ"][labels.index("WK-40")] == 1 and rows["HR"][labels.index("WK-41")] == 1

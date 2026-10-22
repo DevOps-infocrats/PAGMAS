@@ -239,6 +239,10 @@ def _block_rows(store: Store, mask: np.ndarray, week: str) -> list[dict[str, Any
                 "hotoDone": int(w["hoto_done"].sum()),
                 "hotoPending": int((sub["revised"] & ~w["hoto_done"]).sum()),
                 "amcGps": int(w["amc"].sum()),
+                # AMC split – same masks as metrics.summarize (amcOriginalGps / incrementalGps / nonAmcGps)
+                "amcOriginalGps": int((w["amc"] & (sub["amc_category"] != "INCREMENTAL")).sum()),
+                "incrementalGps": int((w["amc"] & (sub["amc_category"] == "INCREMENTAL")).sum()),
+                "nonAmcGps": int((sub["revised"] & ~w["amc"]).sum()),
                 "availability": r2(m.mean()) if m.notna().any() else None,
                 "totalRkm": r2(sub["total_rkm"].sum()),
             }

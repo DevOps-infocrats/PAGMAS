@@ -5,17 +5,14 @@ import { barOption } from "@/components/charts/builders";
 import { ChartCard } from "@/components/charts/chart-card";
 import { EChart } from "@/components/charts/echart";
 import { useChartTheme } from "@/components/charts/use-chart-theme";
-import { AvailabilityValue } from "@/components/feedback/badges";
 import { SummaryTable, type SummaryColumn } from "@/components/tables/summary-table";
 import { Segmented } from "@/components/ui/controls";
 import type { KpiListKind, OverviewResponse } from "@/lib/api";
 import type { KpiListGroup } from "@/lib/kpi-lists";
 import { THRESHOLDS } from "@/lib/metrics/definitions";
-import { cn } from "@/lib/utils/cn";
-import { formatCount, formatDate, formatPercent } from "@/lib/utils/format";
+import { formatCount, formatDate } from "@/lib/utils/format";
 
 type Row = NonNullable<OverviewResponse["stateDetails"]>[number];
-type Manager = OverviewResponse["areaManagers"][number];
 
 interface Props {
   data: OverviewResponse | undefined;
@@ -40,77 +37,7 @@ function Completion({ done, total }: { done: number; total: number }) {
   );
 }
 
-/* ------------------------------------------------------------------ 1. State-wise comparison */
-
-export function StateComparison({ data, loading, onOpenCircle, onOpenState }: Props) {
-  const t = useChartTheme();
-  const rows = useMemo(() => data?.stateDetails ?? [], [data]);
-  const option = useMemo(
-    () =>
-      barOption({
-        theme: t,
-        unit: "count",
-        labels: true,
-        compactLabels: true,
-        barMaxWidth: 28,
-        categories: rows.map((r) => r.name),
-        series: [
-          { name: "Total GPs", data: rows.map((r) => r.totalGps ?? r.existingGps), color: t.series[0] },
-          { name: "Revised existing", data: rows.map((r) => r.revisedExisting), color: t.series[6] },
-          { name: "HOTO done", data: rows.map((r) => r.hotoDoneGps), color: t.series[2] },
-          { name: "AMC GPs", data: rows.map((r) => r.amcGps), color: t.series[1] },
-        ],
-      }),
-    [rows, t],
-  );
-  const cols: SummaryColumn<Row>[] = [
-    { key: "name", header: "State", render: (r) => r.name },
-    { key: "blocks", header: "Blocks", numeric: true, render: (r) => formatCount(r.blocks) },
-    { key: "total", header: "Total GPs", numeric: true, render: (r) => formatCount(r.totalGps) },
-    { key: "existing", header: "Existing", numeric: true, render: (r) => formatCount(r.existingGps) },
-    { key: "new", header: "New", numeric: true, render: (r) => formatCount(r.newGps) },
-    { key: "revised", header: "Revised existing", numeric: true, render: (r) => formatCount(r.revisedExisting) },
-    { key: "hoto", header: "HOTO done", numeric: true, render: (r) => formatCount(r.hotoDoneGps) },
-    { key: "amc", header: "AMC GPs", numeric: true, render: (r) => formatCount(r.amcGps) },
-    { key: "amcPct", header: "AMC %", numeric: true, render: (r) => formatPercent(r.amcPct) },
-  ];
-  const tot = {
-    name: "Total",
-    blocks: formatCount(sum(rows, (r) => r.blocks)),
-    total: formatCount(sum(rows, (r) => r.totalGps)),
-    existing: formatCount(sum(rows, (r) => r.existingGps)),
-    new: formatCount(sum(rows, (r) => r.newGps)),
-    revised: formatCount(sum(rows, (r) => r.revisedExisting)),
-    hoto: formatCount(sum(rows, (r) => r.hotoDoneGps)),
-    amc: formatCount(sum(rows, (r) => r.amcGps)),
-    amcPct: pct(sum(rows, (r) => r.amcGps), sum(rows, (r) => r.revisedExisting)),
-  };
-  return (
-    <ChartCard
-      title="State-wise Comparison"
-      description="GP scope, handover and AMC coverage per state · select a row to see the state's existing and new GPs"
-      info="Total GPs = existing + new (Master Block). Revised existing excludes GPs converted to NP, closed or deducted. AMC % = AMC GPs ÷ revised existing."
-      loading={loading}
-      empty={!loading && rows.length === 0}
-      height={320}
-    >
-      <EChart option={option} height={320} ariaLabel="GP counts by state" onClick={(p) => rows[p.dataIndex] && onOpenCircle(rows[p.dataIndex].id)} />
-      <div className="mt-4">
-        <SummaryTable
-          columns={cols}
-          rows={rows}
-          total={tot}
-          rowKey={(r) => r.id}
-          onRowClick={(r) => (onOpenState ? onOpenState(r.id, "comparison") : onOpenCircle(r.id))}
-          rowLabel={(r) => `Open the existing and new GPs of ${r.name}`}
-          caption="State-wise comparison"
-        />
-      </div>
-    </ChartCard>
-  );
-}
-
-/* ------------------------------------------------------------------ 2. Network health */
+/* ------------------------------------------------------------------ 1. Network health */
 
 export function NetworkHealth({ data, loading, onOpenCircle, onOpenState }: Props) {
   const t = useChartTheme();
@@ -140,10 +67,8 @@ export function NetworkHealth({ data, loading, onOpenCircle, onOpenState }: Prop
     { key: "amc", header: "AMC GPs", numeric: true, render: (r) => formatCount(r.amcGps) },
     { key: "a98", header: `GPs >${THRESHOLDS.healthy}%`, numeric: true, render: (r) => formatCount(r.gpsAbove98) },
     { key: "zero", header: "GPs at 0%", numeric: true, render: (r) => formatCount(r.gpsAtZero) },
-    { key: "na", header: "Not reported (NA)", numeric: true, render: (r) => formatCount(r.naGps) },
     { key: "pen", header: `Blocks <${THRESHOLDS.penalty}%`, numeric: true, render: (r) => formatCount(r.penaltyBlocks) },
     { key: "otu", header: "One-time UP", numeric: true, render: (r) => formatCount(r.oneTimeUp) },
-    { key: "avail", header: "Avg availability", numeric: true, render: (r) => <AvailabilityValue value={r.availability} /> },
   ];
   return (
     <ChartCard
@@ -165,10 +90,8 @@ export function NetworkHealth({ data, loading, onOpenCircle, onOpenState }: Prop
             amc: formatCount(sum(rows, (r) => r.amcGps)),
             a98: formatCount(sum(rows, (r) => r.gpsAbove98)),
             zero: formatCount(sum(rows, (r) => r.gpsAtZero)),
-            na: formatCount(sum(rows, (r) => r.naGps)),
             pen: formatCount(sum(rows, (r) => r.penaltyBlocks)),
             otu: formatCount(sum(rows, (r) => r.oneTimeUp)),
-            avail: <AvailabilityValue value={data?.summary?.availability ?? null} />,
           }}
           rowKey={(r) => r.id}
           onRowClick={(r) => (onOpenState ? onOpenState(r.id, "health") : onOpenCircle(r.id))}
@@ -180,7 +103,7 @@ export function NetworkHealth({ data, loading, onOpenCircle, onOpenState }: Prop
   );
 }
 
-/* ------------------------------------------------------------------ 3. HOTO blocks / GPs */
+/* ------------------------------------------------------------------ 2. HOTO blocks / GPs */
 
 type HotoView = "blocks" | "gps";
 
@@ -251,7 +174,7 @@ export function HotoProgress({ data, loading, onOpenCircle, onOpenState }: Props
   );
 }
 
-/* ------------------------------------------------------------------ 4. Converted to NP / closed */
+/* ------------------------------------------------------------------ 3. Converted to NP / closed */
 
 const convertedCols: SummaryColumn<Row>[] = [
   { key: "name", header: "State", render: (r) => r.name },
@@ -308,65 +231,6 @@ export function ConvertedGps({ data, loading, onOpenCircle, onOpenState }: Props
           rowLabel={(r) => `Open converted / closed GPs of ${r.name}`}
         />
       </div>
-    </ChartCard>
-  );
-}
-
-/* ------------------------------------------------------------------ 5. Area managers */
-
-export function AreaManagerTable({ data, loading }: Props) {
-  const [state, setState] = useState<string>("all");
-  const circles = data?.stateDetails ?? [];
-  const nameOf = (id: string) => circles.find((c) => c.id === id)?.name ?? id;
-  const rows = useMemo(() => {
-    const list = (data?.areaManagers ?? []).filter((m) => state === "all" || m.circleId === state);
-    return [...list].sort((a, b) => {
-      const ua = a.manager.label === "Unassigned" ? 1 : 0;
-      const ub = b.manager.label === "Unassigned" ? 1 : 0;
-      return ua - ub || (b.availability ?? -1) - (a.availability ?? -1);
-    });
-  }, [data, state]);
-  const cols: SummaryColumn<Manager>[] = [
-    {
-      key: "am",
-      header: "Area manager",
-      render: (m) => (
-        <span className={cn(m.manager.label === "Unassigned" && "italic text-muted-foreground")}>{m.manager.label === "Unassigned" ? "Not assigned in source" : m.manager.label}</span>
-      ),
-    },
-    { key: "state", header: "State", render: (m) => nameOf(m.circleId) },
-    { key: "blocks", header: "Blocks", numeric: true, render: (m) => formatCount(m.blocks ?? null) },
-    { key: "gps", header: "GPs", numeric: true, render: (m) => formatCount(m.revisedExisting ?? m.gps) },
-    { key: "amc", header: "AMC GPs", numeric: true, render: (m) => formatCount(m.amcGps ?? null) },
-    { key: "avail", header: "Availability (MTD)", numeric: true, render: (m) => <AvailabilityValue value={m.availability} /> },
-    { key: "a98", header: `>${THRESHOLDS.healthy}%`, numeric: true, render: (m) => formatCount(m.gpsAbove98) },
-    { key: "zero", header: "At 0%", numeric: true, render: (m) => formatCount(m.gpsAtZero ?? null) },
-    { key: "pen", header: `Blocks <${THRESHOLDS.penalty}%`, numeric: true, render: (m) => formatCount(m.penaltyBlocks) },
-  ];
-  const unassigned = rows.filter((m) => m.manager.label === "Unassigned").reduce((s, m) => s + m.gps, 0);
-  return (
-    <ChartCard
-      title="Area Manager Performance — State-wise"
-      description="AMC availability and penalty exposure of the GPs each area manager covers"
-      period={data?.asOf ? `MTD up to ${formatDate(data.asOf)}` : undefined}
-      info="Area manager = 'AM Name' column of GP Wise Data. GPs without a valid name are grouped as “Not assigned in source”."
-      loading={loading}
-      empty={!loading && rows.length === 0}
-      actions={
-        <Segmented<string>
-          ariaLabel="State"
-          value={state}
-          onChange={setState}
-          options={[{ value: "all", label: "All" }, ...circles.map((c) => ({ value: c.id, label: c.name }))]}
-        />
-      }
-    >
-      <SummaryTable columns={cols} rows={rows} rowKey={(m) => m.manager.id} caption="Area manager performance" />
-      {unassigned > 0 && (
-        <p className="mt-3 text-xs text-muted-foreground">
-          {formatCount(unassigned)} GPs have no area manager name in the source file – fill the “AM Name” column to attribute them.
-        </p>
-      )}
     </ChartCard>
   );
 }

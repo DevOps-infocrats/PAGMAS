@@ -10,16 +10,17 @@ export interface Crumb {
 export function Breadcrumbs({ items }: { items: Crumb[] }) {
   return (
     <nav aria-label="Breadcrumb">
-      <ol className="flex flex-wrap items-center gap-1 text-[13px] text-muted-foreground">
+      {/* bold, a size up and in the brand blue on every page; the current page in dark blue */}
+      <ol className="flex flex-wrap items-center gap-1.5 text-[15px] font-semibold text-primary">
         {items.map((c, i) => (
           <li key={`${c.label}-${i}`} className="flex items-center gap-1">
-            {i > 0 && <ChevronRight className="size-3.5 text-subtle-foreground" aria-hidden />}
+            {i > 0 && <ChevronRight className="size-4 text-subtle-foreground" aria-hidden />}
             {c.href && i < items.length - 1 ? (
-              <Link href={c.href} className="rounded hover:text-foreground hover:underline">
+              <Link href={c.href} className="rounded hover:text-[#0A3A5F] hover:underline dark:hover:text-[#7cc4ea]">
                 {c.label}
               </Link>
             ) : (
-              <span aria-current={i === items.length - 1 ? "page" : undefined} className={cn(i === items.length - 1 && "text-foreground")}>
+              <span aria-current={i === items.length - 1 ? "page" : undefined} className={cn(i === items.length - 1 && "font-bold text-[#0A3A5F] dark:text-[#7cc4ea]")}>
                 {c.label}
               </span>
             )}

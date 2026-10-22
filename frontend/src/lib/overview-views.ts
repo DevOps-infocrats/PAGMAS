@@ -1,13 +1,12 @@
 /**
- * The four Circle Overview views, in sidebar order. Single source for the sidebar sub-menu and the overview
+ * The three Circle Overview views, in sidebar order. Single source for the sidebar sub-menu and the overview
  * page. The view lives in `?view=` and belongs to this page only: it is not one of the shared filters
  * (circle / district / block / gp / week / compare), so links to Circle, Block and GP Insights never carry it.
  */
 export const OVERVIEW_VIEWS = [
-  { id: "summary", title: "Summary (KPIs)", short: "Summary (KPIs)", hint: "Network scope, handover & AMC, uptime and fibre" },
-  { id: "states", title: "States & Network Health", short: "States & Network Health", hint: "State-wise comparison and month-to-date network health" },
+  { id: "summary", title: "Summary (KPIs)", short: "Summary (KPIs)", hint: "Network scope, handover & AMC, uptime and non-AMC GPs" },
+  { id: "states", title: "States & Network Health", short: "States & Network Health", hint: "Month-to-date network health of each state" },
   { id: "handover", title: "Handover & Scope", short: "Handover & Scope", hint: "HOTO completion and GPs that left the scope" },
-  { id: "managers", title: "Area Managers", short: "Area Managers", hint: "Area manager performance within each state" },
 ] as const;
 
 export type OverviewViewId = (typeof OVERVIEW_VIEWS)[number]["id"];

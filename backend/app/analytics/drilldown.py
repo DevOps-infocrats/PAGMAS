@@ -9,6 +9,11 @@ week, so the unfiltered total always equals the number on the card:
   hoto-gps        GPs whose HOTO date is on or before the reporting week end
   hoto-blocks     blocks with at least one such GP
   hoto-pending-gps  revised existing GPs (not converted / closed) without a HOTO date by the week end
+  hoto-pending-blocks  blocks without any GP whose HOTO date is on or before the week end (= Total Blocks − HOTO Done Blocks)
+  all-blocks      every block of the GP Wise Data sheet (= Total Blocks)
+  non-amc-gps     revised existing GPs not under AMC on the week end (= the Non-AMC part of the AMC GPs card)
+  amc-original-gps  AMC GPs from the original AMC list (= the "AMC (original)" part of the AMC GPs card)
+  incremental-gps   AMC GPs added by the incremental letter (= the "Incremental" part of the AMC GPs card)
   removed-gps     GPs converted to NP / permanently closed / deducted ("Converted to NP & Closed" column)
   amc-*           GP-wise AMC conversion plan (analytics/amc_plan.py): month / month-to-date / week target
                   (Planned Date), achieved (Ach Date) and overdue – same masks as the AMC Conversion KPIs
@@ -31,9 +36,9 @@ from ..config import get_settings
 from .metrics import r2
 from .store import Store
 
-KpiKind = Literal["gps-above-98", "gps-at-zero", "penalty-blocks", "hoto-gps", "hoto-blocks", "existing-gps", "new-gp-blocks", "na-gps", "one-time-up", "hoto-pending-gps", "removed-gps", "amc-plan-month", "amc-plan-mtd", "amc-achieved-mtd", "amc-plan-week", "amc-achieved-week", "amc-overdue"]
+KpiKind = Literal["gps-above-98", "gps-at-zero", "penalty-blocks", "hoto-gps", "hoto-blocks", "existing-gps", "new-gp-blocks", "na-gps", "one-time-up", "hoto-pending-gps", "hoto-pending-blocks", "all-blocks", "non-amc-gps", "amc-original-gps", "incremental-gps", "removed-gps", "amc-plan-month", "amc-plan-mtd", "amc-achieved-mtd", "amc-plan-week", "amc-achieved-week", "amc-overdue"]
 SortKey = Literal["value-desc", "value-asc", "name"]
-KINDS: tuple[str, ...] = ("gps-above-98", "gps-at-zero", "penalty-blocks", "hoto-gps", "hoto-blocks", "existing-gps", "new-gp-blocks", "na-gps", "one-time-up", "hoto-pending-gps", "removed-gps", "amc-plan-month", "amc-plan-mtd", "amc-achieved-mtd", "amc-plan-week", "amc-achieved-week", "amc-overdue")
+KINDS: tuple[str, ...] = ("gps-above-98", "gps-at-zero", "penalty-blocks", "hoto-gps", "hoto-blocks", "existing-gps", "new-gp-blocks", "na-gps", "one-time-up", "hoto-pending-gps", "hoto-pending-blocks", "all-blocks", "non-amc-gps", "amc-original-gps", "incremental-gps", "removed-gps", "amc-plan-month", "amc-plan-mtd", "amc-achieved-mtd", "amc-plan-week", "amc-achieved-week", "amc-overdue")
 DEFAULT_SORT: dict[str, str] = {
     "gps-above-98": "value-desc",
     "gps-at-zero": "name",
@@ -45,6 +50,11 @@ DEFAULT_SORT: dict[str, str] = {
     "na-gps": "name",
     "one-time-up": "value-desc",
     "hoto-pending-gps": "name",
+    "hoto-pending-blocks": "name",
+    "all-blocks": "name",
+    "non-amc-gps": "name",
+    "amc-original-gps": "name",
+    "incremental-gps": "name",
     "removed-gps": "value-asc",
     "amc-plan-month": "value-asc",
     "amc-plan-mtd": "value-asc",
@@ -102,6 +112,21 @@ def _spec(kind: str) -> _Spec:
     if kind == "hoto-pending-gps":
         return _Spec("gp", "HOTO Pending GPs", "Revised existing GPs (not converted to NP / closed / deducted) without a HOTO date on or before the reporting week end",
                      gp_cols + (("amName", "Area manager", 22, "text"),))
+    if kind == "hoto-pending-blocks":
+        return _Spec("block", "HOTO Pending Blocks", "Blocks without any GP whose HOTO date is on or before the reporting week end",
+                     blk_cols + (("totalGps", "GPs in block", 13, "int"), ("revisedGps", "Revised existing GPs", 18, "int")))
+    if kind == "all-blocks":
+        return _Spec("block", "All Blocks", "Every block of the GP Wise Data sheet (distinct block codes); HOTO and AMC as of the reporting week end",
+                     blk_cols + (("totalGps", "GPs in block", 13, "int"), ("hotoGps", "HOTO done GPs", 15, "int"), ("amcGps", "AMC GPs", 11, "int")))
+    if kind == "non-amc-gps":
+        return _Spec("gp", "Non-AMC GPs", "Revised existing GPs (not converted to NP / closed / deducted) that are not under AMC on the reporting week end",
+                     gp_cols + (("hotoStatus", "HOTO", 12, "text"), ("hotoDate", "HOTO date", 13, "date")))
+    if kind in ("amc-original-gps", "incremental-gps"):
+        original = kind == "amc-original-gps"
+        return _Spec("gp", "AMC GPs (original list)" if original else "Incremental AMC GPs",
+                     ("AMC GPs from the original AMC list (not incremental), with an AMC date on or before the reporting week end" if original
+                      else "AMC GPs added by the incremental AMC letter, with an AMC date on or before the reporting week end"),
+                     gp_cols + (("amcDate", "AMC date", 13, "date"), ("availability", "MTD availability %", 18, "pct")))
     if kind == "removed-gps":
         return _Spec("gp", "GPs Converted to NP / Closed", "Existing GPs removed from scope, from the 'Converted to NP & Closed' column (the source records no date for these changes)",
                      gp_cols + (("status", "Reason", 24, "text"), ("remark", "Source remark", 30, "text"), ("hotoDate", "HOTO date", 13, "date"), ("amcDate", "AMC date", 13, "date")))
@@ -177,6 +202,30 @@ def _rows(store: Store, kind: str, week: str, as_of: dt.date | None = None) -> p
         sub = g[sel.to_numpy()]
         names = sub["am_name"].where(sub["am_name"].notna(), None).to_numpy()
         return pd.DataFrame({**_gp_frame(sub), "amName": names, "value": sub["name"].astype(str).str.title().to_numpy()})
+    if kind == "non-amc-gps":
+        sel = g["revised"] & ~amc  # same mask as summarize()["nonAmcGps"]
+        sub = g[sel.to_numpy()]
+        done = hoto[sel].to_numpy()
+        hoto_dates = [d if h else None for d, h in zip(_iso(sub["hoto_date"]), done)]
+        return pd.DataFrame({**_gp_frame(sub), "hotoStatus": ["Done" if h else "Pending" for h in done], "hotoDate": hoto_dates, "value": sub["name"].astype(str).str.title().to_numpy()})
+    if kind in ("amc-original-gps", "incremental-gps"):
+        inc = g["amc_category"] == "INCREMENTAL"
+        sel = amc & (inc if kind == "incremental-gps" else ~inc)  # same masks as summarize() incrementalGps / amcOriginalGps
+        sub = g[sel.to_numpy()]
+        vals = mtd[sel].round(2).to_numpy()
+        return pd.DataFrame({**_gp_frame(sub), "amcDate": _iso(sub["amc_date"]), "availability": vals, "value": sub["name"].astype(str).str.title().to_numpy()})
+    if kind in ("all-blocks", "hoto-pending-blocks"):
+        blocks = g["block_id"]
+        size = blocks.groupby(blocks).size()
+        done = hoto.groupby(blocks).sum()
+        ids = size.index if kind == "all-blocks" else done[done == 0].index  # pending = no HOTO-done GP at all
+        frame = _block_frame(g, ids)
+        names = frame["name"]
+        if kind == "all-blocks":
+            amc_gps = amc.groupby(blocks).sum().loc[ids]
+            return pd.DataFrame({**frame, "totalGps": size.loc[ids].astype(int).to_numpy(), "hotoGps": done.loc[ids].astype(int).to_numpy(), "amcGps": amc_gps.astype(int).to_numpy(), "value": names})
+        revised = g["revised"].groupby(blocks).sum().loc[ids]
+        return pd.DataFrame({**frame, "totalGps": size.loc[ids].astype(int).to_numpy(), "revisedGps": revised.astype(int).to_numpy(), "value": names})
     if kind == "removed-gps":
         sel = g["lifecycle"] != "ACTIVE"
         sub = g[sel.to_numpy()]
@@ -288,7 +337,7 @@ def _filtered(rows: pd.DataFrame, circle: str | None, district: str | None, bloc
     return out.sort_values(["value", "name"], ascending=[sort == "value-asc", True], kind="stable", na_position="last")
 
 
-INT_KEYS = ("amcGps", "reportedGps", "totalGps", "hotoGps", "existingGps", "newGps")
+INT_KEYS = ("amcGps", "reportedGps", "totalGps", "hotoGps", "existingGps", "newGps", "revisedGps")
 PCT_KEYS = ("availability", "hotoPct")
 
 

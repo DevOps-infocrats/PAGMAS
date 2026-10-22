@@ -39,6 +39,7 @@ export function StatCard({
   layout = "stack",
   href,
   linkLabel = "View list",
+  compact = false,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   /** CSS colour used for the icon tile */
@@ -59,6 +60,8 @@ export function StatCard({
   /** Makes the whole card open this page (e.g. the list behind the KPI); the info tip stays clickable */
   href?: string;
   linkLabel?: string;
+  /** Shorter card (less padding and spacing, slightly smaller number) – Circle Overview */
+  compact?: boolean;
 }) {
   if (loading) {
     return (
@@ -83,17 +86,17 @@ export function StatCard({
           <InfoTip label={label} content={info} />
         </span>
       </div>
-      <p className="mt-2 flex items-baseline gap-1.5">
-        <span className="tabular text-[30px] font-semibold leading-none tracking-tight">{value}</span>
+      <p className={cn("flex items-baseline gap-1.5", compact ? "mt-1.5" : "mt-2")}>
+        <span className={cn("tabular font-semibold leading-none tracking-tight", compact ? "text-[26px]" : "text-[30px]")}>{value}</span>
         {unit && <span className="text-sm font-medium text-muted-foreground">{unit}</span>}
       </p>
-      {caption && <p className="mt-2 text-xs text-muted-foreground">{caption}</p>}
+      {caption && <p className={cn("text-xs text-muted-foreground", compact ? "mt-1.5" : "mt-2")}>{caption}</p>}
       {href && (
         // Stretched link: the ::after layer covers the card, so a click anywhere opens the list.
         <Link
           href={href}
           aria-label={`${linkLabel}: ${label}`}
-          className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary after:absolute after:inset-0 after:rounded-xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring/40"
+          className={cn(compact ? "mt-2" : "mt-3", "inline-flex items-center gap-1 text-xs font-semibold text-primary after:absolute after:inset-0 after:rounded-xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring/40")}
         >
           {linkLabel} <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </Link>
@@ -102,7 +105,7 @@ export function StatCard({
   );
 
   const details = (breakdown?.length || bar?.length) && (
-    <div className="min-w-0 space-y-3">
+    <div className={cn("min-w-0", compact ? "space-y-2" : "space-y-3")}>
       {bar && barTotal > 0 && (
         <div className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={bar.map((b) => `${b.label} ${formatCount(b.value)}`).join(", ")}>
           {bar.map((b) => (
@@ -111,7 +114,7 @@ export function StatCard({
         </div>
       )}
       {breakdown && (
-        <dl className="space-y-1.5 text-[13px]">
+        <dl className={cn("text-[13px]", compact ? "space-y-1" : "space-y-1.5")}>
           {breakdown.map((b) => (
             <div key={b.label} className="flex items-center justify-between gap-3">
               <dt className="flex min-w-0 items-center gap-2 text-muted-foreground">
@@ -134,21 +137,26 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "group relative flex flex-col rounded-xl border border-border bg-card p-5 transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.18)]",
+        "group relative flex flex-col rounded-xl border border-border bg-card transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.18)]",
+        compact ? "px-5 py-4" : "p-5",
         href && "cursor-pointer hover:border-primary/40",
         className,
       )}
     >
-      <span className="absolute right-5 top-5 flex size-9 items-center justify-center rounded-lg" style={{ background: `color-mix(in srgb, ${tone} 12%, transparent)`, color: tone }} aria-hidden>
+      <span
+        className={cn("absolute right-5 flex size-9 items-center justify-center rounded-lg", compact ? "top-4" : "top-5")}
+        style={{ background: `color-mix(in srgb, ${tone} 12%, transparent)`, color: tone }}
+        aria-hidden
+      >
         <Icon className="size-[18px]" />
       </span>
       {layout === "split" && details ? (
-        <div className="grid flex-1 grid-cols-1 gap-5 pr-12 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] sm:items-center">
+        <div className={cn("grid flex-1 grid-cols-1 pr-12", compact ? "gap-4" : "gap-5", "sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] sm:items-center")}>
           {headline}
           {details}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col gap-4 pr-12">
+        <div className={cn("flex flex-1 flex-col pr-12", compact ? "gap-3" : "gap-4")}>
           {headline}
           {details && <div className="-mr-12 mt-auto">{details}</div>}
         </div>

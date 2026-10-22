@@ -83,6 +83,7 @@ export const httpApi: DashboardApi = {
   getKpiList: (kind, q) => request(`/kpi-lists/${encodeURIComponent(kind)}${kpiListQuery(q)}`),
   getAmcPlanSummary: (week) => request(`/amc-plan/summary${qs({ week })}`),
   getAmcPlanTimeline: (week) => request(`/amc-plan/timeline${qs({ week })}`),
+  getAmcAreaManagers: (week, circle) => request(`/amc-plan/area-managers${qs({ week, circle })}`),
   getFieldSummary: (week) => request(`/field-team/summary${qs({ week })}`),
   getFieldLookup: (q) => request(`/field-team/lookup${fieldQuery(q)}`),
   getFieldWorkload: (role, q) => request(`/field-team/workload${qs({ role, week: q.weekId, circle: q.circleId })}`),

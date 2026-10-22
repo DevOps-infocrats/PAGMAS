@@ -148,6 +148,7 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <StatCard
+          compact
           layout="split"
           icon={Cable}
           tone="var(--series-1)"
@@ -185,6 +186,7 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
           ]}
         />
         <StatCard
+          compact
           layout="split"
           icon={Activity}
           tone={tone ?? "var(--na)"}

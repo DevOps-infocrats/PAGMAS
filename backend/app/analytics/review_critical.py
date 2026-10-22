@@ -1,13 +1,15 @@
 """Management Review – Page 3 "Critical KPI – Blocks & GPs" monthly & weekly performance table.
 
 Columns move forward automatically with the data: the last two completed months (workbook
-monthly AMC columns), the previous month to the same day ("Sep-26 TD": 1–8 Sep when the data
-runs to 8 Oct), the current month to date, and the three weeks ending with the reporting week
-(source W-nn columns). When Week 42 arrives the weeks become WK-40, WK-41, WK-42.
+monthly AMC columns), the previous month to the same day ("Sep-26 MTD": 1–21 Sep when the data
+runs to 21 Oct – daily data, from the upload history when the active file no longer has those
+days), the current month to date, and the three weeks ending with the reporting week (source
+W-nn columns). When Week 42 arrives the weeks become WK-40, WK-41, WK-42.
 
 Rows
   GPs > 98% availability                 AMC GPs strictly above 98% in the column
-  < 85% availability blocks – penalty    blocks whose mean AMC GP availability is below 85%
+  < 90% availability blocks – penalty    blocks whose mean AMC GP availability is below the penalty threshold
+                                         (90%) – the client sheet's COUNTIFS('Master Block' avg, "<90")
   GPs at 0% availability                 AMC GPs at exactly 0% (NA excluded)
   One-Time Up GPs / AMC / Non-AMC        circle sheet (external one-time-up report); the sheet has no
                                          previous-month-TD figure, so that cell stays empty
@@ -30,7 +32,7 @@ from .store import Store
 ROWS = [
     # key, label, polarity
     ("gpsAbove98", "GPs > 98% Availability", "up"),
-    ("blocksBelow85", "< 85% Availability Blocks – Penalty Prone", "down"),
+    ("penaltyBlocks", "< 90% Availability Blocks – Penalty Prone", "down"),
     ("gpsAtZero", "GPs at 0% Availability", "down"),
     ("oneTimeUpGps", "One-Time Up GPs", "up"),
     ("oneTimeUpAmc", "One-Time Up AMC", "up"),
@@ -73,7 +75,7 @@ def critical_table(
     def label(p: dict[str, Any]) -> str:
         if p["kind"] == "week":
             return f"WK-{store.week(p['key']).number}"
-        if p["kind"] == "mtd":
+        if p["kind"] in ("mtd", "ptd"):
             return f"{p['end']:%b-%y} MTD"
         return p["label"]
 
@@ -94,7 +96,7 @@ def critical_table(
 
     scope = {
         "gpsAbove98": td_m["amcGps"],
-        "blocksBelow85": 0,
+        "penaltyBlocks": 0,
         "gpsAtZero": 0,
         "oneTimeUpGps": td_m["revisedExisting"],
         "oneTimeUpAmc": td_m["amcGps"],
@@ -116,14 +118,14 @@ def critical_table(
 
     return {
         "title": f"Monthly & Weekly Performance – {name}",
-        "columns": [{"key": p["key"], "label": label(p), "kind": p["kind"], "endDate": p["end"].isoformat()} for p in cols],
+        "columns": [{"key": p["key"], "label": label(p), "kind": p["kind"], "startDate": _window(store, p)[0].isoformat(), "endDate": p["end"].isoformat()} for p in cols],
         "rows": rows,
         "insight": {
             "from": prev_label,
             "to": cur_label,
             "items": [
                 {"label": ">98% GPs", **change("gpsAbove98", "up")},
-                {"label": "Penalty-prone blocks (<85%)", **change("blocksBelow85", "down")},
+                {"label": "Penalty-prone blocks (<90%)", **change("penaltyBlocks", "down")},
                 {"label": "0% GPs", **change("gpsAtZero", "down")},
             ],
         },

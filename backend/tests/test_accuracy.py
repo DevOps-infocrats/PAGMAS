@@ -221,3 +221,75 @@ def test_gp_uptime_matches_snapshot_and_block(imported):
             assert wcol["days"]["underAmc"] == 7  # a full reporting week
         blk = views.block_insights(store, snap["blockId"], wk, store.weeks[-2].code)["gpUptime"]
         assert [c["average"] for c in blk["columns"]] == [c["blockAverage"] for c in d["uptime"]["columns"]]
+
+
+def test_overview_drilldown_lists_match_cards(imported):
+    """Total Blocks, HOTO done / pending (blocks and GPs) and Non-AMC lists add up to their Circle Overview cards."""
+    from app.analytics.drilldown import kpi_list
+
+    store = imported
+    wk = store.latest_week.code
+    for circle in (None, *sorted(store.gps["circle_id"].unique())):
+        mask = None if circle is None else (store.gps["circle_id"] == circle).to_numpy()
+        m = summarize(store, mask, wk)
+        total = lambda k: kpi_list(store, k, wk, circle, None, None, None, None, 1, 10)["total"]  # noqa: E731
+        assert total("all-blocks") == m["totalBlocks"]
+        assert total("hoto-blocks") + total("hoto-pending-blocks") == m["totalBlocks"]
+        assert total("hoto-pending-blocks") == m["totalBlocks"] - m["hotoDoneBlocks"]
+        assert total("hoto-gps") == m["hotoDoneGps"]
+        assert total("hoto-pending-gps") == m["hotoPendingGps"]
+        assert total("non-amc-gps") == m["nonAmcGps"]
+        assert total("amc-original-gps") == m["amcOriginalGps"]
+        assert total("incremental-gps") == m["incrementalGps"]
+        if circle is not None:
+            from app.analytics import views
+
+            rows = views._block_rows(store, mask, wk)  # Block-wise GP Count table
+            assert sum(r["amcOriginalGps"] for r in rows) == m["amcOriginalGps"]
+            assert sum(r["incrementalGps"] for r in rows) == m["incrementalGps"]
+            assert sum(r["nonAmcGps"] for r in rows) == m["nonAmcGps"]
+            # block level: the lists filtered to one block equal that block's row
+            r0 = max(rows, key=lambda r: r["amcGps"])
+            one = lambda k: kpi_list(store, k, wk, circle, None, r0["id"], None, None, 1, 10)["total"]  # noqa: E731
+            assert (one("amc-original-gps"), one("incremental-gps"), one("non-amc-gps")) == (r0["amcOriginalGps"], r0["incrementalGps"], r0["nonAmcGps"])
+
+
+def test_review_month_plan_follows_the_data_file(imported, monkeypatch):
+    """Management Review plan per state-month: the file's GP-wise plan where it has one, else review_plan.json –
+    so a new file with a changed / new month plan updates the review (web + PPT) by itself."""
+    from app.analytics import review_targets as rt
+
+    store = imported
+    configured, _ = rt.load_plan()
+    conf = configured.monthlyPlan if configured else {}
+    from_file = rt._file_month_plan(store)
+    plan, _, sources = rt.effective_plan(store)
+    # No plan anywhere (no review_plan.json in the test data folder and no GP-wise plan in the workbook) -> no plan.
+    assert (plan is None) == (configured is None and not from_file)
+    for month, counted in from_file.items():
+        for state, n in counted.items():
+            assert plan.monthlyPlan[month][state] == n  # the file wins
+        assert sources[month] in ("file", "file + plan file")
+    for month, vals in conf.items():
+        for state, v in vals.items():
+            if state not in from_file.get(month, {}):
+                assert plan is not None and plan.monthlyPlan[month][state] == v  # months / states without a file plan are unchanged
+
+    # The file plan equals what AMC Conversion shows as the month target (same Planned Date counting).
+    p = store.amc_plan
+    if not p.empty:
+        circle_of = store.gps["circle"].reindex(p.index)
+        for month, counted in from_file.items():
+            y, m = int(month[:4]), int(month[5:])
+            total = sum(1 for d, c in zip(p["planned_date"], circle_of) if isinstance(d, dt.date) and (d.year, d.month) == (y, m))
+            assert sum(counted.values()) == total
+
+    # A future file that carries a November plan for one state only: that state switches, the others keep the plan file.
+    nov = "2026-11"
+    monkeypatch.setattr(rt, "_file_month_plan", lambda s: {**from_file, nov: {"HARYANA": 999}})
+    plan2, _, sources2 = rt.effective_plan(store)
+    assert plan2.monthlyPlan[nov]["HARYANA"] == 999
+    for state, v in conf.get(nov, {}).items():
+        if state != "HARYANA":
+            assert plan2.monthlyPlan[nov][state] == v
+    assert sources2[nov] == ("file + plan file" if set(conf.get(nov, {})) - {"HARYANA"} else "file")

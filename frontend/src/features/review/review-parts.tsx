@@ -63,6 +63,13 @@ export function InsightBar({ items }: { items: ReviewInsight[] }) {
   );
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "1–21 Sep" for a month-to-date column ending on that date (same month names as the column labels). */
+export const mtdRange = (endIso: string) => {
+  const d = new Date(`${endIso}T00:00:00Z`);
+  return `1–${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+};
+
 export interface PeriodRow {
   key: string;
   label: React.ReactNode;
@@ -96,6 +103,8 @@ export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey 
                 )}
               >
                 {p.label}
+                {/* month-to-date columns: the days they cover (e.g. Sep-26 MTD = 1–21 Sep) */}
+                {(p.kind === "mtd" || p.kind === "ptd") && <span className="block text-[10px] font-normal normal-case tracking-normal opacity-80">{mtdRange(p.endDate)}</span>}
               </th>
             ))}
           </tr>

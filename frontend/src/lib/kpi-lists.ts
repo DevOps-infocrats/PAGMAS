@@ -18,6 +18,11 @@ export const KPI_LISTS: Record<KpiListKind, { unit: "gp" | "block"; linkLabel: s
   "na-gps": { unit: "gp", linkLabel: "View GP list" },
   "one-time-up": { unit: "gp", linkLabel: "View GP list" },
   "hoto-pending-gps": { unit: "gp", linkLabel: "View GP list" },
+  "hoto-pending-blocks": { unit: "block", linkLabel: "View block list" },
+  "all-blocks": { unit: "block", linkLabel: "View block list" },
+  "non-amc-gps": { unit: "gp", linkLabel: "View GP list" },
+  "amc-original-gps": { unit: "gp", linkLabel: "View GP list" },
+  "incremental-gps": { unit: "gp", linkLabel: "View GP list" },
   "removed-gps": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-month": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-mtd": { unit: "gp", linkLabel: "View GP list" },
@@ -65,25 +70,53 @@ export const KPI_LIST_GROUPS = {
     view: "handover",
     tabs: [{ kind: "removed-gps", label: "Converted / closed GPs" }],
   },
-} as const satisfies Record<string, { title: string; view: "states" | "handover"; tabs: readonly { kind: KpiListKind; label: string }[] }>;
+  // Summary (KPIs) cards: HOTO done and not yet done, side by side as tabs.
+  hotoBlocks: {
+    title: "HOTO status of blocks",
+    view: "summary",
+    tabs: [
+      { kind: "hoto-blocks", label: "HOTO done blocks" },
+      { kind: "hoto-pending-blocks", label: "HOTO pending blocks" },
+    ],
+  },
+  hotoGps: {
+    title: "HOTO status of GPs",
+    view: "summary",
+    tabs: [
+      { kind: "hoto-gps", label: "HOTO done GPs" },
+      { kind: "hoto-pending-gps", label: "HOTO pending GPs" },
+    ],
+  },
+  // Block Insights → AMC GPs card: the two kinds of AMC GP side by side.
+  amcGps: {
+    title: "AMC GPs",
+    view: "summary",
+    tabs: [
+      { kind: "amc-original-gps", label: "AMC (original) GPs" },
+      { kind: "incremental-gps", label: "Incremental GPs" },
+    ],
+  },
+} as const satisfies Record<string, { title: string; view: "summary" | "states" | "handover"; tabs: readonly { kind: KpiListKind; label: string }[] }>;
 export type KpiListGroup = keyof typeof KPI_LIST_GROUPS;
 
 export function kpiListGroupFrom(value: string | null | undefined): KpiListGroup | null {
   return value && value in KPI_LIST_GROUPS ? (value as KpiListGroup) : null;
 }
 
-/** Link to a state page (group) opened from the overview tables: the given / first tab, Back returns to that view. */
-export function stateDetailHref(base: string, group: KpiListGroup, kind?: KpiListKind): string {
-  const q = `kind=${kind ?? KPI_LIST_GROUPS[group].tabs[0].kind}&group=${group}&from=states`;
+/** Where a list was opened from – decides the Back button (Circle Overview, that state's Circle Insights,
+ *  the AMC Conversion summary or that block's Block Insights). */
+export type KpiListOrigin = "overview" | "circle" | "states" | "amc" | "block";
+
+/** Link to a tabbed list page (group): the given / first tab. `from` decides where Back returns
+ *  (default: the Circle Overview view of the group). */
+export function stateDetailHref(base: string, group: KpiListGroup, kind?: KpiListKind, from: KpiListOrigin = "states"): string {
+  const q = `kind=${kind ?? KPI_LIST_GROUPS[group].tabs[0].kind}&group=${group}&from=${from}`;
   return `${base}${base.includes("?") ? "&" : "?"}${q}`;
 }
 
-/** Where a list was opened from – decides the Back button (Circle Overview or that state's Circle Insights). */
-export type KpiListOrigin = "overview" | "circle" | "states" | "amc";
-
 /** Link to a list: `base` = hrefTo(KPI_LIST_PATH, filters) of the page that opens it. */
 export function kpiListHref(base: string, kind: KpiListKind, from: KpiListOrigin = "overview"): string {
-  const q = `kind=${kind}${from === "circle" || from === "amc" ? `&from=${from}` : ""}`;
+  const q = `kind=${kind}${from === "circle" || from === "amc" || from === "block" ? `&from=${from}` : ""}`;
   return `${base}${base.includes("?") ? "&" : "?"}${q}`;
 }
 

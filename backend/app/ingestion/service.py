@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..db import SessionLocal, is_postgres
 from ..models import CircleSheetValue, Dataset, DatasetWeek, Gp, GpAmcPlan, GpAvailability, GpAvailabilityPack, MasterBlock, ReportedNumber, ValidationIssue
+from .history import merge_daily
 from .packs import pack, wide_frames
 from .parser import ParsedWorkbook, parse_workbook
 from .workbook import WorkbookError
@@ -58,11 +59,14 @@ def _bulk_insert(db: Session, model: type, rows: list[dict]) -> None:
             cp.write_row(tuple(r.get(c.name, fill[c.name]) for c in cols))
 
 
-def _write(db: Session, ds_id: int, parsed: ParsedWorkbook) -> None:
+def _write(db: Session, ds_id: int, parsed: ParsedWorkbook, file_name: str = "") -> None:
     _bulk_insert(db, Gp, [{**g, "dataset_id": ds_id} for g in parsed.gps])
     # ~800k availability values -> four compressed matrices (row-per-value inserts took ~60 s on PostgreSQL).
     frames = wide_frames(parsed.availability)
     db.execute(insert(GpAvailabilityPack), [pack(ds_id, kind, frame) for kind, frame in frames.items()])
+    # Daily values also go into the cross-upload history (previous month to date needs days later files drop).
+    if parsed.data_as_of is not None:
+        merge_daily(db, frames.get("D"), parsed.data_as_of, file_name)
     _bulk_insert(db, GpAmcPlan, [{**r, "dataset_id": ds_id} for r in parsed.amc_plan])
     if parsed.circle_sheets:
         db.execute(insert(CircleSheetValue), [{**c, "dataset_id": ds_id} for c in parsed.circle_sheets])
@@ -116,7 +120,7 @@ def _run_ingestion(dataset_id: int) -> None:
             # Remove partial rows from a previous attempt of the same dataset (retry).
             for model in DATA_TABLES:
                 db.execute(delete(model).where(model.dataset_id == ds.id))
-            _write(db, ds.id, parsed)
+            _write(db, ds.id, parsed, ds.file_name)
             from .report import save_report
 
             save_report(db, ds, parsed)  # what changed vs the previous upload (never fails the import)

@@ -6,10 +6,10 @@ import { EChart } from "@/components/charts/echart";
 import { useChartTheme } from "@/components/charts/use-chart-theme";
 import { StatusBadge } from "@/components/feedback/badges";
 import { SummaryTable } from "@/components/tables/summary-table";
-import type { ManagementReviewResponse, ReviewBandTable, ReviewKpiRow, ReviewSection, ReviewSummary } from "@/lib/api";
+import type { ManagementReviewResponse, ReviewBandTable, ReviewKpiRow, ReviewSection, ReviewSummary, ReviewWeeklyCell } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatDate, formatPercent } from "@/lib/utils/format";
-import { CircleSelect, Delta, fmt, InsightBar, Panel, PeriodTable, usePresent, type PeriodRow } from "./review-parts";
+import { CircleSelect, Delta, fmt, InsightBar, mtdRange, Panel, PeriodTable, usePresent, type PeriodRow } from "./review-parts";
 
 type R = ManagementReviewResponse;
 
@@ -181,12 +181,9 @@ function ExecutiveContent({ r }: { r: R }) {
                   <span className="block font-normal opacity-80">as of {formatDate(ht.cutoff).slice(0, 6)}</span>
                 </th>
                 <th scope="colgroup" colSpan={ht.weeks.length} className="border-l border-white/20 px-2 py-1.5 text-center text-xs font-semibold">
-                  GPs converted to AMC (per week)
+                  GPs achieved (per week)
                 </th>
-                <th scope="col" rowSpan={2} className="border-l border-white/20 px-2 py-2 text-center text-xs font-semibold">
-                  Ready for Inc
-                </th>
-                <th scope="col" rowSpan={2} className="rounded-tr-lg px-2 py-2 text-center text-xs font-semibold">
+                <th scope="col" rowSpan={2} className="rounded-tr-lg border-l border-white/20 px-2 py-2 text-center text-xs font-semibold">
                   {ht.monthPlanLabel}
                 </th>
               </tr>
@@ -213,8 +210,7 @@ function ExecutiveContent({ r }: { r: R }) {
                         {fmt(v)}
                       </td>
                     ))}
-                    <td className="border-l border-border/70 px-2 py-2 text-center tabular">{fmt(x.readyForIncremental)}</td>
-                    <td className="px-2 py-2 text-center font-semibold tabular">{x.monthPlan == null ? "—" : fmt(x.monthPlan)}</td>
+                    <td className="border-l border-border/70 px-2 py-2 text-center font-semibold tabular">{x.monthPlan == null ? "—" : fmt(x.monthPlan)}</td>
                   </tr>
                 );
               })}
@@ -320,6 +316,8 @@ export function AmcConversionCards({ cc }: { cc: R["targetsPage"]["circleCards"]
 }
 
 const dash = (v: number | null | undefined) => (v == null ? "—" : fmt(v));
+/** Weekly closure: the new target (from the data) is lower than the old, manually set target. */
+const belowOld = (c: ReviewWeeklyCell) => c.targetChange != null && c.targetChange < 0;
 const shortDate = (iso: string) =>
   new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", {
     day: "2-digit",
@@ -362,8 +360,15 @@ function TargetsContent({ r }: { r: R }) {
                   <th scope="col" className="px-4 py-2 text-left text-xs font-semibold">
                     Circle
                   </th>
-                  {[tp.monthLabel, ...rm.futureMonths].map((m) => (
-                    <th key={m} scope="col" className="px-4 py-2 text-center text-xs font-semibold">
+                  <th scope="col" className="px-3 py-2 text-center text-xs font-semibold">
+                    {tp.monthLabel} Plan
+                  </th>
+                  {/* achieved so far in the current month – highlighted; rolls to the next month with the data */}
+                  <th scope="col" className="bg-good px-3 py-2 text-center text-xs font-semibold text-white">
+                    {rm.columns.planAchieved ?? `${tp.monthLabel} MTD Achieved`}
+                  </th>
+                  {rm.futureMonths.map((m) => (
+                    <th key={m} scope="col" className="px-3 py-2 text-center text-xs font-semibold">
                       {m}
                     </th>
                   ))}
@@ -377,9 +382,15 @@ function TargetsContent({ r }: { r: R }) {
                       <th scope="row" className="whitespace-nowrap px-4 py-2 text-left font-semibold">
                         {x.name}
                       </th>
-                      <td className="px-4 py-2 text-center tabular">{dash(x.mtdPlan)}</td>
+                      <td className="px-3 py-2 text-center tabular">{dash(x.mtdPlan)}</td>
+                      <td className={cn("px-3 py-2 text-center tabular font-semibold", total ? "bg-good text-white" : "bg-good-soft text-good-text")}>
+                        {dash(x.planAchieved)}
+                        {x.planAchievedPct != null && (
+                          <span className={cn("ml-1 text-[11px] font-normal", total ? "text-white/85" : "text-muted-foreground")}>({x.planAchievedPct.toFixed(1)}%)</span>
+                        )}
+                      </td>
                       {x.futurePlans.map((v, i) => (
-                        <td key={i} className="px-4 py-2 text-center tabular">
+                        <td key={i} className="px-3 py-2 text-center tabular">
                           {dash(v)}
                           {total && x.futurePlansPartial?.[i] ? "*" : ""}
                         </td>
@@ -391,42 +402,45 @@ function TargetsContent({ r }: { r: R }) {
             </table>
           </div>
           <p className="text-xs text-muted-foreground">
-            {tp.monthLabel} = MTD conversion plan; later months = monthly plans (management plan).
+            {tp.monthLabel} Plan = conversion plan of the month; {tp.monthLabel} MTD Achieved = GPs with an Ach Date from the 1st of the month
+            {tp.achievedAsOf ? ` up to ${shortDate(tp.achievedAsOf)}` : ""} (same count as AMC Conversion), % of the plan; later months = monthly plans.
             {rm.total.futurePlansPartial?.some(Boolean) ? " * Overall is the sum of the circles that have a plan for that month." : ""}
           </p>
         </Panel>
 
-        <Panel title={wk.title} description="Target from the management plan · achieved = GPs whose AMC date falls in the week" className={tight}>
+        <Panel title={wk.title} description="New target = Planned Date in the week (master data file) · old target = manual plan · achieved = Ach Date in the week" className={tight}>
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full table-fixed text-[13px]">
               <caption className="sr-only">{wk.title}</caption>
+              {/* old : new : achieved = 25 : 32 : 43 of each week's width, so "Achieved" and its % always fit */}
+              <colgroup>
+                <col style={{ width: "11%" }} />
+                {wk.weeks.flatMap((w) => [0.25, 0.32, 0.43].map((f, i) => <col key={`${w.id}${i}`} style={{ width: `${(89 / Math.max(1, wk.weeks.length)) * f}%` }} />))}
+              </colgroup>
               <thead className="bg-primary text-primary-foreground">
                 <tr>
-                  <th rowSpan={2} scope="col" className="w-[12%] px-3 py-2 text-left text-[11px] font-semibold">
+                  <th rowSpan={2} scope="col" className="px-3 py-2 text-left text-[11px] font-semibold">
                     Circle
                   </th>
-                  <th rowSpan={2} scope="col" className={th}>
-                    Pending Scope GPs
-                  </th>
-                  <th rowSpan={2} scope="col" className={th}>
-                    Total FRT Count
-                  </th>
                   {wk.weeks.map((w) => (
-                    <th key={w.id} colSpan={2} scope="colgroup" className={th}>
+                    <th key={w.id} colSpan={3} scope="colgroup" className={cn(th, w.current && "bg-primary-foreground/15")}>
                       {w.label}{" "}
                       <span className="font-normal">
                         ({shortDate(w.start)} – {shortDate(w.end)})
                       </span>
-                      <span className="block font-normal opacity-80">{w.status}</span>
+                      <span className="block font-normal opacity-80">{w.current ? `current week · ${w.status}` : w.status}</span>
                     </th>
                   ))}
                 </tr>
                 <tr className="border-t border-white/20">
                   {wk.weeks.flatMap((w) => [
-                    <th key={`${w.id}t`} scope="col" className={th}>
-                      Target
+                    <th key={`${w.id}o`} scope="col" className={cn(th, "font-normal opacity-80")}>
+                      Old
                     </th>,
-                    <th key={`${w.id}a`} scope="col" className={th}>
+                    <th key={`${w.id}t`} scope="col" className={cn(th, "bg-amber-400/90 text-[#3b2a00]")}>
+                      New target
+                    </th>,
+                    <th key={`${w.id}a`} scope="col" className={cn(th, "bg-good text-white")}>
                       Achieved
                     </th>,
                   ])}
@@ -440,14 +454,34 @@ function TargetsContent({ r }: { r: R }) {
                       <th scope="row" className="whitespace-nowrap px-3 py-2 text-left font-semibold">
                         {x.name}
                       </th>
-                      <td className="px-1.5 py-2 text-center tabular">{fmt(x.pendingScope)}</td>
-                      <td className="px-1.5 py-2 text-center tabular">{dash(x.frt)}</td>
                       {x.weeks.flatMap((cell, i) => [
-                        <td key={`${i}t`} className="px-1.5 py-2 text-center tabular">
+                        <td key={`${i}o`} className={cn("px-1 py-2 text-center tabular text-[12px]", total ? "text-primary-foreground/75" : "text-muted-foreground")}>
+                          {cell.oldTarget == null ? "—" : <span className="line-through decoration-1">{fmt(cell.oldTarget)}</span>}
+                        </td>,
+                        <td
+                          key={`${i}t`}
+                          className={cn(
+                            "px-1 py-2 text-center tabular font-semibold",
+                            // new target below the old (manual) target: highlighted red (shortfall in the tooltip)
+                            belowOld(cell)
+                              ? total
+                                ? "bg-critical text-white"
+                                : "bg-critical-soft text-critical-text"
+                              : total
+                                ? "bg-amber-400/90 text-[#3b2a00]"
+                                : "bg-amber-50 text-[#7a4a00] dark:bg-amber-400/10 dark:text-amber-300",
+                          )}
+                          title={belowOld(cell) ? `New target is ${fmt(-(cell.targetChange as number))} below the old target (${fmt(cell.oldTarget)})` : undefined}
+                        >
                           {dash(cell.target)}
                         </td>,
-                        <td key={`${i}a`} className="px-1.5 py-2 text-center tabular" title={cell.achievedPct == null ? undefined : `${cell.achievedPct}% of target`}>
+                        <td
+                          key={`${i}a`}
+                          className={cn("px-1 py-2 text-center tabular font-semibold", total ? "bg-good text-white" : "bg-good-soft text-good-text")}
+                          title={cell.achievedPct == null ? undefined : `${cell.achievedPct}% of the new target`}
+                        >
                           {dash(cell.achieved)}
+                          {cell.achievedPct != null && <span className={cn("block text-[10px] font-normal", total ? "text-white/85" : "text-muted-foreground")}>{cell.achievedPct.toFixed(0)}%</span>}
                         </td>,
                       ])}
                     </tr>
@@ -456,6 +490,12 @@ function TargetsContent({ r }: { r: R }) {
               </tbody>
             </table>
           </div>
+          <p className="text-xs text-muted-foreground">
+            <span className="mr-1 inline-block size-2 rounded-sm bg-amber-400 align-middle" aria-hidden /> New target = GPs whose Planned Date falls in the week (from the data, updates with every new file) ·{" "}
+            <span className="line-through">Old</span> = manually set target · <span className="mr-1 inline-block size-2 rounded-sm bg-good align-middle" aria-hidden /> Achieved = GPs whose Ach
+            Date falls in the week, % of the new target · <span className="mr-1 inline-block size-2 rounded-sm bg-critical align-middle" aria-hidden /> Red = new target lower than the
+            old target.
+          </p>
         </Panel>
       </div>
       <Panel title="How the figures are calculated" description={tp.planSource ? `Plan source: ${tp.planSource}` : undefined} className={tight}>
@@ -628,7 +668,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
         <MissingPage page="Critical KPI – Blocks & GPs" />
       ) : (
         <>
-          <Panel title={ct.title} description="Months = monthly AMC columns · TD = previous month to the same day · MTD = month to date · weeks = source W-nn columns · * One-Time-Up from the circle sheet">
+          <Panel title={ct.title} description="Months = monthly AMC columns · MTD = month to date from daily data (previous month: same days) · weeks = source W-nn columns · Penalty prone = block average < 90% · * One-Time-Up from the circle sheet">
             <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full min-w-[760px] text-[13px]">
                 <caption className="sr-only">{ct.title}</caption>
@@ -641,8 +681,9 @@ export function BlocksGpsTab({ r }: { r: R }) {
                       Scope / Target
                     </th>
                     {ct.columns.map((col) => (
-                      <th key={col.key} scope="col" className={cn("px-3 py-2 text-center text-xs font-semibold", col.kind === "mtd" && "bg-white/10")}>
+                      <th key={col.key} scope="col" className={cn("px-3 py-2 text-center text-xs font-semibold", (col.kind === "mtd" || col.kind === "ptd") && "bg-white/10")}>
                         {col.label}
+                        {(col.kind === "mtd" || col.kind === "ptd") && <span className="block text-[10px] font-normal opacity-85">{mtdRange(col.endDate)}</span>}
                       </th>
                     ))}
                   </tr>
@@ -657,7 +698,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
                       <td className="px-3 py-2 text-center font-semibold tabular">{row.scope == null ? "" : fmt(row.scope)}</td>
                       {row.values.map((v, i) => (
                         <td key={ct.columns[i].key} className={cn("px-3 py-2 text-center tabular", ct.columns[i].kind === "mtd" && "font-semibold")}>
-                          {/* circle-sheet rows have no previous-month-TD figure: shown as "—", never estimated */}
+                          {/* circle-sheet rows have no previous-month-MTD figure: shown as "—", never estimated */}
                           {v == null && ct.columns[i].kind === "ptd" && row.source !== "computed" ? <span className="text-subtle-foreground">—</span> : fmt(v)}
                         </td>
                       ))}

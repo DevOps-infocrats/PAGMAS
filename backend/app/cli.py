@@ -3,6 +3,7 @@
   python -m app.cli create-user --email you@company.com --name "Your Name" --role admin
   python -m app.cli import-file "../data/raw/Master Data V8.2 Daily track 09-10-26.xlsb"
   python -m app.cli reconcile
+  python -m app.cli backfill-daily "../data/raw/Master Data V8.2 Daily track 14-10-26.xlsb"
 """
 
 from __future__ import annotations
@@ -47,6 +48,28 @@ def import_cmd(args: argparse.Namespace) -> int:
     return 0 if ds.status in {"SUCCESS", "PARTIAL"} else 1
 
 
+def backfill_daily_cmd(args: argparse.Namespace) -> int:
+    """Put the daily availability of an (older) workbook into the cross-upload history only – no dataset is
+    created and the active data is untouched. Days the history already has from a newer file are kept."""
+    from .ingestion.history import history_months, merge_daily
+    from .ingestion.packs import wide_frames
+    from .ingestion.parser import parse_workbook
+
+    path = Path(args.path).resolve()
+    parsed = parse_workbook(path)
+    if parsed.data_as_of is None:
+        print("No data date found in the file.")
+        return 1
+    daily = wide_frames(parsed.availability)["D"]
+    with SessionLocal() as db:
+        months = merge_daily(db, daily, parsed.data_as_of, path.name)
+        db.commit()
+        print(f"{path.name}: data as of {parsed.data_as_of}, {daily.shape[1]} days x {daily.shape[0]} GPs merged into {', '.join(months)}")
+        for m in history_months(db):
+            print(f"  {m['month']}: {m['days']} days (newest file data date {m['dataAsOf']}, {m['sourceFile']})")
+    return 0
+
+
 def reconcile_cmd(_: argparse.Namespace) -> int:
     from .analytics.reconcile import reconcile
     from .analytics.store import get_store
@@ -71,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("import-file")
     i.add_argument("path")
     i.set_defaults(fn=import_cmd)
+    b = sub.add_parser("backfill-daily")
+    b.add_argument("path")
+    b.set_defaults(fn=backfill_daily_cmd)
     r = sub.add_parser("reconcile")
     r.set_defaults(fn=reconcile_cmd)
     args = p.parse_args(argv)

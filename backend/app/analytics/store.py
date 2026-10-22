@@ -24,6 +24,7 @@ import pandas as pd
 from sqlalchemy import insert, select, text
 
 from ..db import SessionLocal, engine
+from ..ingestion.history import history_frame
 from ..ingestion.packs import KINDS, pack, unpack, wide_frames
 from ..models import Dataset, DatasetWeek, GpAmcPlan, GpAvailabilityPack, MasterBlock, ReportedNumber
 
@@ -85,6 +86,8 @@ class Store:
     master_blocks: pd.DataFrame
     # GP-wise AMC conversion plan (index gp_code): category, planned_date, ach_date, current_status, letter_status, letter_date
     amc_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # days in `daily` that come from the upload history (earlier files), not from the active file
+    history_days: list[dt.date] = field(default_factory=list)
     _week_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _memo: OrderedDict[tuple, Any] = field(default_factory=OrderedDict)
@@ -298,13 +301,25 @@ def _load() -> Store:
     gps["revised"] = gps["np_status"].isna()
 
     idx = gps.index
+    daily = _wide(avail["D"], idx, as_date=True)
+    # Days the active file no longer carries (e.g. 1–15 Sep in a file whose daily columns start on 16 Sep) are
+    # taken from the history of earlier uploads, so "previous month to date" can still be calculated.
+    history_days: list[dt.date] = []
+    if len(daily.columns):
+        with SessionLocal() as db:
+            hist = history_frame(db, min(daily.columns))
+        if not hist.empty:
+            hist = hist.reindex(idx).astype(float)
+            history_days = list(hist.columns)
+            daily = pd.concat([hist, daily], axis=1).sort_index(axis=1)
     return Store(
         dataset_id=meta[0],
         file_name=meta[1],
         imported_at=meta[2],
         data_as_of=meta[3],
         gps=gps,
-        daily=_wide(avail["D"], idx, as_date=True),
+        daily=daily,
+        history_days=history_days,
         weekly=_wide(avail["W"], idx),
         monthly=_wide(avail["M"], idx),
         monthly_amc=_wide(avail["MA"], idx),

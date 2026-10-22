@@ -78,7 +78,7 @@ export function SidebarContent({
               ) : (
                 <div className="mx-auto mb-2 h-px w-6 bg-sidebar-border" aria-hidden />
               )}
-              <ul className="space-y-0.5">
+              <ul className="space-y-1">
                 {items.map((item) => {
                   const active = isActive(pathname, item.href);
                   const menu = subMenus[item.href];
@@ -93,8 +93,9 @@ export function SidebarContent({
                       aria-current={active ? "page" : undefined}
                       aria-label={collapsed ? item.label : undefined}
                       className={cn(
-                        "relative flex h-9 items-center gap-3 rounded-md text-sm transition-colors",
-                        collapsed ? "justify-center" : "px-3",
+                        "relative flex items-center gap-3 rounded-md text-sm transition-colors",
+                        // two-line labels (e.g. "AMC Conversion Plan vs Execution") grow and keep breathing room
+                        collapsed ? "h-9 justify-center" : "min-h-9 px-3 py-1.5",
                         menu?.open && !collapsed && "pr-8",
                         active ? "bg-primary-soft font-medium text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                       )}

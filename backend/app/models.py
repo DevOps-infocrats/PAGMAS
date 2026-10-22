@@ -265,3 +265,22 @@ class MasterBlock(Base):
 
 
 Index("ix_gp_dataset_block", Gp.dataset_id, Gp.block_code)
+
+
+class GpDailyHistory(Base):
+    """Daily GP availability kept across uploads, one compressed GP × day matrix per calendar month (same
+    format as GpAvailabilityPack). The daily file drops its oldest day columns over time (the 21-10-26
+    file starts on 16 Sep), so the previous month to date ("Sep-26 MTD") needs days that only earlier
+    uploads had. Each import merges its daily columns in: for a day present in both, the file with the
+    later data date wins; days the new file does not have are kept. Not tied to a dataset, so pruning
+    old datasets never removes it."""
+
+    __tablename__ = "gp_daily_history"
+
+    month: Mapped[str] = mapped_column(String(7), primary_key=True)  # "2026-09"
+    gp_codes: Mapped[str] = mapped_column(Text)
+    periods: Mapped[str] = mapped_column(Text)  # ISO dates of the month present in the matrix
+    values: Mapped[bytes] = mapped_column(LargeBinary)
+    data_as_of: Mapped[date] = mapped_column(Date)  # data date of the newest file merged into this month
+    source_file: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

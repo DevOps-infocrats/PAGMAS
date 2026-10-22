@@ -1,6 +1,7 @@
 """AMC Conversion – Plan vs Execution page.
 
-Plan      = the management plan (data/review_plan.json): monthly conversion plans and weekly closure targets.
+Plan      = monthly plans: the master data file's GP-wise plan where it has one, else data/review_plan.json
+            (review_targets.effective_plan); weekly closure targets: data/review_plan.json.
 Execution = GPs whose AMC date falls inside the month / week (AMC + incremental), counted up to the cutoff
             (the last date with data, capped at the reporting week's end) – the same rule as the
             Management Review "Target & Achievement" page, whose current-month roadmap is reused here.
@@ -21,7 +22,7 @@ import pandas as pd
 from .metrics import r2
 from .review import _circle_list
 from .review_periods import reporting_periods
-from .review_targets import PLAN_FILE, _month_label, _sum, load_plan, targets_page
+from .review_targets import PLAN_FILE, _month_label, _sum, effective_plan, targets_page
 from .store import Store
 from .views import week_json
 
@@ -40,7 +41,7 @@ def amc_conversion(store: Store, week_code: str, compare_code: str) -> dict[str,
     D = p.cutoff
     circles = _circle_list(store)
     tp = targets_page(store, p, circles)
-    plan, _ = load_plan()
+    plan, _, _ = effective_plan(store)  # monthly plan: file Planned Dates where present, else review_plan.json
     g = store.gps
     amc = pd.to_datetime(g["amc_date"], errors="coerce")
     masks = {c["id"]: (g["circle"] == c["key"]).to_numpy() for c in circles}

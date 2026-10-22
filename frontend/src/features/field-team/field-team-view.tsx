@@ -124,6 +124,7 @@ function SummaryView() {
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-subtle-foreground">Field team – each person counted once</h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <StatCard
+            compact
             loading={L}
             layout="split"
             icon={UserCog}
@@ -145,6 +146,7 @@ function SummaryView() {
             linkLabel="View area managers"
           />
           <StatCard
+            compact
             loading={L}
             layout="split"
             icon={Cable}
@@ -166,6 +168,7 @@ function SummaryView() {
             linkLabel="View splicers"
           />
           <StatCard
+            compact
             loading={L}
             layout="split"
             icon={Network}
@@ -180,6 +183,7 @@ function SummaryView() {
             linkLabel="View FRT teams"
           />
           <StatCard
+            compact
             loading={L}
             layout="split"
             icon={Users}

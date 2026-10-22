@@ -14,7 +14,7 @@ import { api, type KpiListKind } from "@/lib/api";
 import { KPI_LIST_PATH, stateDetailHref, type KpiListGroup } from "@/lib/kpi-lists";
 import { OVERVIEW_PATH, OVERVIEW_VIEWS, overviewViewFrom, type OverviewViewId } from "@/lib/overview-views";
 import { formatDate } from "@/lib/utils/format";
-import { AreaManagerTable, ConvertedGps, HotoProgress, NetworkHealth, StateComparison } from "./overview-charts";
+import { ConvertedGps, HotoProgress, NetworkHealth } from "./overview-charts";
 import { OverviewKpis } from "./overview-kpis";
 
 /**
@@ -91,26 +91,18 @@ export function OverviewView() {
   );
 }
 
-type ViewProps = Parameters<typeof StateComparison>[0];
+type ViewProps = Parameters<typeof NetworkHealth>[0];
 
 function ViewContent({ id, props }: { id: OverviewViewId; props: ViewProps }) {
   const { data, loading } = props;
   if (id === "summary") return <OverviewKpis s={data?.summary} states={data?.stateDetails} asOf={data?.asOf} loading={loading} />;
-  if (id === "states")
-    return (
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <StateComparison {...props} />
-        <NetworkHealth {...props} />
-      </div>
-    );
-  if (id === "handover")
-    return (
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <HotoProgress {...props} />
-        <ConvertedGps {...props} />
-      </div>
-    );
-  return <AreaManagerTable {...props} />;
+  if (id === "states") return <NetworkHealth {...props} />;
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <HotoProgress {...props} />
+      <ConvertedGps {...props} />
+    </div>
+  );
 }
 
 /** Summary only: one line that points to the other views, so nothing on the overview goes unnoticed. */

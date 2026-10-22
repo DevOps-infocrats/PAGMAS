@@ -265,9 +265,13 @@ class Deck:
         title: str | None = None,
         name: str | None = None,
         max_bottom: float = TABLE_BOTTOM,
+        col_fills: dict[int, tuple[str, str, str]] | None = None,
+        cell_fills: dict[tuple[int, int], tuple[str, str]] | None = None,
     ):
         """Blue header rows, banded body. rows are body rows; a body cell may be (text, colorHex).
-        Body rows shrink (never below ~0.3") so the table ends above `max_bottom`."""
+        Body rows shrink (never below ~0.3") so the table ends above `max_bottom`.
+        col_fills = {column: (header fill, body fill, body text colour)} to highlight whole columns;
+        cell_fills = {(body row, column): (fill, text colour)} to flag single cells (wins over everything else)."""
         title_rows = 1 if title else 0
         head_total = header_h * (title_rows + len(header))
         if rows and y + head_total + row_h * len(rows) > max_bottom:
@@ -315,7 +319,8 @@ class Deck:
         for hr, hrow in enumerate(header):
             for c in range(n_cols):
                 txt = hrow[c] if c < len(hrow) else ""
-                put(title_rows + hr, c, txt, BRAND, WHITE, True, PP_ALIGN.CENTER if c else first_col_align, hs)
+                head_fill = col_fills[c][0] if col_fills and c in col_fills else BRAND
+                put(title_rows + hr, c, txt, head_fill, WHITE, True, PP_ALIGN.CENTER if c else first_col_align, hs)
         base = title_rows + len(header)
         for ri, row in enumerate(rows):
             total = bool(total_rows and ri in total_rows)
@@ -327,8 +332,15 @@ class Deck:
                     cell, color = cell
                 if cell_colors and (ri, c) in cell_colors and not total:
                     color = cell_colors[(ri, c)]
-                bold = bool(total) or bool(bold_rows and ri in bold_rows) or c == 0
-                put(base + ri, c, cell, fill, color, bold, first_col_align if c == 0 else PP_ALIGN.CENTER, size)
+                cell_fill = fill
+                if col_fills and c in col_fills:
+                    cell_fill = col_fills[c][0] if total else col_fills[c][1]
+                    if not total:
+                        color = col_fills[c][2]
+                if cell_fills and (ri, c) in cell_fills:
+                    cell_fill, color = cell_fills[(ri, c)]
+                bold = bool(total) or bool(bold_rows and ri in bold_rows) or c == 0 or bool(col_fills and c in col_fills)
+                put(base + ri, c, cell, cell_fill, color, bold, first_col_align if c == 0 else PP_ALIGN.CENTER, size)
         for r0, c0, r1, c1 in merges or []:
             tbl.cell(r0, c0).merge(tbl.cell(r1, c1))
         return gf
@@ -543,14 +555,14 @@ def _executive(d: Deck):
     rows, colors = [], {}
     last_col = 1 + len(weeks)  # column of the reporting week
     for x in [*ht["rows"], ht["total"]]:
-        rows.append([x["name"], n(x["currentAmc"]), *[n(v) for v in x["weeklyConversions"]], n(x["readyForIncremental"]), "—" if x["monthPlan"] is None else n(x["monthPlan"])])
+        rows.append([x["name"], n(x["currentAmc"]), *[n(v) for v in x["weeklyConversions"]], "—" if x["monthPlan"] is None else n(x["monthPlan"])])
     for ri in range(len(rows) - 1):
         colors[(ri, last_col)] = BRAND
     tw = 11.0
     k = len(weeks)
-    widths = [1.75, 1.45] + [(tw - 1.75 - 1.45 - 1.4 - 1.3) / max(1, k)] * k + [1.4, 1.3]
-    group = ["Circle", f"Current AMC ({date_text(ht['cutoff'])[:6]})", "GPs converted to AMC (per week)"] + [""] * (k - 1) + ["Ready for Inc", ht["monthPlanLabel"]]
-    names = ["", ""] + [w["label"] for w in weeks] + ["", ""]
+    widths = [1.75, 1.45] + [(tw - 1.75 - 1.45 - 1.3) / max(1, k)] * k + [1.3]
+    group = ["Circle", f"Current AMC ({date_text(ht['cutoff'])[:6]})", "GPs achieved (per week)"] + [""] * (k - 1) + [ht["monthPlanLabel"]]
+    names = ["", ""] + [w["label"] for w in weeks] + [""]
     d.table(
         slide,
         MARGIN,
@@ -564,7 +576,7 @@ def _executive(d: Deck):
         header_size=11,
         total_rows={len(rows) - 1},
         cell_colors=colors,
-        merges=[(1, 0, 2, 0), (1, 1, 2, 1), (1, 2, 1, 1 + k), (1, 2 + k, 2, 2 + k), (1, 3 + k, 2, 3 + k)],
+        merges=[(1, 0, 2, 0), (1, 1, 2, 1), (1, 2, 1, 1 + k), (1, 2 + k, 2, 2 + k)],
         title=ht["title"],
         max_bottom=8.75,
         name="Key highlights",
@@ -622,12 +634,17 @@ def _targets(d: Deck):
     )
     _targets_amc_cards(d, slide, 1.8, 1.45)
 
-    # GP AMC Conversion & Liquidation Roadmap – monthly plan only (open month + next months)
+    # GP AMC Conversion & Liquidation Roadmap – open month plan, achieved so far (highlighted), next months' plans
     fut = rm["futureMonths"]
-    months = [tp["monthLabel"], *fut]
+    ml = tp["monthLabel"]
+    head = [f"{ml} Plan", rm["columns"].get("planAchieved", f"{ml} MTD Achieved"), *fut]
+
+    def achieved_text(x: dict[str, Any]) -> str:
+        v, pc = x.get("planAchieved"), x.get("planAchievedPct")
+        return "—" if v is None else (f"{n(v)} ({pc:.1f}%)" if pc is not None else n(v))
 
     def plan_row(x: dict[str, Any], total: bool = False) -> list[Any]:
-        cells = ["—" if x["mtdPlan"] is None else n(x["mtdPlan"])]
+        cells = ["—" if x["mtdPlan"] is None else n(x["mtdPlan"]), achieved_text(x)]
         for i, v in enumerate(x["futurePlans"]):
             partial = total and x.get("futurePlansPartial", [False] * len(fut))[i]
             cells.append("—" if v is None else f"{n(v)}{'*' if partial else ''}")
@@ -636,51 +653,80 @@ def _targets(d: Deck):
     rows = [plan_row(x) for x in rm["rows"]] + [plan_row(rm["total"], total=True)]
     lw = 6.9
     d.text(slide, MARGIN, 3.42, lw, 0.38, rm["title"], size=16, bold=True, color=BRAND_DARK, name="Roadmap title")
+    first, plan_w, ach_w = 1.45, 1.0, 1.6
+    rest = (lw - first - plan_w - ach_w) / max(1, len(fut))
     d.table(
         slide,
         MARGIN,
         3.85,
-        [1.7] + [(lw - 1.7) / len(months)] * len(months),
-        [["Circle", *months]],
+        [first, plan_w, ach_w] + [rest] * len(fut),
+        [["Circle", *head]],
         rows,
         row_h=0.5,
-        header_h=0.55,
+        header_h=0.6,
         size=14,
+        header_size=12,
         total_rows={len(rows) - 1},
-        title="Monthly AMC conversion plan",
+        title="Monthly AMC conversion plan vs achieved",
         name="Liquidation roadmap",
+        col_fills={2: (GOOD, "E3F4E8", GOOD)},
     )
 
-    # Weekly closure targets
+    # Weekly closure targets: per week old (manual) target, new target (from the data, highlighted) and achieved
     weeks = wk["weeks"]
-    head1 = ["Circle", "Pending Scope GPs", "Total FRT Count"] + sum([[f"{w['label']} ({dt.date.fromisoformat(w['start']):%d %b}–{dt.date.fromisoformat(w['end']):%d %b}) · {w['status']}", ""] for w in weeks], [])
-    head2 = ["", "", ""] + ["Target", "Achieved"] * len(weeks)
+
+    def week_head(w: dict[str, Any]) -> str:
+        span = f"{dt.date.fromisoformat(w['start']):%d %b}–{dt.date.fromisoformat(w['end']):%d %b}"
+        return f"{w['label']} ({span}) · {'current week' if w.get('current') else w['status']}"
+
+    head1 = ["Circle"] + sum([[week_head(w), "", ""] for w in weeks], [])
+    head2 = [""] + ["Old", "New target", "Achieved"] * len(weeks)
+
+    def ach_text(cell: dict[str, Any]) -> str:
+        if cell["achieved"] is None:
+            return "—"
+        return f"{n(cell['achieved'])} ({cell['achievedPct']:.0f}%)" if cell.get("achievedPct") is not None else n(cell["achieved"])
+
     wrows = []
-    for x in [*wk["rows"], wk["total"]]:
-        line = [x["name"], n(x["pendingScope"]), n(x["frt"])]
-        for cell in x["weeks"]:
-            line += ["—" if cell["target"] is None else n(cell["target"]), "—" if cell["achieved"] is None else n(cell["achieved"])]
+    flagged: dict[tuple[int, int], tuple[str, str]] = {}  # new target below the old target → red cell
+    for ri, x in enumerate([*wk["rows"], wk["total"]]):
+        line: list[Any] = [x["name"]]
+        for wi, cell in enumerate(x["weeks"]):
+            old = "—" if cell.get("oldTarget") is None else n(cell["oldTarget"])
+            new = "—" if cell["target"] is None else n(cell["target"])
+            change = cell.get("targetChange")
+            if change is not None and change < 0:
+                flagged[(ri, 2 + 3 * wi)] = (BAD, WHITE) if x["id"] == "all" else ("FBE3E0", BAD)
+            line += [old if x["id"] == "all" else (old, MUTED), new, ach_text(cell)]
         wrows.append(line)
     x1 = MARGIN + lw + 0.35
     ww = SLIDE_W - MARGIN - x1
-    cw = (ww - 1.3 - 1.25 - 1.15) / max(1, 2 * len(weeks))
-    merges = [(1, 0, 2, 0), (1, 1, 2, 1), (1, 2, 2, 2)] + [(1, 3 + 2 * i, 1, 4 + 2 * i) for i in range(len(weeks))]
+    circle_w = 1.3
+    unit = (ww - circle_w) / max(1, len(weeks)) / 2.1  # old : new : achieved = 0.55 : 0.7 : 0.85
+    widths = [circle_w] + [unit * 0.55, unit * 0.7, unit * 0.85] * len(weeks)
+    merges = [(1, 0, 2, 0)] + [(1, 1 + 3 * i, 1, 3 + 3 * i) for i in range(len(weeks))]
+    fills = {}
+    for i in range(len(weeks)):
+        fills[2 + 3 * i] = ("C98A00", "FFF4D6", "7A4A00")  # new target – amber
+        fills[3 + 3 * i] = (GOOD, "E3F4E8", GOOD)  # achieved – green
     d.table(
         slide,
         x1,
         3.85,
-        [1.3, 1.25, 1.15] + [cw] * (2 * len(weeks)),
+        widths,
         [head1, head2],
         wrows,
         row_h=0.5,
         header_h=0.45,
-        size=13,
+        size=12 if len(weeks) <= 5 else 11,
         header_size=10,
         total_rows={len(wrows) - 1},
         merges=merges,
         title=wk["title"],
         max_bottom=7.3,
         name="Weekly closure targets",
+        col_fills=fills,
+        cell_fills=flagged,
     )
 
     note = d.box(slide, MARGIN, 7.55, SLIDE_W - 2 * MARGIN, 2.95, fill=PANEL, line=BRAND_LIGHT, radius=0.05, name="Target notes")
@@ -741,7 +787,7 @@ def _critical_all(d: Deck):
     labels = _period_labels(r)
     slide = d.new_slide("Critical KPIs – All Circles", "Monthly & weekly performance  |  AMC GPs and blocks", notes="* One-Time-Up figures come from the circle sheets (external report).")
     rows, _ = _kpi_rows(sec)
-    wl, wc = 3.75, 0.95
+    wl, wc = 3.75, min(0.95, 8.55 / max(1, len(labels)))  # 9 period columns at 0.95"; more columns share that width
     d.table(slide, MARGIN, 1.95, [wl] + [wc] * len(labels), [["Parameter"] + labels], rows, row_h=0.5, header_h=0.62, size=13, title="Monthly & Weekly Performance – All Circles", name="KPI table")
     # circle comparison for the selected week: rows = KPIs, column pairs = circles (value, change)
     wk = f"WK-{r['week']['number']}"
@@ -787,7 +833,8 @@ def _blocks_gps(d: Deck, c: dict[str, Any]):
         f"Critical KPI – Blocks & GPs {c['name']}",
         "Monthly & weekly performance  |  GPs & blocks",
         notes="Months = workbook monthly AMC columns; MTD = month to date from daily data; weeks = source W-nn columns. "
-        "Penalty-prone = block mean AMC availability below 85%. One-Time-Up rows come from the circle sheet. "
+        "Penalty-prone = block mean AMC availability below 90%. Previous-month MTD (e.g. Sep-26 MTD) = 1st to the same day of the previous month. "
+        "One-Time-Up rows come from the circle sheet. "
         "Incremental GPs TD = incremental GPs whose AMC date falls in the column's period.",
     )
     labels = [col["label"] for col in ct["columns"]]
@@ -965,31 +1012,8 @@ PER_CIRCLE = {"blocks-gps": _blocks_gps, "block-network": _block_uptime, "gp-net
 FIXED = {"summary": _executive, "targets": _targets, "operations": _operations, "kpis": _critical_all, "notes": _data_notes}
 
 
-def _without_previous_td(review: dict[str, Any]) -> dict[str, Any]:
-    """The deck keeps its column layout: drop the previous-month-TD column ("Sep-26 TD", kind "ptd")
-    that the web page shows, from the periods and every table aligned with them. Works on copies."""
-    keep = [i for i, p in enumerate(review["periods"]) if p["kind"] != "ptd"]
-    if len(keep) == len(review["periods"]):
-        return review
-    pick = lambda xs: [xs[i] for i in keep]  # noqa: E731
-
-    def bands(t: dict[str, Any]) -> dict[str, Any]:
-        return {**t, "bands": [{**b, "values": pick(b["values"])} for b in t["bands"]], **{k: pick(t[k]) for k in ("scope", "total", "na", "belowPenalty", "average")}}
-
-    sections = {}
-    for sid, sec in review["sections"].items():
-        sec = {**sec, "kpis": [{**k, "values": pick(k["values"])} for k in sec["kpis"]], "gpUptime": bands(sec["gpUptime"]), "blockUptime": bands(sec["blockUptime"])}
-        ct = sec.get("critical")
-        if ct:
-            ck = [i for i, col in enumerate(ct["columns"]) if col["kind"] != "ptd"]
-            sec["critical"] = {**ct, "columns": [ct["columns"][i] for i in ck], "rows": [{**row, "values": [row["values"][i] for i in ck]} for row in ct["rows"]]}
-        sections[sid] = sec
-    return {**review, "periods": pick(review["periods"]), "sections": sections}
-
-
 def render_review_deck(review: dict[str, Any], generated_by: str, sections: list[str] | None = None, circle_ids: list[str] | None = None) -> bytes:
     """Cover, index, the chosen sections (default: all) for the chosen circles (default: all), thank-you."""
-    review = _without_previous_td(review)
     chosen = [s for s in SECTIONS if sections is None or s in sections]
     circles = [c for c in review["circles"] if circle_ids is None or c["id"] in circle_ids]
     if not chosen:

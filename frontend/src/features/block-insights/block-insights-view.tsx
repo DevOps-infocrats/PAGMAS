@@ -15,7 +15,7 @@ import { api, type BlockInsightsResponse } from "@/lib/api";
 import { BLOCK_PATH, BLOCK_VIEWS, blockViewFrom, type BlockViewId } from "@/lib/block-views";
 import { formatDate } from "@/lib/utils/format";
 import type { GpSnapshot } from "@/types";
-import { BlockUptimeSection, OltDistribution } from "./block-charts";
+import { BlockUptimeSection } from "./block-charts";
 import { BlockKpis } from "./block-kpis";
 
 /**
@@ -94,7 +94,7 @@ export function BlockInsightsView() {
       ) : (
         <section aria-label={view.title} className="space-y-4">
           <p className="text-sm text-muted-foreground">{view.hint}</p>
-          <ViewContent id={viewId} data={data} loading={loading} onOpenGp={openGp} />
+          <ViewContent id={viewId} data={data} loading={loading} />
           {viewId === "summary" && <MoreViews viewHref={viewHref} />}
         </section>
       )}
@@ -102,10 +102,9 @@ export function BlockInsightsView() {
   );
 }
 
-function ViewContent({ id, data, loading, onOpenGp }: { id: BlockViewId; data: BlockInsightsResponse | undefined; loading: boolean; onOpenGp: (gp: GpSnapshot) => void }) {
-  if (id === "summary") return <BlockKpis s={data?.summary} loading={loading} groups={data?.amcGroups} gps={data?.gps ?? []} onOpenGp={onOpenGp} />;
-  if (id === "gp-uptime") return <BlockUptimeSection data={data} loading={loading} />;
-  return <OltDistribution data={data} loading={loading} />;
+function ViewContent({ id, data, loading }: { id: BlockViewId; data: BlockInsightsResponse | undefined; loading: boolean }) {
+  if (id === "summary") return <BlockKpis s={data?.summary} loading={loading} />;
+  return <BlockUptimeSection data={data} loading={loading} />;
 }
 
 /** Summary only: one line that points to the other views, so nothing on this page goes unnoticed. */

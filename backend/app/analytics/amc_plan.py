@@ -391,3 +391,106 @@ def amc_plan_timeline(store: Store, week_code: str) -> dict[str, Any]:
         ],
         "warnings": warnings,
     }
+
+
+# ---------------------------------------------------------------- area manager breakdown (one state)
+
+NOT_ASSIGNED = "Not assigned"
+VACANT = "Vacant (no AM)"
+
+
+def _am_names(store: Store, idx: pd.Index) -> tuple[pd.Series, str, str | None]:
+    """Area manager of each GP: the Escalation Matrix (latest upload, complete per GP) when there is one, else the
+    master data's AM Name. Returns (names, source, source file). Blank -> "Not assigned", "Vacant…" -> VACANT."""
+    from .escalation import NoEscalationData, _frame, is_vacant
+
+    try:
+        meta, esc = _frame(store)
+        raw = esc["am_name"].reindex(idx)
+        source, file_name = "escalation", meta.get("fileName") or meta.get("file_name")
+    except NoEscalationData:
+        raw = store.gps.loc[idx, "am_name"]
+        source, file_name = "master", store.file_name
+
+    def label(v: Any) -> str:
+        if not isinstance(v, str) or not v.strip() or v.strip() == "0":
+            return NOT_ASSIGNED
+        return VACANT if is_vacant(v) else " ".join(v.split())
+
+    return raw.map(label), source, file_name
+
+
+def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict[str, Any]:
+    """Area-manager-wise view of one state for AMC Conversion → Monthly / Weekly Plan vs Execution.
+
+    Per area manager: blocks and existing GPs (GP Wise Data), AMC / non-AMC GPs as of the reporting week's end (same
+    rule as the KPI cards), and – from the GP-wise plan block – the current month's target (Planned Date in the month)
+    and achievement (Ach Date from the 1st up to the data date), and the selected week's target / achievement.
+    Same windows and masks as the page's state table, so the AM rows add up to the state's figures."""
+    g = store.gps
+    sel = (g["circle_id"] == circle_id).to_numpy()
+    if not sel.any():
+        raise KeyError(circle_id)
+    sub = g[sel]
+    names, source, file_name = _am_names(store, sub.index)
+    wf = store.week_frame(week_code).loc[sub.index]
+    win = windows(store, week_code)
+    code, number, _, _ = _week_of(store, win.week_start)
+
+    p = store.amc_plan
+    has_plan = not p.empty
+    plan = p[p.index.isin(sub.index)] if has_plan else p
+    plan_am = names.reindex(plan.index) if has_plan else pd.Series([], dtype=object)
+    month_t = _between(plan["planned_date"], win.month_start, win.month_end) if has_plan else np.zeros(0, dtype=bool)
+    month_a = _between(plan["ach_date"], win.month_start, win.month_as_of) if has_plan else np.zeros(0, dtype=bool)
+    week_t = _between(plan["planned_date"], win.week_start, win.week_end) if has_plan else np.zeros(0, dtype=bool)
+    week_a = _between(plan["ach_date"], win.week_start, min(win.week_end, win.as_of)) if has_plan else np.zeros(0, dtype=bool)
+
+    def plan_count(mask: np.ndarray, am: str) -> int:
+        return int((mask & (plan_am.to_numpy() == am)).sum()) if has_plan else 0
+
+    rows = []
+    for am, idx in sub.groupby(names).groups.items():
+        part = sub.loc[idx]
+        amc = wf.loc[idx, "amc"]
+        row = {
+            "name": am,
+            "assigned": am not in (NOT_ASSIGNED, VACANT),
+            "blocks": int(part["block_id"].nunique()),
+            "existingGps": len(idx),
+            "amcGps": int(amc.sum()),
+            "nonAmcGps": int((part["revised"] & ~amc).sum()),
+            "monthTarget": plan_count(month_t, am),
+            "monthAchieved": plan_count(month_a, am),
+            "weekTarget": plan_count(week_t, am),
+            "weekAchieved": plan_count(week_a, am),
+        }
+        rows.append(row)
+    # real names A–Z, then Vacant / Not assigned
+    rows.sort(key=lambda r: (not r["assigned"], r["name"] == NOT_ASSIGNED, r["name"].lower()))
+    keys = ("existingGps", "amcGps", "nonAmcGps", "monthTarget", "monthAchieved", "weekTarget", "weekAchieved")
+    total = {"name": "Total", "assigned": True, "blocks": int(sub["block_id"].nunique()), **{k: sum(r[k] for r in rows) for k in keys}}
+    for r in [*rows, total]:
+        r["monthAchievedPct"] = _pct(r["monthAchieved"], r["monthTarget"])
+        r["weekAchievedPct"] = _pct(r["weekAchieved"], r["weekTarget"])
+
+    warnings = []
+    if not has_plan:
+        warnings.append("The active file has no GP-wise AMC plan (Planned Date / Ach Date) – targets and achievements are 0.")
+    if source == "master":
+        warnings.append("No Escalation Matrix uploaded – area managers are taken from the master data's AM Name column (many GPs are not assigned there).")
+    unassigned = sum(r["existingGps"] for r in rows if not r["assigned"])
+    if unassigned:
+        warnings.append(f"{unassigned:,} GPs have no area manager in the {'Escalation Matrix' if source == 'escalation' else 'master data'} (shown as {NOT_ASSIGNED} / {VACANT}).")
+    state = str(sub["circle"].iloc[0]).title()
+    return {
+        "circle": {"id": circle_id, "name": state},
+        "amSource": source,
+        "amSourceFile": file_name,
+        "month": {"id": f"{win.month_start:%Y-%m}", "label": f"{win.month_start:%b %Y}", "start": win.month_start.isoformat(), "end": win.month_end.isoformat(), "asOf": win.month_as_of.isoformat()},
+        "week": {"id": code, "number": number, "label": f"WK-{number}", "start": win.week_start.isoformat(), "end": win.week_end.isoformat(), "asOf": min(win.week_end, win.as_of).isoformat(), "complete": win.week_end <= win.as_of},
+        "amcAsOf": min(store.week(week_code).end, store.data_as_of).isoformat(),
+        "rows": rows,
+        "total": total,
+        "warnings": warnings,
+    }

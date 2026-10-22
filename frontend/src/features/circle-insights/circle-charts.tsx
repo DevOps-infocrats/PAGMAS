@@ -130,6 +130,19 @@ export function PeriodGrid({
 
 type TopN = "10" | "20" | "50" | "all";
 
+/** Columns of the Block-wise GP Count table (dots use the same colours as the AMC GPs card). */
+const GP_COUNT_COLS: { label: string; color?: string }[] = [
+  { label: "#" },
+  { label: "Block" },
+  { label: "District" },
+  { label: "Total" },
+  { label: "Existing" },
+  { label: "New" },
+  { label: "AMC", color: "var(--series-2)" },
+  { label: "Incremental", color: "var(--series-4)" },
+  { label: "Non-AMC", color: "var(--na)" },
+];
+
 export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: boolean; onOpen: (b: BlockSummary) => void }) {
   const [top, setTop] = useState<TopN>("10");
   const all = useMemo(() => {
@@ -143,7 +156,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
   return (
     <ChartCard
       title="Block-wise GP Count"
-      description="GPs per block (existing + new from the Master Block sheet), largest first · select a block to open it"
+      description="GPs per block (existing + new from the Master Block sheet) with their AMC status, largest first · select a block to open it"
       loading={loading}
       empty={!loading && all.length === 0}
       actions={
@@ -165,13 +178,33 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
       }
     >
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[560px] text-sm">
-          <caption className="sr-only">Block-wise GP count</caption>
+        <table className="w-full text-sm">
+          <caption className="sr-only">Block-wise GP count with AMC status</caption>
           <thead>
+            {/* group row: what each block of numbers means */}
+            <tr className="bg-muted text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <th scope="colgroup" colSpan={3} className="px-3 pt-2.5 text-left" />
+              <th scope="colgroup" colSpan={3} className="border-l border-border px-3 pt-2.5 text-center">
+                GPs
+              </th>
+              <th scope="colgroup" colSpan={3} className="border-l border-border px-3 pt-2.5 text-center">
+                AMC status (revised existing GPs)
+              </th>
+            </tr>
             <tr className="border-b border-border bg-muted">
-              {["#", "Block", "District", "Total GPs", "Existing GPs", "New GPs"].map((h, i) => (
-                <th key={h} scope="col" className={cn("px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground", i >= 3 ? "text-right" : "text-left", i === 0 && "w-12")}>
-                  {h}
+              {GP_COUNT_COLS.map((c, i) => (
+                <th
+                  key={c.label}
+                  scope="col"
+                  className={cn(
+                    "whitespace-nowrap px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground",
+                    i >= 3 ? "text-right" : "text-left",
+                    i === 0 && "w-10",
+                    (i === 3 || i === 6) && "border-l border-border",
+                  )}
+                >
+                  {c.color && <span className="mr-1.5 inline-block size-2 rounded-full align-middle" style={{ background: c.color }} aria-hidden />}
+                  {c.label}
                 </th>
               ))}
             </tr>
@@ -186,29 +219,38 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
                 onKeyDown={(e) => e.key === "Enter" && onOpen(b)}
                 className="cursor-pointer border-b border-border/70 last:border-0 hover:bg-accent/60 focus-visible:bg-accent"
               >
-                <td className="px-4 py-2.5 text-subtle-foreground">{i + 1}</td>
-                <td className="px-4 py-2.5 font-medium">
+                <td className="px-3 py-2.5 text-subtle-foreground">{i + 1}</td>
+                <td className="px-3 py-2.5 font-medium">
                   {b.name} <span className="ml-1 text-xs font-normal text-subtle-foreground">{b.code}</span>
                 </td>
-                <td className="px-4 py-2.5 text-muted-foreground">{b.districtName}</td>
-                <td className="px-4 py-2.5 text-right font-semibold">{formatCount(existing(b) + fresh(b))}</td>
-                <td className="px-4 py-2.5 text-right">{formatCount(existing(b))}</td>
-                <td className="px-4 py-2.5 text-right">{formatCount(b.newGps ?? null)}</td>
+                <td className="px-3 py-2.5 text-muted-foreground">{b.districtName}</td>
+                <td className="border-l border-border/70 px-3 py-2.5 text-right font-semibold">{formatCount(existing(b) + fresh(b))}</td>
+                <td className="px-3 py-2.5 text-right">{formatCount(existing(b))}</td>
+                <td className="px-3 py-2.5 text-right">{formatCount(b.newGps ?? null)}</td>
+                <td className="border-l border-border/70 px-3 py-2.5 text-right">{formatCount(b.amcOriginalGps ?? null)}</td>
+                <td className="px-3 py-2.5 text-right">{formatCount(b.incrementalGps ?? null)}</td>
+                <td className={cn("px-3 py-2.5 text-right", (b.nonAmcGps ?? 0) > 0 && "font-medium text-warning-text")}>{formatCount(b.nonAmcGps ?? null)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot className="tabular">
             <tr className="border-t border-border bg-muted/50 font-semibold">
-              <td className="px-4 py-2.5" colSpan={3}>
+              <td className="px-3 py-2.5" colSpan={3}>
                 Total ({formatCount(rows.length)} of {formatCount(all.length)} blocks)
               </td>
-              <td className="px-4 py-2.5 text-right">{formatCount(sum((b) => existing(b) + fresh(b)))}</td>
-              <td className="px-4 py-2.5 text-right">{formatCount(sum(existing))}</td>
-              <td className="px-4 py-2.5 text-right">{formatCount(sum(fresh))}</td>
+              <td className="border-l border-border/70 px-3 py-2.5 text-right">{formatCount(sum((b) => existing(b) + fresh(b)))}</td>
+              <td className="px-3 py-2.5 text-right">{formatCount(sum(existing))}</td>
+              <td className="px-3 py-2.5 text-right">{formatCount(sum(fresh))}</td>
+              <td className="border-l border-border/70 px-3 py-2.5 text-right">{formatCount(sum((b) => b.amcOriginalGps ?? 0))}</td>
+              <td className="px-3 py-2.5 text-right">{formatCount(sum((b) => b.incrementalGps ?? 0))}</td>
+              <td className="px-3 py-2.5 text-right">{formatCount(sum((b) => b.nonAmcGps ?? 0))}</td>
             </tr>
           </tfoot>
         </table>
       </div>
+      <p className="mt-2 px-1 text-xs text-subtle-foreground">
+        AMC + Incremental + Non-AMC = revised existing GPs of the block (existing GPs minus those converted to NP / closed / deducted). New GPs are not yet in the GP-wise data, so they have no AMC status.
+      </p>
     </ChartCard>
   );
 }

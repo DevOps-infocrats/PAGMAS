@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..analytics import views
 from ..analytics.amc_conversion import amc_conversion
-from ..analytics.amc_plan import amc_plan_summary, amc_plan_timeline, targets_stamp
+from ..analytics.amc_plan import amc_plan_area_managers, amc_plan_summary, amc_plan_timeline, targets_stamp
 from ..analytics.drilldown import KpiKind, SortKey, kpi_list, kpi_xlsx
 from ..analytics.review import management_review
 from ..analytics.review_periods import latest_completed_week
@@ -215,8 +215,10 @@ PPTX_MEDIA = "application/vnd.openxmlformats-officedocument.presentationml.prese
 
 
 def _review(store: Store, db: Session, week: str, compare: str) -> dict[str, Any]:
-    """Review payload, memoised per dataset + period (the web page and the deck share it)."""
-    key = (store.dataset_id, week, compare)
+    """Review payload, memoised per dataset + period + plan-file version (the web page and the deck share it).
+    A new master data file (new dataset) or a saved change to review_plan.json is picked up without a restart."""
+    plan = get_settings().data_dir / PLAN_FILE
+    key = (store.dataset_id, week, compare, plan.stat().st_mtime if plan.exists() else None)
     with _review_lock:
         if key in _review_cache:
             _review_cache.move_to_end(key)
@@ -306,6 +308,17 @@ def amc_plan(week: OptWeekId = None, date: OptDate = None, store: Store = Depend
     week; `date` = as of a picked day (its month and Fri–Thu week, capped at the data date)."""
     w, _ = _period(store, week, None)
     return store.memo(("amc-plan", w, date), lambda: amc_plan_summary(store, w, date))
+
+
+@router.get("/amc-plan/area-managers")
+def amc_plan_by_area_manager(circle: Annotated[str, Query(pattern=r"^[a-z0-9-]{1,40}$")], week: OptWeekId = None, store: Store = Depends(get_store)) -> dict:
+    """One state's AMC plan vs achievement per area manager (Escalation Matrix AM names): current month and the
+    selected week. Not memoised: a new Escalation Matrix upload must show at once (the join is cached there)."""
+    w, _ = _period(store, week, None)
+    try:
+        return amc_plan_area_managers(store, w, circle)
+    except KeyError:
+        raise HTTPException(404, "Unknown state") from None
 
 
 @router.get("/amc-plan/timeline")

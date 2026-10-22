@@ -142,6 +142,50 @@ const LIST_UI: Record<KpiListKind, { cols: Col[]; sorts: { value: KpiListSort; l
     ],
     sorts: [{ value: "name", label: "Name A–Z" }],
   },
+  "hoto-pending-blocks": {
+    cols: [
+      ...BLOCK_COLS,
+      { key: "totalGps", header: "GPs in block", numeric: true, render: (r) => formatCount(r.totalGps ?? null) },
+      { key: "revisedGps", header: "Revised existing GPs", numeric: true, render: (r) => formatCount(r.revisedGps ?? null) },
+      { key: "hoto", header: "HOTO", render: () => <span className="whitespace-nowrap font-medium text-warning-text">Not done</span> },
+    ],
+    sorts: [{ value: "name", label: "Name A–Z" }],
+  },
+  "all-blocks": {
+    cols: [
+      ...BLOCK_COLS,
+      { key: "totalGps", header: "GPs in block", numeric: true, render: (r) => formatCount(r.totalGps ?? null) },
+      { key: "hotoGps", header: "HOTO done GPs", numeric: true, render: (r) => formatCount(r.hotoGps ?? null) },
+      { key: "amcGps", header: "AMC GPs", numeric: true, render: (r) => formatCount(r.amcGps ?? null) },
+    ],
+    sorts: [{ value: "name", label: "Name A–Z" }],
+  },
+  "non-amc-gps": {
+    cols: [
+      ...GP_COLS,
+      {
+        key: "hotoStatus",
+        header: "HOTO",
+        render: (r) => <span className={cn("whitespace-nowrap font-medium", r.hotoStatus === "Done" ? "text-good-text" : "text-warning-text")}>{r.hotoStatus ?? "—"}</span>,
+      },
+      { key: "hotoDate", header: "HOTO date", render: (r) => <span className="whitespace-nowrap">{date(r.hotoDate)}</span> },
+    ],
+    sorts: [{ value: "name", label: "Name A–Z" }],
+  },
+  "amc-original-gps": {
+    cols: [...GP_COLS, AMC_DATE, MTD],
+    sorts: [
+      { value: "name", label: "Name A–Z" },
+      { value: "value-desc", label: "Name Z–A" },
+    ],
+  },
+  "incremental-gps": {
+    cols: [...GP_COLS, AMC_DATE, MTD],
+    sorts: [
+      { value: "name", label: "Name A–Z" },
+      { value: "value-desc", label: "Name Z–A" },
+    ],
+  },
   "removed-gps": {
     cols: [
       ...GP_COLS,
@@ -191,10 +235,11 @@ export function KpiListView() {
     );
   }
   const group = kpiListGroupFrom(params.get("group"));
-  return <KpiList kind={kind} fromCircle={params.get("from") === "circle"} fromAmc={params.get("from") === "amc"} group={group && KPI_LIST_GROUPS[group].tabs.some((t) => t.kind === kind) ? group : null} />;
+  const from = params.get("from");
+  return <KpiList kind={kind} fromCircle={from === "circle"} fromAmc={from === "amc"} fromBlockParam={from === "block"} group={group && KPI_LIST_GROUPS[group].tabs.some((t) => t.kind === kind) ? group : null} />;
 }
 
-function KpiList({ kind, fromCircle, fromAmc, group }: { kind: KpiListKind; fromCircle: boolean; fromAmc: boolean; group: KpiListGroup | null }) {
+function KpiList({ kind, fromCircle, fromAmc, fromBlockParam, group }: { kind: KpiListKind; fromCircle: boolean; fromAmc: boolean; fromBlockParam: boolean; group: KpiListGroup | null }) {
   const { filters, period, navigate, hrefTo } = useFilters();
   const meta = useMeta();
   const [searchText, setSearchText] = useState("");
@@ -258,10 +303,24 @@ function KpiList({ kind, fromCircle, fromAmc, group }: { kind: KpiListKind; from
   const statesHref = `${overviewBase}${overviewBase.includes("?") ? "&" : "?"}view=${groupView?.id ?? "states"}`;
   // Lists opened from the AMC Conversion summary cards go back there (same week).
   const amcHref = summary(hrefTo(AMC_PATH, { circle: undefined, district: undefined, block: undefined, gp: undefined }));
-  const backHref = group ? statesHref : fromAmc ? amcHref : backToCircle ? circleHref : overviewHref;
-  const backLabel = groupView ? `Back to ${groupView.title}` : fromAmc ? "Back to AMC Conversion" : backToCircle ? `Back to ${stateName ?? "Circle Insights"}` : "Back to Circle Overview";
-  const isHoto = ["hoto-gps", "hoto-blocks", "hoto-pending-gps", "existing-gps", "new-gp-blocks", "removed-gps"].includes(kind) || kind.startsWith("amc-");
-  const tabHref = (k: KpiListKind) => stateDetailHref(hrefTo(KPI_LIST_PATH), group!, k);
+  // Lists opened from a Block Insights card go back to that block's summary (same week, same block).
+  const fromBlock = fromBlockParam && !!filters.block;
+  const blockName = meta?.blocks.find((b) => b.id === filters.block)?.name;
+  const blockHref = summary(hrefTo("/dashboard/block-insights", { circle: filters.circle, district: filters.district, block: filters.block, gp: undefined }));
+  const backHref = fromBlock ? blockHref : group ? statesHref : fromAmc ? amcHref : backToCircle ? circleHref : overviewHref;
+  const backLabel = fromBlock
+    ? `Back to ${blockName ?? "Block Insights"}`
+    : groupView
+      ? `Back to ${groupView.title}`
+      : fromAmc
+        ? "Back to AMC Conversion"
+        : backToCircle
+          ? `Back to ${stateName ?? "Circle Insights"}`
+          : "Back to Circle Overview";
+  // Title scope of a tabbed page: the block it was opened from, else the state (or all states).
+  const scopeName = fromBlock ? `${blockName ?? "Block"} block` : (stateName ?? "All states");
+  const isHoto = ["hoto-gps", "hoto-blocks", "hoto-pending-gps", "hoto-pending-blocks", "all-blocks", "non-amc-gps", "existing-gps", "new-gp-blocks", "removed-gps"].includes(kind) || (kind.startsWith("amc-") && kind !== "amc-original-gps"); // amc-original-gps shows MTD availability
+  const tabHref = (k: KpiListKind) => stateDetailHref(hrefTo(KPI_LIST_PATH), group!, k, fromBlock ? "block" : "states");
   const insightsHref = hrefTo("/dashboard/circle-insights", { circle: filters.circle, district: undefined, block: undefined, gp: undefined });
 
   const from = d && d.total ? (d.page - 1) * d.pageSize + 1 : 0;
@@ -274,7 +333,9 @@ function KpiList({ kind, fromCircle, fromAmc, group }: { kind: KpiListKind; from
         <div className="space-y-0.5 px-4 py-2.5">
           <Breadcrumbs
             items={
-              group
+              fromBlock
+                ? [{ label: "Circle Overview", href: overviewHref }, { label: `${blockName ?? "Block"} block`, href: blockHref }, { label: group ? KPI_LIST_GROUPS[group].title : (d?.title ?? "GP list") }]
+                : group
                 ? [{ label: "Circle Overview", href: overviewHref }, { label: groupView!.title, href: statesHref }, { label: `${stateName ?? "All states"} – ${KPI_LIST_GROUPS[group].title}` }]
                 : fromAmc
                   ? [{ label: "AMC Conversion Plan vs Execution", href: amcHref }, { label: d?.title ?? "GP list" }]
@@ -283,11 +344,11 @@ function KpiList({ kind, fromCircle, fromAmc, group }: { kind: KpiListKind; from
           />
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-lg font-semibold leading-tight">
-              {group ? `${stateName ?? "All states"} – ${KPI_LIST_GROUPS[group].title}` : (d?.title ?? "Loading list…")}
+              {group ? `${scopeName} – ${KPI_LIST_GROUPS[group].title}` : fromBlock ? `${scopeName} – ${d?.title ?? "GP list"}` : (d?.title ?? "Loading list…")}
               {d && (
                 <span className="text-[13px] font-normal text-muted-foreground">
                   {d.valueTotal != null ? `${formatCount(d.valueTotal)} new GPs in ${formatCount(d.total)} blocks` : `${formatCount(d.total)} ${noun}`}
-                  {stateName ? ` in ${stateName}` : ""} · Week {d.week.number} · {isHoto ? "as of" : "MTD up to"} {formatDate(d.asOf)}
+                  {fromBlock ? "" : stateName ? ` in ${stateName}` : ""} · Week {d.week.number} · {isHoto ? "as of" : "MTD up to"} {formatDate(d.asOf)}
                 </span>
               )}
             </h1>

@@ -179,17 +179,33 @@ def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], car
     codes = [w.code for w in store.weeks]
     weeks = store.weeks[max(0, codes.index(p.week.code) - 3) : codes.index(p.week.code) + 1]
     # Month plan (management plan file) for the cutoff month.
-    from .review_targets import load_plan  # local import: review_targets imports this module
+    from .review_targets import effective_plan  # local import: review_targets imports this module
 
-    plan, _ = load_plan()
+    plan, _, _ = effective_plan(store)  # file Planned Dates where present, else review_plan.json
     month_plan = (plan.monthlyPlan.get(want) if plan else None) or {}
+    # Weekly columns = GPs achieved in the week by Ach Date (GP-wise plan block of the master data file), counted
+    # exactly like AMC Conversion → week achieved: Ach Date in the Fri–Thu week, up to the plan cutoff
+    # (amc_plan.windows). None when the file has no GP-wise plan.
+    from .amc_plan import windows
+
+    plan_rows = store.amc_plan
+    ach_cutoff = windows(store, p.week.code).as_of
+    ach_state = None if plan_rows.empty else store.gps["circle"].reindex(plan_rows.index).to_numpy()
+    ach_dates = None if plan_rows.empty else plan_rows["ach_date"].to_numpy()
+
+    def achieved_in(circle_key: str, w: Week) -> int | None:
+        if ach_state is None:
+            return None
+        end = min(w.end, ach_cutoff)
+        return int(sum(1 for d, c in zip(ach_dates, ach_state) if isinstance(d, dt.date) and w.start <= d <= end and c == circle_key))
+
     rows = []
     for c, card in zip(circles, cards):
         mask = (store.gps["circle"] == c["key"]).to_numpy()
         amc_now = int((amc_dt[mask] <= pd.Timestamp(p.cutoff)).sum())
         target = t["values"].get(c["key"].upper()) if t else None
         under_amc = (amc_dt <= pd.Timestamp(p.cutoff)).to_numpy()
-        weekly = [int(((amc_dt[mask] >= pd.Timestamp(w.start)) & (amc_dt[mask] <= pd.Timestamp(w.end))).sum()) for w in weeks]
+        weekly = [achieved_in(c["key"], w) for w in weeks]
         rows.append(
             {
                 "id": c["id"],
@@ -215,7 +231,7 @@ def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], car
         "code": "ALL",
         "name": "Overall",
         "currentAmc": sum(r["currentAmc"] for r in rows),
-        "weeklyConversions": [sum(r["weeklyConversions"][i] for r in rows) for i in range(len(weeks))],
+        "weeklyConversions": [None if any(r["weeklyConversions"][i] is None for r in rows) else sum(r["weeklyConversions"][i] for r in rows) for i in range(len(weeks))],
         "readyForIncremental": sum(r["readyForIncremental"] for r in rows),
         "monthPlan": sum(v for v in plans if v is not None) if any(v is not None for v in plans) else None,
     }
@@ -227,8 +243,8 @@ def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], car
         "cutoff": p.cutoff.isoformat(),
         "total": total,
         "basis": (
-            f"Current AMC = GPs under AMC as of {p.cutoff:%d %b %Y}; WK columns = GPs converted to AMC in that week (AMC + incremental, by AMC date); "
-            f"Ready for Inc = AMC / incremental letter submitted but not yet under AMC; {plan_label} Plan = management plan."
+            f"Current AMC = GPs under AMC as of {p.cutoff:%d %b %Y} (AMC date); WK columns = GPs achieved in that week by Ach Date (GP-wise plan of the master data file, up to {ach_cutoff:%d %b %Y}) – same as AMC Conversion; "
+            f"{plan_label} Plan = management plan."
         ),
         "targetMonth": month,
         "targetLabel": f"{label} target" if label else "Target",

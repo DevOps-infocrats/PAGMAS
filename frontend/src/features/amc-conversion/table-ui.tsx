@@ -14,7 +14,7 @@ export function TableCard({ title, description, actions, children }: { title: st
     <Card className="flex min-w-0 flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3 px-5 pt-4 sm:flex-nowrap">
         <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-semibold">{title}</h3>
+          <h3 className="text-base font-bold text-[#0A3A5F] dark:text-[#7cc4ea]">{title}</h3>
           {description && <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -57,9 +57,9 @@ export function Td({ children, group, current, className }: { children: React.Re
 }
 
 /** Row label (first column) of a body row or of the total row. */
-export function RowHead({ children, total }: { children: React.ReactNode; total?: boolean }) {
+export function RowHead({ children, total, className }: { children: React.ReactNode; total?: boolean; className?: string }) {
   return (
-    <th scope="row" className={cn("sticky left-0 z-10 whitespace-nowrap px-3 py-2.5 text-left", total ? "bg-muted font-semibold" : "bg-card font-medium")}>
+    <th scope="row" className={cn("sticky left-0 z-10 whitespace-nowrap px-3 py-2.5 text-left", total ? "bg-muted font-semibold" : "bg-card font-medium", className)}>
       {children}
     </th>
   );

@@ -1,11 +1,11 @@
 "use client";
 
-import { Cable, CircleCheckBig, Users, Wrench } from "lucide-react";
+import { Cable, CircleCheckBig, CircleDashed, Users, Wrench } from "lucide-react";
 import { StatCard } from "@/components/kpi/stat-card";
+import { useFilters } from "@/hooks/use-filters";
 import type { BlockInsightsResponse } from "@/lib/api";
+import { KPI_LIST_PATH, KPI_LISTS, kpiListHref, stateDetailHref } from "@/lib/kpi-lists";
 import { formatCount } from "@/lib/utils/format";
-import type { GpSnapshot } from "@/types";
-import { AmcGpList } from "./amc-gp-list";
 
 type Summary = NonNullable<BlockInsightsResponse["summary"]>;
 
@@ -20,29 +20,22 @@ const pct = (a: number, b: number) =>
   b ? `${((a / b) * 100).toFixed(1)}%` : "NA";
 
 /**
- * Four headline KPIs of one block, two per row:
+ * Five headline KPIs of one block:
  *  1. GPs (existing / new / revised) and fibre route (BSNL / BBNL)
- *  2. HOTO done (done / pending) and AMC (AMC / incremental / non-AMC)
+ *  2. HOTO done (done / pending), AMC (AMC / incremental / non-AMC) and Non-AMC GPs
+ * AMC GPs and Non-AMC GPs open the GP lists of this block; Back returns here.
  */
-export function BlockKpis({
-  s,
-  loading,
-  groups,
-  gps,
-  onOpenGp,
-}: {
-  s?: Summary;
-  loading: boolean;
-  groups?: BlockInsightsResponse["amcGroups"];
-  gps: GpSnapshot[];
-  onOpenGp: (gp: GpSnapshot) => void;
-}) {
+export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
   const L = loading || !s;
+  const { hrefTo } = useFilters();
+  // The URL already holds this block's circle / district / block, so the lists open for this block only.
+  const listBase = hrefTo(KPI_LIST_PATH, { gp: undefined });
   const notApplicable = s ? s.existingGps - s.revisedExisting : 0;
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <StatCard
+          compact
           loading={L}
           layout="split"
           icon={Users}
@@ -90,6 +83,7 @@ export function BlockKpis({
           ]}
         />
         <StatCard
+          compact
           loading={L}
           layout="split"
           icon={Cable}
@@ -129,10 +123,10 @@ export function BlockKpis({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         <StatCard
+          compact
           loading={L}
-          layout="split"
           icon={CircleCheckBig}
           tone="var(--good)"
           label="HOTO Done"
@@ -176,8 +170,8 @@ export function BlockKpis({
           ]}
         />
         <StatCard
+          compact
           loading={L}
-          layout="split"
           icon={Wrench}
           tone="var(--series-2)"
           label="AMC GPs"
@@ -188,7 +182,8 @@ export function BlockKpis({
               ? `of ${formatCount(s.revisedExisting)} · ${s.amcPct.toFixed(1)}%`
               : "GPs"
           }
-          caption={<AmcGpList groups={groups} gps={gps} onOpenGp={onOpenGp} />}
+          href={stateDetailHref(listBase, "amcGps", undefined, "block")}
+          linkLabel="View AMC & incremental GPs"
           total={s?.revisedExisting}
           bar={[
             {
@@ -223,6 +218,23 @@ export function BlockKpis({
               showShare: true,
             },
           ]}
+        />
+        <StatCard
+          compact
+          loading={L}
+          icon={CircleDashed}
+          tone="var(--na)"
+          label="Non-AMC GPs"
+          info="Revised existing GPs of the block (not converted to NP / closed / deducted) that are not under AMC on the reporting week end. Same figure as the Non-AMC part of the AMC GPs card."
+          value={formatCount(s?.nonAmcGps)}
+          unit={s ? `of ${formatCount(s.revisedExisting)} GPs` : "GPs"}
+          caption={
+            s && s.revisedExisting
+              ? `${pct(s.nonAmcGps, s.revisedExisting)} of revised existing GPs not yet under AMC`
+              : undefined
+          }
+          href={kpiListHref(listBase, "non-amc-gps", "block")}
+          linkLabel={KPI_LISTS["non-amc-gps"].linkLabel}
         />
       </div>
     </div>
