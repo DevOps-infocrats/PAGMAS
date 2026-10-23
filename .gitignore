@@ -16,3 +16,9 @@
 # Generated decks / reports with client figures stay local (the generator script is committed)
 /docs/*.pptx
 /docs/*.pdf
+
+#devops
+deployment/
+docker-compose.yml
+
+
