@@ -23,3 +23,7 @@
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# devops
+deployment/
+docker-compose.yml
