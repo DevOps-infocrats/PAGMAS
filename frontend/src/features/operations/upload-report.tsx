@@ -78,7 +78,7 @@ function ReportBody({ r }: { r: Report }) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="space-y-3 p-5">
-          <h3 className="text-[15px] font-semibold">Columns & sheets</h3>
+          <h3 className="text-[15px] font-bold text-subheading">Columns & sheets</h3>
           <Changes label="New columns" items={r.columns.added} tone="good" compared={r.columns.compared} empty="none" />
           <Changes label="Columns missing (were in the previous file)" items={r.columns.removed} tone="critical" compared={r.columns.compared} empty="none" />
           <Changes label="Optional fields not found (shown as NA)" items={r.columns.missingOptional} tone="warning" compared empty="none – every field was found" />
@@ -91,7 +91,7 @@ function ReportBody({ r }: { r: Report }) {
         </Card>
 
         <Card className="space-y-3 p-5">
-          <h3 className="text-[15px] font-semibold">Weeks, states & data quality</h3>
+          <h3 className="text-[15px] font-bold text-subheading">Weeks, states & data quality</h3>
           <Changes label="New weeks" items={r.weeks.added} tone="good" compared={r.weeks.compared} empty="none" />
           <p className="text-sm text-muted-foreground">Weeks in the file: {r.weeks.current.join(", ") || "—"}</p>
           <table className="w-full text-[13px]">
@@ -173,7 +173,7 @@ function Changes({ label, items, tone, compared, empty }: { label: string; items
 function GpList({ title, rows, total, dates }: { title: string; rows: (UploadReportGp & { from?: string | null; to?: string | null })[]; total: number; dates?: boolean }) {
   return (
     <Card className="space-y-2 p-5">
-      <h3 className="text-[15px] font-semibold">{title}</h3>
+      <h3 className="text-[15px] font-bold text-subheading">{title}</h3>
       <table className="w-full text-[13px]">
         <caption className="sr-only">{title}</caption>
         <thead>

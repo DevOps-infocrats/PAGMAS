@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, status
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from ..analytics.reconcile import reconcile
@@ -21,7 +21,8 @@ from ..db import get_db
 from ..ingestion.escalation import create_import, detect_kind, run_escalation_import
 from ..ingestion.service import create_dataset, run_ingestion, sha256_of
 from ..ingestion.workbook import ALLOWED_SUFFIXES, WorkbookError, check_file_signature
-from ..models import AuditLog, Dataset, EscalationImport, ImportReport, User, ValidationIssue
+from ..mail.audience import Assignment, assignments_of, check_assignments, location_tree, locations
+from ..models import AuditLog, Dataset, EscalationImport, ImportReport, User, UserScope, ValidationIssue
 from ..security.core import hash_password, password_problems
 from ..security.deps import CurrentUser, audit, require_admin
 
@@ -90,8 +91,23 @@ def run_issues(
     }
 
 
+def _already_imported(db: Session, sha: str, upload_dir: Path) -> str | None:
+    """Message for an upload whose exact content was imported successfully before and whose stored upload still exists
+    (files imported from data/raw by the CLI / start-up do not count)."""
+    root = upload_dir.resolve()
+    for model, label, ok in ((Dataset, "run", ("SUCCESS", "PARTIAL")), (EscalationImport, "Escalation Matrix import", ("SUCCESS",))):
+        for rec in db.scalars(select(model).where(model.sha256 == sha, model.status.in_(ok)).order_by(model.id.desc())):
+            p = Path(rec.stored_path).resolve()
+            if p.is_relative_to(root) and p.exists():
+                when = f" on {rec.started_at:%d %b %Y %H:%M}" if rec.started_at else ""
+                active = "it is the active one" if rec.is_active else "it is not the active one"
+                return f"This file was already imported as {label} #{rec.id} ('{rec.file_name}'{when}; {active}) - nothing to do."
+    return None
+
+
 @router.post("/ingestion/upload", status_code=status.HTTP_202_ACCEPTED)
-async def upload(file: UploadFile, request: Request, background: BackgroundTasks, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+def upload(file: UploadFile, request: Request, background: BackgroundTasks, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Sync endpoint (runs in the thread pool): hashing, sniffing and DB work never block the event loop."""
     s = get_settings()
     original = Path(file.filename or "upload").name
     suffix = Path(original).suffix.lower()
@@ -102,36 +118,42 @@ async def upload(file: UploadFile, request: Request, background: BackgroundTasks
     target = s.upload_dir / f"{uuid.uuid4().hex}{suffix}"  # never trust the client file name for paths
     size = 0
     limit = s.upload_max_mb * 1024 * 1024
-    with target.open("wb") as out:
-        while chunk := await file.read(1 << 20):
-            size += len(chunk)
-            if size > limit:
-                out.close()
-                target.unlink(missing_ok=True)
-                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"File exceeds {s.upload_max_mb} MB")
-            out.write(chunk)
-    try:
-        check_file_signature(target)
-        # Master data or Escalation Matrix – decided by the content, so either file can be uploaded alone or together.
-        kind = await run_in_threadpool(detect_kind, target)
-    except WorkbookError as exc:
-        target.unlink(missing_ok=True)
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from None
-    if kind is None:
-        target.unlink(missing_ok=True)
-        raise HTTPException(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            f"{safe_display}: not recognised – expected the master data workbook (sheet 'GP Wise Data') or the Escalation Matrix (columns GP Code, FRT Code, FE Name …).",
-        )
-    if kind == "escalation":
-        imp = create_import(db, target, safe_display, sha256_of(target), user.id)
-        audit(db, "upload_escalation", request, user.id, f"{safe_display} ({size} bytes) -> escalation import {imp.id}")
-        background.add_task(run_escalation_import, imp.id)
-        return {"id": f"esc-{imp.id}", "status": imp.status, "fileName": imp.file_name, "kind": "escalation"}
-    ds = create_dataset(db, target, safe_display, user.id)
-    audit(db, "upload", request, user.id, f"{safe_display} ({size} bytes) -> dataset {ds.id}")
-    background.add_task(_run_locked, ds.id)
-    return {"id": str(ds.id), "status": ds.status, "fileName": ds.file_name, "kind": "master"}
+    stored = False
+    try:  # any failure (too large, rejected, duplicate, disconnect, crash) removes the partial / unused file
+        with target.open("wb") as out:
+            while chunk := file.file.read(1 << 20):
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"File exceeds {s.upload_max_mb} MB")
+                out.write(chunk)
+        try:
+            check_file_signature(target)
+            sha = sha256_of(target)
+            if dup := _already_imported(db, sha, s.upload_dir):
+                raise HTTPException(status.HTTP_409_CONFLICT, f"{safe_display}: {dup}")
+            # Master data or Escalation Matrix – decided by the content, so either file can be uploaded alone or together.
+            kind = detect_kind(target)
+        except WorkbookError as exc:
+            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from None
+        if kind is None:
+            raise HTTPException(
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                f"{safe_display}: not recognised – expected the master data workbook (sheet 'GP Wise Data') or the Escalation Matrix (columns GP Code, FRT Code, FE Name …).",
+            )
+        if kind == "escalation":
+            imp = create_import(db, target, safe_display, sha, user.id)
+            stored = True
+            audit(db, "upload_escalation", request, user.id, f"{safe_display} ({size} bytes) -> escalation import {imp.id}")
+            background.add_task(run_escalation_import, imp.id)
+            return {"id": f"esc-{imp.id}", "status": imp.status, "fileName": imp.file_name, "kind": "escalation"}
+        ds = create_dataset(db, target, safe_display, user.id, sha)
+        stored = True
+        audit(db, "upload", request, user.id, f"{safe_display} ({size} bytes) -> dataset {ds.id}")
+        background.add_task(_run_locked, ds.id)
+        return {"id": str(ds.id), "status": ds.status, "fileName": ds.file_name, "kind": "master"}
+    finally:
+        if not stored:
+            target.unlink(missing_ok=True)
 
 
 @router.get("/ingestion/escalation")
@@ -172,10 +194,16 @@ def retry(run_id: int, request: Request, background: BackgroundTasks, user: Curr
     ds = db.get(Dataset, run_id)
     if not ds:
         raise HTTPException(404, "Run not found")
+    if ds.status != "FAILED":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Only failed imports can be retried – run #{run_id} is {ds.status}.")
     if not Path(ds.stored_path).exists():
-        return {"accepted": False, "message": "The original file is no longer available. Please upload it again."}
-    ds.status = "PROCESSING"
+        raise HTTPException(status.HTTP_410_GONE, "The original file is no longer available. Please upload it again.")
+    claimed = db.execute(
+        update(Dataset).where(Dataset.id == run_id, Dataset.status == "FAILED").values(status="PROCESSING", message=None, started_at=datetime.now(UTC), finished_at=None)
+    ).rowcount
     db.commit()
+    if not claimed:  # a concurrent retry got there first
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Run #{run_id} is already being re-processed.")
     audit(db, "retry_import", request, user.id, f"dataset {run_id}")
     background.add_task(_run_locked, ds.id)
     return {"accepted": True, "message": f"Re-processing {ds.file_name} started."}
@@ -189,21 +217,39 @@ def reconciliation(store: Store = Depends(get_store)) -> dict:
 # ---------------------------------------------------------------- users
 
 
+class ScopeIn(BaseModel):
+    level: Literal["circle", "district", "block"]
+    id: str = Field(min_length=1, max_length=120)
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     name: str = Field(min_length=2, max_length=120)
     role: Literal["admin", "viewer"] = "viewer"
     password: str = Field(min_length=1, max_length=128)
+    # Circle / district / block areas for the AMC Conversion e-mails (viewers; admins receive everything)
+    scopes: list[ScopeIn] = Field(default_factory=list, max_length=500)
 
 
 class UserUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=120)
+    email: EmailStr | None = None
     role: Literal["admin", "viewer"] | None = None
     is_active: bool | None = Field(default=None, alias="isActive")
     password: str | None = Field(default=None, max_length=128)
+    scopes: list[ScopeIn] | None = Field(default=None, max_length=500)  # None = unchanged, [] = remove all
 
 
-def _user_json(u: User) -> dict:
+def _active_store() -> Store | None:
+    from ..analytics.store import NoDataError
+
+    try:
+        return get_store()
+    except NoDataError:
+        return None
+
+
+def _user_json(u: User, scopes: list[Assignment] | None = None, labels: dict[str, dict[str, str]] | None = None) -> dict:
     return {
         "id": u.id,
         "email": u.email,
@@ -212,12 +258,38 @@ def _user_json(u: User) -> dict:
         "isActive": u.is_active,
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
         "locked": bool(u.locked_until),
+        "scopes": [{"level": a.level, "id": a.id, "label": (labels or {}).get(a.level, {}).get(a.id), "valid": labels is None or a.id in labels.get(a.level, {})} for a in (scopes or [])],
     }
+
+
+def _users_json(db: Session, users: list[User]) -> list[dict]:
+    st = _active_store()
+    labels = locations(st) if st is not None else None
+    sc = assignments_of(db, [u.id for u in users])
+    return [_user_json(u, sc.get(u.id, []), labels) for u in users]
+
+
+def _set_scopes(db: Session, user: User, items: list[ScopeIn]) -> None:
+    """Replace the user's areas (validated against the active data). Admins keep none – they receive everything."""
+    wanted = list(dict.fromkeys(Assignment(s.level, s.id.strip()) for s in items)) if user.role == "viewer" else []
+    if wanted:
+        problems = check_assignments(_active_store(), wanted)
+        if problems:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "; ".join(problems[:5]))
+    db.execute(delete(UserScope).where(UserScope.user_id == user.id))
+    db.add_all(UserScope(user_id=user.id, level=a.level, scope_id=a.id) for a in wanted)
 
 
 @router.get("/users")
 def list_users(db: Session = Depends(get_db)) -> list[dict]:
-    return [_user_json(u) for u in db.scalars(select(User).order_by(User.email))]
+    return _users_json(db, list(db.scalars(select(User).order_by(User.email))))
+
+
+@router.get("/users/locations")
+def user_locations() -> dict:
+    """Circles → districts → blocks of the active data, for assigning user areas."""
+    st = _active_store()
+    return {"circles": location_tree(st) if st is not None else [], "hasData": st is not None}
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
@@ -230,9 +302,11 @@ def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Password needs " + "; ".join(problems))
     u = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password))
     db.add(u)
+    db.flush()
+    _set_scopes(db, u, body.scopes)
     db.commit()
-    audit(db, "user_created", request, admin.id, f"{email} ({body.role})")
-    return _user_json(u)
+    audit(db, "user_created", request, admin.id, f"{email} ({body.role}, {len(body.scopes) if body.role == 'viewer' else 0} area(s))")
+    return _users_json(db, [u])[0]
 
 
 @router.patch("/users/{user_id}")
@@ -242,11 +316,22 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
         raise HTTPException(404, "User not found")
     if u.id == admin.id and (body.role == "viewer" or body.is_active is False):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot demote or deactivate your own account")
+    if u.id == admin.id and body.email and body.email.lower() != u.email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Change your own e-mail address from a second admin account")
     revoke = False
     if body.name:
         u.name = body.name.strip()
+    if body.email and body.email.lower() != u.email:
+        email = body.email.lower()
+        if db.scalars(select(User).where(func.lower(User.email) == email, User.id != u.id)).first():
+            raise HTTPException(status.HTTP_409_CONFLICT, "A user with this email already exists")
+        u.email, revoke = email, True
     if body.role and body.role != u.role:
         u.role, revoke = body.role, True
+        if body.role == "admin" and body.scopes is None:
+            body.scopes = []  # admins keep no areas
+    if body.scopes is not None:
+        _set_scopes(db, u, body.scopes)
     if body.is_active is not None and body.is_active != u.is_active:
         u.is_active, revoke = body.is_active, True
     if body.password:
@@ -258,8 +343,11 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
     if revoke:
         u.token_version += 1
     db.commit()
-    audit(db, "user_updated", request, admin.id, f"{u.email}: {body.model_dump(exclude_none=True, exclude={'password'})}{' +password' if body.password else ''}")
-    return _user_json(u)
+    changes = body.model_dump(exclude_none=True, exclude={"password", "scopes"})
+    if body.scopes is not None:
+        changes["areas"] = len(body.scopes) if u.role == "viewer" else 0
+    audit(db, "user_updated", request, admin.id, f"{u.email}: {changes}{' +password' if body.password else ''}")
+    return _users_json(db, [u])[0]
 
 
 @router.get("/audit")

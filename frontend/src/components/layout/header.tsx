@@ -31,7 +31,7 @@ import { formatShortDate } from "@/lib/utils/format";
 
 export function Header({ onOpenMobileNav, onOpenSearch }: { onOpenMobileNav: () => void; onOpenSearch: () => void }) {
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-2 border-b border-border bg-background/85 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:gap-3 lg:px-8">
+    <header className="sticky top-0 z-30 flex h-14 shadow-[0_1px_0_0_var(--border)] items-center gap-2 border-b border-border bg-card px-4 sm:gap-3 lg:px-8">
       <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={onOpenMobileNav}>
         <Menu />
       </Button>
@@ -39,17 +39,18 @@ export function Header({ onOpenMobileNav, onOpenSearch }: { onOpenMobileNav: () 
       <button
         type="button"
         onClick={onOpenSearch}
-        className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-subtle-foreground hover:bg-accent sm:max-w-sm"
+        className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md border border-border bg-card px-3 text-sm text-subtle-foreground transition-colors hover:border-input sm:max-w-md"
         aria-label="Search circles, blocks and GPs"
       >
         <Search className="size-4 shrink-0" />
         <span className="truncate">Search circles, blocks, GPs…</span>
-        <kbd className="ml-auto hidden rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground sm:inline">Ctrl K</kbd>
+        <kbd className="ml-auto hidden rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-foreground sm:inline">Ctrl K</kbd>
       </button>
 
-      <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+      <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
         <HeaderWeekSelect />
-        <DemoBadge className="hidden md:inline-flex" />
+        <DemoBadge className="mx-1 hidden md:inline-flex" />
+        <span className="mx-1 hidden h-6 w-px bg-border md:block" aria-hidden />
         <RefreshButton />
         <Notifications />
         <UserMenu />
@@ -63,11 +64,13 @@ function HeaderWeekSelect() {
   const { period, setFilters } = useFilters();
   const weeks = [...(meta?.weeks ?? [])].reverse();
   return (
-    <div className="hidden items-center gap-1.5 md:flex">
-      <CalendarDays className="size-4 text-muted-foreground" aria-hidden />
+    <div className="hidden items-center gap-2 md:flex">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <CalendarDays className="size-4" aria-hidden /> Week
+      </span>
       <Select
         ariaLabel="Reporting week"
-        className="h-9 w-[190px]"
+        className="h-9 w-[180px] font-medium"
         value={period?.weekId}
         placeholder="Loading weeks…"
         disabled={!meta}
@@ -161,7 +164,7 @@ function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" aria-label="Open profile menu" className="brand-gradient flex size-8 items-center justify-center rounded-full text-xs font-semibold text-white">
+        <button type="button" aria-label="Open profile menu" className="brand-gradient ml-1 flex size-8 items-center justify-center rounded-full text-xs font-semibold text-white shadow-xs ring-2 ring-transparent transition-shadow hover:ring-primary/25">
           {initials}
         </button>
       </DropdownMenuTrigger>

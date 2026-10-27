@@ -1,12 +1,12 @@
 "use client";
 
-import { BarChart, LineChart } from "echarts/charts";
+import { BarChart, LineChart, PieChart } from "echarts/charts";
 import { AriaComponent, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
 import { SVGRenderer } from "echarts/renderers";
 import { useEffect, useRef } from "react";
 
-echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, AriaComponent, SVGRenderer]);
+echarts.use([BarChart, LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, AriaComponent, SVGRenderer]);
 
 export type EChartsOption = echarts.EChartsCoreOption;
 export interface EChartClickParams {

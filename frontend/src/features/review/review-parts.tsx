@@ -89,7 +89,7 @@ export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey 
         <caption className="sr-only">{caption}</caption>
         <thead>
           <tr className="border-b border-border bg-muted/60">
-            <th scope="col" className="sticky left-0 z-10 bg-muted px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <th scope="col" className="sticky left-0 z-10 bg-muted px-3 py-2 text-left text-[11.5px] font-bold uppercase tracking-wide text-subheading">
               {firstHeader}
             </th>
             {periods.map((p) => (
@@ -141,10 +141,10 @@ export function CircleSelect({ circles, value, onChange }: { circles: { id: stri
 /** Small bordered panel with a heading – the page's equivalent of a deck table block. */
 export function Panel({ title, description, actions, children, className }: { title: string; description?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <section className={cn("min-w-0 space-y-3 rounded-xl border border-border bg-card p-4 sm:p-5", className)}>
+    <section className={cn("min-w-0 space-y-3 rounded-lg border border-border bg-card p-4 shadow-xs sm:p-5", className)}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold">{title}</h3>
+          <h3 className="text-[15px] font-bold text-subheading">{title}</h3>
           {description && <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>}
         </div>
         {actions}

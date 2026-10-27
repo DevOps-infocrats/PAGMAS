@@ -84,6 +84,35 @@ MASTER_BLOCK_COLUMNS: dict[str, tuple[str, ...]] = {
 MASTER_BLOCK_REQUIRED: tuple[str, ...] = ("state", "block_code")
 MASTER_BLOCK_HEADER_ANCHORS: tuple[str, ...] = ("state", "block_code", "total_gp_count")
 
+# Escalation Matrix (a separate workbook): the header row is the first one with all required columns.
+ESCALATION_COLUMNS: dict[str, tuple[str, ...]] = {
+    "circle": ("Circle", "State"),
+    "ba": ("BA", "Business Area"),
+    "district": ("District",),
+    "block_name": ("Block", "Block Name"),
+    "block_code": ("Block Code",),
+    "gp_name": ("GP", "GP Name"),
+    "gp_code": ("GP Code",),
+    "frt_code": ("FRT Code",),
+    "splicer_name": ("Name of splicer", "Splicer Name"),
+    "splicer_phone": ("Splicer Contact No.", "Splicer Contact No", "Splicer Contact Number", "Splicer number"),
+    "fe_name": ("FE Name",),
+    "fe_phone": ("FE Contact No", "FE Contact No.", "FE Contact Number", "FE Number"),
+    "am_name": ("AM Name",),
+    "am_phone": ("AM Contact No", "AM Contact No.", "AM Contact Number", "AM Number"),
+    "am_email": ("AM Email ID", "AM Email", "AM Mail ID"),
+    "shq_name": ("SHQ Spoc", "SHQ SPOC", "SME Name"),
+    "shq_phone": ("SHQ Spoc Contact No", "SHQ SPOC Contact No", "SHQ Spoc Contact No.", "SME Number"),
+    "shq_email": ("SME Email ID", "SME Email", "SHQ Spoc Email ID", "SHQ SPOC Email"),
+    "coh_name": ("COH",),
+    "coh_phone": ("COH Number", "COH Contact No", "COH No.", "COH No"),
+    "coh_email": ("COH Email ID", "COH Email"),
+    "cbh_name": ("CBH",),
+    "cbh_phone": ("CBH Number", "CBH Contact No", "CBH No.", "CBH No"),
+    "cbh_email": ("CBH Email ID", "CBH Email"),
+}
+ESCALATION_REQUIRED: tuple[str, ...] = ("circle", "gp_code", "frt_code", "fe_name")
+
 
 # ---------------------------------------------------------------- the file
 
@@ -97,6 +126,7 @@ class _File(BaseModel):
     sheets: dict[str, list[str]] = Field(default_factory=dict)
     gpColumns: dict[str, list[str]] = Field(default_factory=dict)
     masterBlockColumns: dict[str, list[str]] = Field(default_factory=dict)
+    escalationColumns: dict[str, list[str]] = Field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +134,7 @@ class ColumnMap:
     sheets: dict[str, tuple[str, ...]]
     gp: dict[str, tuple[str, ...]]  # field -> normalised names, preferred first
     master_block: dict[str, tuple[str, ...]]
+    escalation: dict[str, tuple[str, ...]]
     problems: list[str] = field(default_factory=list)  # file problems, recorded as import warnings
 
 
@@ -157,6 +188,7 @@ def _build(data: _File | None, problems: list[str]) -> ColumnMap:
         sheets=_merge(SHEETS, extra.sheets, "sheets", problems, check_conflicts=True),
         gp=_merge(GP_COLUMNS, extra.gpColumns, "gpColumns", problems, check_conflicts=True),
         master_block=_merge(MASTER_BLOCK_COLUMNS, extra.masterBlockColumns, "masterBlockColumns", problems, check_conflicts=True),
+        escalation=_merge(ESCALATION_COLUMNS, extra.escalationColumns, "escalationColumns", problems, check_conflicts=True),
         problems=problems,
     )
 

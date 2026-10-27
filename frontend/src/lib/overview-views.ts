@@ -7,6 +7,12 @@ export const OVERVIEW_VIEWS = [
   { id: "summary", title: "Summary (KPIs)", short: "Summary (KPIs)", hint: "Network scope, handover & AMC, uptime and non-AMC GPs" },
   { id: "states", title: "States & Network Health", short: "States & Network Health", hint: "Month-to-date network health of each state" },
   { id: "handover", title: "Handover & Scope", short: "Handover & Scope", hint: "HOTO completion and GPs that left the scope" },
+  {
+    id: "comparison",
+    title: "State Performance Comparison",
+    short: "State Comparison",
+    hint: "Rajasthan, Assam and Haryana side by side: Non-AMC GPs, HOTO pending blocks, >98% GPs and blocks, 0% GPs and GPs below 90% (penalty)",
+  },
 ] as const;
 
 export type OverviewViewId = (typeof OVERVIEW_VIEWS)[number]["id"];

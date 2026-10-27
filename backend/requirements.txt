@@ -15,7 +15,3 @@ reportlab==5.0.1
 python-pptx==1.0.2
 XlsxWriter==3.2.9  # KPI list Excel export (also a python-pptx dependency)
 psycopg[binary]==3.3.6  # PostgreSQL driver (DATABASE_URL=postgresql+psycopg://…); SQLite needs nothing
-
-# tests
-pytest==9.1.1
-httpx==0.28.1

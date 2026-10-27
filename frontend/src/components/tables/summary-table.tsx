@@ -34,12 +34,12 @@ export function SummaryTable<T>({
       <table className="w-full min-w-[560px] text-sm">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
-          <tr className="border-b border-border bg-muted/60">
+          <tr className="border-b border-border bg-table-head">
             {columns.map((c) => (
               <th
                 key={c.key}
                 scope="col"
-                className={cn("whitespace-nowrap px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground", c.numeric ? "text-right" : "text-left")}
+                className={cn("whitespace-nowrap px-4 py-2.5 text-[12.5px] font-semibold text-heading", c.numeric ? "text-right" : "text-left")}
               >
                 {c.header}
               </th>
@@ -54,7 +54,7 @@ export function SummaryTable<T>({
               aria-label={onRowClick && rowLabel ? rowLabel(r) : undefined}
               onClick={onRowClick ? () => onRowClick(r) : undefined}
               onKeyDown={onRowClick ? (e) => e.key === "Enter" && e.target === e.currentTarget && onRowClick(r) : undefined}
-              className={cn("border-b border-border/70 last:border-0", onRowClick && "cursor-pointer hover:bg-accent/60 focus-visible:bg-accent")}
+              className={cn("border-b border-border/70 transition-colors last:border-0 even:bg-muted/45 hover:bg-accent", onRowClick && "cursor-pointer hover:bg-primary-soft/50 focus-visible:bg-accent")}
             >
               {columns.map((c, i) => (
                 <td key={c.key} className={cn("whitespace-nowrap px-4 py-2.5", c.numeric && "tabular text-right", i === 0 && "font-medium")}>
@@ -66,7 +66,7 @@ export function SummaryTable<T>({
         </tbody>
         {total && (
           <tfoot>
-            <tr className="border-t border-border bg-muted/40 font-semibold">
+            <tr className="border-t border-border bg-muted/60 font-semibold">
               {columns.map((c) => (
                 <td key={c.key} className={cn("whitespace-nowrap px-4 py-2.5", c.numeric && "tabular text-right")}>
                   {total[c.key] ?? ""}

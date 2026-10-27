@@ -82,6 +82,9 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
     revised = g["revised"]
     amc_count = int(amc.sum())
     revised_count = int(revised.sum())
+    # "AMC at HOTO" = AMC GPs not classified Incremental in the source column (same as amcOriginalGps),
+    # so AMC at HOTO + Incremental + Non-AMC = revised existing GPs on every page.
+    amc_original = int((amc & (g["amc_category"] != "INCREMENTAL")).sum())
     return {
         "totalStates": int(g["circle"].nunique()),
         "totalDistricts": int(g["district_id"].nunique()),
@@ -91,6 +94,7 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "hotoDoneGps": int(wf["hoto_done"].sum()),
         "hotoPendingGps": int((revised & ~wf["hoto_done"]).sum()),
         "hotoDoneBlocks": int(hoto_blocks.sum()),
+        "amcAtHotoGps": amc_original,
         "amcGps": amc_count,
         "nonAmcGps": int((revised & ~amc).sum()),
         "amcPct": r2(amc_count / revised_count * 100) if revised_count else None,
@@ -99,6 +103,12 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "gpsAtZero": int((mtd == 0).sum()),
         "naGps": int((amc & mtd.isna()).sum()),
         "penaltyBlocks": int((block_avail < s.penalty_threshold).sum()),
+        # State Performance Comparison: GPs below the penalty threshold (0% included), blocks above the healthy
+        # threshold (block mean of AMC GPs, like penaltyBlocks) and the reporting bases of the percentages.
+        "gpsBelowPenalty": int((mtd < s.penalty_threshold).sum()),
+        "blocksAbove98": int((block_avail > s.healthy_threshold).sum()),
+        "reportingGps": int(mtd.notna().sum()),
+        "reportingBlocks": int(block_avail.notna().sum()),
         "availabilityWeek": r2(weekly.mean()) if weekly.notna().any() else None,
         "gpsAbove98Week": int((weekly > s.healthy_threshold).sum()),
         "gpsAtZeroWeek": int((weekly == 0).sum()),
@@ -109,7 +119,7 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "bbnlRkm": r2(g["bbnl_km"].fillna(0).sum()),
         "amcRkm": r2(g.loc[amc[amc].index, "total_rkm"].sum()),
         "incrementalGps": int((amc & (g["amc_category"] == "INCREMENTAL")).sum()),
-        "amcOriginalGps": int((amc & (g["amc_category"] != "INCREMENTAL")).sum()),
+        "amcOriginalGps": amc_original,
         "convertedNp": int((g["lifecycle"] == "CONVERTED_NP").sum()),
         "permanentlyClosed": int((g["lifecycle"] == "PERMANENTLY_CLOSED").sum()),
         "deductedGps": int((g["lifecycle"] == "DEDUCTED").sum()),

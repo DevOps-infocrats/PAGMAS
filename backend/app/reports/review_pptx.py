@@ -22,10 +22,29 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
-from ..config import PROJECT_DIR
+from ..config import PROJECT_DIR, get_settings
 
 LOGO = PROJECT_DIR / "frontend" / "public" / "brand" / "pratap-logo.png"
 FONT = "Calibri"
+
+
+def _report_tz() -> dt.tzinfo:
+    """Timezone of the timestamps printed on the deck (setting REPORT_TIMEZONE, default Asia/Kolkata)."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    name = getattr(get_settings(), "report_timezone", None) or "Asia/Kolkata"
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return dt.timezone(dt.timedelta(hours=5, minutes=30), "IST")
+
+
+def _local(ts: dt.datetime | None = None) -> dt.datetime:
+    """`ts` (naive = UTC) or now, in the report timezone."""
+    tz = _report_tz()
+    if ts is None:
+        return dt.datetime.now(tz)
+    return (ts if ts.tzinfo else ts.replace(tzinfo=dt.UTC)).astimezone(tz)
 
 # Pratap palette: brand blue dominates, logo green is the accent.
 BRAND = "0B6BA8"
@@ -445,7 +464,7 @@ def _cover(d: Deck):
         anchor=MSO_ANCHOR.MIDDLE,
         margin=0.3,
     )
-    d.text(slide, 1.5, 10.0, 17.0, 0.4, f"Source: {r['sourceFile']}  ·  Generated {dt.datetime.now():%d %b %Y %H:%M} by {d.generated_by}", size=11, color=MUTED, align=PP_ALIGN.CENTER)
+    d.text(slide, 1.5, 10.0, 17.0, 0.4, f"Source: {r['sourceFile']}  ·  Generated {_local():%d %b %Y %H:%M} by {d.generated_by}", size=11, color=MUTED, align=PP_ALIGN.CENTER)
 
 
 def _index(d: Deck, sections: list[tuple[str, str]]):
@@ -491,7 +510,7 @@ def _executive(d: Deck):
         f"{sm['kicker']}  |  {sm['subtitle']}",
         notes="All figures are calculated from the active workbook. " + " ".join(sm["definitions"]),
     )
-    gen = dt.datetime.fromisoformat(r["generatedAt"]).astimezone().strftime("%d %b %Y %H:%M")
+    gen = _local(dt.datetime.fromisoformat(r["generatedAt"])).strftime("%d %b %Y %H:%M")
     d.text(
         slide,
         MARGIN,

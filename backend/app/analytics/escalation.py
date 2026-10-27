@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import select, text
 
+from ..config import get_settings
 from ..db import SessionLocal, engine
 from ..models import EscalationImport
 from .metrics import r2
@@ -156,7 +157,7 @@ def _filter(df: pd.DataFrame, circle: str | None, district: str | None, block: s
         m &= (df["block_id"] == block).to_numpy()
     if search and search.strip():
         q = search.strip().lower()
-        hay = df["gp_label"].str.lower() + " " + df.index.astype(str) + " " + df["block_label"].str.lower()
+        hay = df["gp_label"].str.lower() + " " + df.index.astype(str).str.lower() + " " + df["block_label"].str.lower()
         for col in ("frt_code", "splicer_name", "fe_name", "am_name"):
             hay = hay + " " + df[col].fillna("").astype(str).str.lower()
         m &= hay.str.contains(q, regex=False).to_numpy()
@@ -311,7 +312,7 @@ def workload(store: Store, week: str, role: Role, circle: str | None, full: bool
                 "amcGps": int(grp["amc"].sum()),
                 "availability": r2(vals.mean()) if len(vals) else None,
                 "gpsAtZero": int((vals == 0).sum()),
-                "gpsBelow90": int((vals < 90).sum()),
+                "gpsBelow90": int((vals < get_settings().penalty_threshold).sum()),
             }
         )
     rows.sort(key=lambda x: (-x["gps"], x["name"]))
@@ -335,7 +336,7 @@ def workload(store: Store, week: str, role: Role, circle: str | None, full: bool
 def down(store: Store, week: str, mode: Literal["zero", "below90"], circle: str | None, district: str | None, block: str | None, search: str | None, page: int, page_size: int, full: bool) -> dict[str, Any]:
     meta, df = _frame(store)
     mtd = _mtd(store, week).reindex(df.index)
-    sel = (mtd == 0) if mode == "zero" else (mtd < 90)
+    sel = (mtd == 0) if mode == "zero" else (mtd < get_settings().penalty_threshold)
     sub = _filter(df[sel.to_numpy()], circle, district, block, search)
     vals = mtd.reindex(sub.index)
     sub = sub.assign(_mtd=vals).sort_values(["_mtd", "circle_name", "block_label", "gp_label"], kind="stable")

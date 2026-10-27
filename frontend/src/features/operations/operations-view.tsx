@@ -2,7 +2,7 @@
 
 import { FileUp, Info, Loader2, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DemoBadge, StatusBadge } from "@/components/feedback/badges";
+import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, KpiSkeleton } from "@/components/feedback/states";
 import { AdminGuard } from "@/components/layout/admin-guard";
 import { PageHeader, SectionHeader } from "@/components/layout/page-header";
@@ -117,10 +117,9 @@ function OperationsContent() {
   return (
     <div className="space-y-8">
       <PageHeader
-        breadcrumbs={[{ label: "Admin" }, { label: "Data Operations" }]}
+        breadcrumbs={[{ label: "Administration" }, { label: "Data Operations" }]}
         title="Data Operations"
         description="Import the master data workbook and the Escalation Matrix (one at a time or together), monitor processing and check data accuracy."
-        meta={<DemoBadge />}
         actions={
           IS_LIVE ? (
             <UploadButton
@@ -304,7 +303,7 @@ function EscalationImports({ tick, onFinished }: { tick: number; onFinished: () 
             <table className="w-full min-w-[640px] text-sm">
               <caption className="sr-only">Escalation Matrix uploads</caption>
               <thead>
-                <tr className="border-b border-border bg-muted/60 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <tr className="border-b border-border bg-card text-left text-[12.5px] font-semibold text-foreground">
                   <th scope="col" className="px-4 py-2.5">
                     File
                   </th>

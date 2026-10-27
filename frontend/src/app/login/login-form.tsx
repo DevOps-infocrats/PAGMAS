@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertCircle, Eye, EyeOff, Loader2, ShieldAlert } from "lucide-react";
+import { AlertCircle, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, ShieldAlert } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -48,7 +48,7 @@ export function LoginForm() {
   };
 
   return (
-    <div className="mt-8 space-y-6">
+    <div className="mt-7 space-y-6">
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
         {params.get("expired") === "1" && !formError && (
           <div role="status" className="rounded-md border border-border bg-muted px-3 py-2.5 text-sm text-muted-foreground">
@@ -64,15 +64,19 @@ export function LoginForm() {
 
         <div className="space-y-1.5">
           <Label htmlFor="email">Email</Label>
-          <Input
-            id="email"
-            type="email"
-            autoComplete="username"
-            placeholder="name@company.com"
-            aria-invalid={!!errors.email}
-            aria-describedby={errors.email ? "email-error" : undefined}
-            {...register("email")}
-          />
+          <div className="relative">
+            <Mail className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-subtle-foreground" aria-hidden />
+            <Input
+              id="email"
+              type="email"
+              autoComplete="username"
+              placeholder="name@company.com"
+              className="h-11 pl-10"
+              aria-invalid={!!errors.email}
+              aria-describedby={errors.email ? "email-error" : undefined}
+              {...register("email")}
+            />
+          </div>
           {errors.email && (
             <p id="email-error" className="text-xs text-critical-text">
               {errors.email.message}
@@ -88,11 +92,13 @@ export function LoginForm() {
             </button>
           </div>
           <div className="relative">
+            <Lock className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-subtle-foreground" aria-hidden />
             <Input
               id="password"
               type={showPassword ? "text" : "password"}
               autoComplete="current-password"
-              className="pr-10"
+              placeholder="Enter your password"
+              className="h-11 pl-10 pr-10"
               aria-invalid={!!errors.password}
               aria-describedby={errors.password ? "password-error" : undefined}
               {...register("password")}
@@ -102,7 +108,7 @@ export function LoginForm() {
               onClick={() => setShowPassword((s) => !s)}
               aria-label={showPassword ? "Hide password" : "Show password"}
               aria-pressed={showPassword}
-              className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:text-foreground"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1.5 text-muted-foreground hover:text-foreground"
             >
               {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </button>
@@ -126,9 +132,10 @@ export function LoginForm() {
           Remember me for 7 days
         </label>
 
-        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={isSubmitting}>
+        <Button type="submit" variant="primary" size="lg" className="group h-11 w-full rounded-lg text-[15px] shadow-[0_10px_24px_-10px_rgb(10_143_196/0.7)]" disabled={isSubmitting}>
           {isSubmitting && <Loader2 className="animate-spin" />}
           {isSubmitting ? "Signing in…" : "Sign in"}
+          {!isSubmitting && <ArrowRight className="transition-transform group-hover:translate-x-0.5" />}
         </Button>
       </form>
 

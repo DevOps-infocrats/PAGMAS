@@ -17,11 +17,14 @@ from sqlalchemy import func, select
 
 from .db import SessionLocal, init_db
 from .models import User
-from .security.core import hash_password, password_problems
+from .security.core import hash_password, password_problems, valid_email
 
 
 def create_user(args: argparse.Namespace) -> int:
-    email = args.email.strip().lower()
+    email = valid_email(args.email)
+    if email is None:
+        print(f"{args.email!r} is not a valid e-mail address (the account could never sign in).", file=sys.stderr)
+        return 2
     password = args.password or getpass.getpass("Password (input hidden): ")
     if not args.password and password != getpass.getpass("Repeat password: "):
         print("Passwords do not match.")

@@ -49,14 +49,14 @@ function KpiCompareCard({ k, current, previous, circles }: { k: ReviewSummary["k
       <p className="text-sm font-semibold">
         {label} <span className="font-normal text-muted-foreground">({range})</span>
       </p>
-      <p className={cn("mt-1 text-[26px] font-semibold leading-8 tabular", strong ? "text-primary" : "text-foreground")}>{fmt(value)}</p>
+      <p className={cn("mt-0.5 text-[23px] font-bold leading-7 tabular", strong ? "text-primary" : "text-foreground")}>{fmt(value)}</p>
       <p className="text-xs text-muted-foreground">
         {unit} · {formatPercent(pctV, 2)} of {fmt(denom)} reporting {unit}
       </p>
     </div>
   );
   return (
-    <div className={cn("flex flex-col rounded-xl border border-border bg-card shadow-sm", present ? "p-3" : "p-4")}>
+    <div className={cn("flex flex-col rounded-lg border border-border bg-card shadow-xs", present ? "p-3" : "p-4")}>
       <p className={cn("text-[15px] font-semibold", present ? "mb-2" : "mb-3")}>{k.label}</p>
       <div className="grid grid-cols-2 gap-3">
         {side("Current week", current.label, shortRange(current.start, current.end), k.current, k.currentPct, k.currentDenominator, true)}
@@ -245,7 +245,7 @@ export function AmcConversionCards({ cc }: { cc: R["targetsPage"]["circleCards"]
   return (
     <div className={present ? "grid grid-cols-3 gap-3" : "grid gap-4 lg:grid-cols-2"}>
       {cc.cards.map((c) => (
-        <div key={c.id} className={cn("flex flex-col rounded-xl border border-border bg-card shadow-sm", present ? "p-3.5" : "p-5")}>
+        <div key={c.id} className={cn("flex flex-col rounded-lg border border-border bg-card shadow-xs", present ? "p-3.5" : "p-5")}>
           <div>
             <div>
               <p className="text-[15px] font-semibold">{c.name} – GPs converted to AMC</p>
@@ -532,7 +532,7 @@ export function OperationsTab({ r }: { r: R }) {
         <table className="w-full min-w-[900px] text-sm">
           <caption className="sr-only">Scope, HOTO, AMC and gap by circle</caption>
           <thead>
-            <tr className="border-b border-border bg-muted/60 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <tr className="border-b border-border bg-card text-[12.5px] font-semibold text-foreground">
               <th rowSpan={2} scope="col" className="px-3 py-2 text-left">
                 Period
               </th>
@@ -616,7 +616,7 @@ export function CriticalKpiTab({ r }: { r: R }) {
           <table className="w-full min-w-[720px] text-sm">
             <caption className="sr-only">Week-on-week change by circle</caption>
             <thead>
-              <tr className="border-b border-border bg-muted/60 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <tr className="border-b border-border bg-card text-[12.5px] font-semibold text-foreground">
                 <th scope="col" className="px-4 py-2.5 text-left">
                   KPI
                 </th>
@@ -661,7 +661,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <h3 className="text-xl font-semibold">Critical KPI – Blocks &amp; GPs {section?.name}</h3>
+        <h3 className="text-xl font-bold text-subheading">Critical KPI – Blocks &amp; GPs {section?.name}</h3>
         <CircleSelect circles={r.circles} value={circleId} onChange={setCircleId} />
       </div>
       {!ct ? (

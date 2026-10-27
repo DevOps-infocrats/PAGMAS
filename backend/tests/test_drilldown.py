@@ -106,6 +106,58 @@ def test_missing_dates_are_null_not_nan(imported, client):
     assert any(i["amcDate"] is None for i in r.json()["items"])
 
 
+def test_amc_gp_list_and_amc_at_hoto_counts(imported, client):
+    login(client)
+    g = imported.gps
+    wf = imported.week_frame("W-41")
+    expected = int((wf["amc"] & (g["amc_category"] != "INCREMENTAL")).sum())
+    overview = client.get("/api/v1/overview", params={"week": "W-41"}).json()
+    s = overview["summary"]
+    assert s["amcAtHotoGps"] == expected == s["amcOriginalGps"]
+    assert sum(state["amcAtHotoGps"] for state in overview["stateDetails"]) == expected
+    # The AMC page cards add up: AMC at HOTO + Incremental + Non-AMC + NP/closed = existing GPs.
+    for d in [s, *overview["stateDetails"]]:
+        assert d["amcAtHotoGps"] + d["incrementalGps"] + d["nonAmcGps"] + d["convertedOrClosed"] == d["existingGps"]
+        assert d["hotoDoneGps"] + d["hotoPendingGps"] + d["convertedOrClosed"] == d["existingGps"]
+
+    rows = client.get("/api/v1/kpi-lists/amc-gps", params={"week": "W-41", "page_size": 200}).json()
+    assert rows["total"] == summarize(imported, None, "W-41")["amcGps"]
+    assert all(row["category"] in {"AMC", "INCREMENTAL"} for row in rows["items"])
+    assert all(row["amcDate"] and row["amcDate"] <= imported.week("W-41").end.isoformat() for row in rows["items"])
+    assert client.get("/api/v1/kpi-lists/amc-gps.xlsx", params={"week": "W-41"}).content[:2] == b"PK"
+
+
+def test_state_comparison_figures(imported, client):
+    """State Performance Comparison: GP and block thresholds computed separately, states add up to the total."""
+    login(client)
+    o = client.get("/api/v1/overview", params={"week": "W-41"}).json()
+    g = imported.gps
+    wf = imported.week_frame("W-41")
+    mtd = wf["mtd"].where(wf["amc"])
+    block_mean = mtd.groupby(g["block_id"]).mean()
+    s = o["summary"]
+    assert s["gpsBelowPenalty"] == int((mtd < 90).sum())  # 0% GPs included, NA never counted
+    assert s["reportingGps"] == int(mtd.notna().sum())
+    assert s["blocksAbove98"] == int((block_mean > 98).sum())  # block mean, not "any GP above 98%"
+    assert s["reportingBlocks"] == int(block_mean.notna().sum())
+    for key in ("gpsBelowPenalty", "blocksAbove98", "reportingGps", "reportingBlocks", "hotoPendingBlocks", "nonAmcGps", "gpsAtZero", "gpsAbove98"):
+        assert sum(d[key] for d in o["stateDetails"]) == s[key], key
+
+
+def test_hoto_block_rows_include_gp_details_and_hoto_pending_reason(imported, client):
+    login(client)
+    response = client.get("/api/v1/kpi-lists/hoto-blocks", params={"week": "W-41", "page_size": 200})
+    assert response.status_code == 200, response.text
+    for block in response.json()["items"]:
+        assert len(block["gpDetails"]) == block["totalGps"]
+        assert sum(gp["hotoDate"] is not None for gp in block["gpDetails"]) == block["hotoGps"]
+        assert all(gp["code"] and gp["name"] for gp in block["gpDetails"])
+
+    pending = client.get("/api/v1/kpi-lists/hoto-pending-gps", params={"week": "W-41", "page_size": 200}).json()
+    assert all(row["reason"] == "HOTO not done" for row in pending["items"])
+    assert "amName" not in pending["items"][0] if pending["items"] else True
+
+
 def test_state_detail_lists_equal_the_overview_tables(imported, client):
     """States & Network Health tables -> state page: every list total equals the figure in the table row."""
     login(client)

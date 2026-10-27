@@ -17,6 +17,7 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   poweredByHeader: false,
   turbopack: {
+    root: __dirname,
     rules: {
       "*.css": {
         loaders: ["@tailwindcss/turbopack"],

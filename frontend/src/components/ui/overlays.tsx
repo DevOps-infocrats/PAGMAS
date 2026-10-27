@@ -30,7 +30,7 @@ export function Tooltip({
           side={side}
           sideOffset={6}
           className={cn(
-            "z-50 max-w-72 rounded-md border border-border bg-popover px-3 py-2 text-xs leading-relaxed text-popover-foreground shadow-md",
+            "z-50 max-w-72 rounded-md border border-border bg-popover px-3 py-2 text-xs leading-relaxed text-popover-foreground shadow-md [text-wrap:pretty]",
             className,
           )}
         >
@@ -146,7 +146,7 @@ export function Select({
       <S.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-9 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:opacity-50 data-[placeholder]:text-subtle-foreground",
+          "inline-flex h-9 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs transition-colors hover:border-subtle-foreground/50 data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:opacity-50 data-[placeholder]:text-subtle-foreground",
           className,
         )}
       >

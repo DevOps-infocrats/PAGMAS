@@ -57,6 +57,8 @@ export interface OverviewDetail {
   hotoPendingBlocks: number;
   hotoDoneGps: number;
   hotoPendingGps: number;
+  /** AMC GPs not classified Incremental in the source column (= amcOriginalGps) */
+  amcAtHotoGps: number;
   amcGps: number;
   amcOriginalGps: number;
   incrementalGps: number;
@@ -67,6 +69,13 @@ export interface OverviewDetail {
   gpsAtZero: number;
   naGps: number;
   penaltyBlocks: number;
+  /** AMC GPs with MTD availability below the penalty threshold (0% included) */
+  gpsBelowPenalty: number;
+  /** Blocks whose mean AMC GP availability (MTD) is above the healthy threshold */
+  blocksAbove98: number;
+  /** AMC GPs / blocks with an MTD availability value (base of the availability percentages) */
+  reportingGps: number;
+  reportingBlocks: number;
   oneTimeUp: number;
   totalRkm: number;
   bsnlRkm: number;
@@ -627,6 +636,17 @@ export interface RunIssuesResponse {
   items: { row: number | null; column: string | null; gpCode: string | null; severity: string; code: string; message: string; sheet: string }[];
 }
 
+export type ScopeLevel = "circle" | "district" | "block";
+
+/** One circle / district / block a viewer receives in the AMC Conversion e-mails. */
+export interface UserScope {
+  level: ScopeLevel;
+  id: string;
+  /** null when the area is no longer in the active data (then it is ignored) */
+  label: string | null;
+  valid: boolean;
+}
+
 export interface AppUser {
   id: number;
   email: string;
@@ -635,11 +655,148 @@ export interface AppUser {
   isActive: boolean;
   lastLoginAt: string | null;
   locked: boolean;
+  /** viewers only; admins receive every circle */
+  scopes: UserScope[];
+}
+
+export interface UserLocations {
+  hasData: boolean;
+  circles: { id: string; name: string; districts: { id: string; name: string; blocks: { id: string; name: string }[] }[] }[];
+}
+
+export interface UserCreateBody {
+  email: string;
+  name: string;
+  role: "admin" | "viewer";
+  password: string;
+  scopes?: { level: ScopeLevel; id: string }[];
+}
+
+export interface UserUpdateBody {
+  name?: string;
+  email?: string;
+  role?: "admin" | "viewer";
+  isActive?: boolean;
+  password?: string;
+  scopes?: { level: ScopeLevel; id: string }[];
+}
+
+/* ---------------------------------------------------------------- Mail Configuration */
+
+/** CBH is stored from the Escalation Matrix as a backup only and is never mailed. */
+export type MailAudience = "am" | "sme" | "coh" | "users";
+export type MailFrequency = "daily" | "weekly" | "monthly";
+
+export interface MailStatus {
+  smtp: { configured: boolean; problems: string[]; server: string | null; port: number | null; security: "SSL" | "STARTTLS" | "none"; usernameSet: boolean; sender: string | null };
+  /** AMC_REPORT_EMAILS_ENABLED – master switch of the scheduled e-mails */
+  reportEmailsEnabled: boolean;
+  approvalEmailsEnabled: boolean;
+  schedulerRunning: boolean;
+  timezone: string;
+}
+
+/** A person of the Escalation Matrix (Area Manager / SME / COH) */
+export interface MailPerson {
+  id: string;
+  role: Exclude<MailAudience, "users">;
+  roleLabel: string;
+  name: string;
+  circleId: string;
+  circle: string;
+  emails: string[];
+  gps: number;
+  businessAreas: string[];
+}
+
+export interface MailOptions {
+  hasData: boolean;
+  hasMatrix: boolean;
+  audiences: { id: MailAudience; label: string }[];
+  filters: { circles: { id: string; name: string }[]; businessAreas: { name: string; circleId: string }[]; blocks: { id: string; circleId: string; name: string }[] };
+  people: MailPerson[];
+  users: { id: number; name: string; email: string; role: string }[];
+  placeholders: { name: string; description: string; table: boolean }[];
+}
+
+export interface MailTemplateItem {
+  id: number;
+  key: string | null;
+  builtIn: boolean;
+  name: string;
+  description: string | null;
+  subject: string;
+  body: string;
+  usedBy: number;
+  updatedAt: string | null;
+}
+
+export interface MailTemplateBody {
+  name: string;
+  description: string | null;
+  subject: string;
+  body: string;
+}
+
+export interface MailPreview {
+  recipient: { name: string; role: string; emails: string[] };
+  subject: string;
+  html: string;
+  text: string;
+}
+
+export interface MailConfigBody {
+  name: string;
+  templateId: number | null;
+  audiences: MailAudience[];
+  filterCircles: string[];
+  filterBusinessAreas: string[];
+  filterBlocks: string[];
+  filterPeople: string[];
+  userIds: number[];
+  frequency: MailFrequency;
+  startDate: string;
+  sendTime: string;
+  weekday: number | null;
+  monthDay: number | null;
+  enabled: boolean;
+}
+
+export interface MailConfigItem extends MailConfigBody {
+  id: number;
+  templateName: string;
+  summary: string;
+  timezone: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface MailRecipientPreview {
+  hasData: boolean;
+  recipients: { name: string; roles: string; emails: string[]; areas: string[]; gps: number; breakdown: "block" | "am" }[];
+  skipped: { name: string; role: string; reason: string }[];
+}
+
+export interface MailRunItem {
+  id: number;
+  configId: number;
+  configName: string;
+  scheduledFor: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  status: "RUNNING" | "SUCCESS" | "PARTIAL" | "FAILED" | "SKIPPED";
+  sent: number;
+  failed: number;
+  skipped: number;
+  message: string | null;
 }
 
 /* ---------------------------------------------------------------- KPI drill-down lists */
 
-export type KpiListKind = "gps-above-98" | "gps-at-zero" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "hoto-pending-blocks" | "all-blocks" | "non-amc-gps" | "amc-original-gps" | "incremental-gps" | "removed-gps"
+export type KpiListKind = "gps-above-98" | "gps-at-zero" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "hoto-pending-blocks" | "all-blocks" | "non-amc-gps" | "amc-original-gps" | "incremental-gps" | "amc-gps" | "removed-gps"
   | "amc-plan-month" | "amc-plan-mtd" | "amc-achieved-mtd" | "amc-plan-week" | "amc-achieved-week" | "amc-overdue";
 /** value = the list's measure: MTD availability, HOTO date or HOTO coverage */
 export type KpiListSort = "value-desc" | "value-asc" | "name";
@@ -670,6 +827,8 @@ export interface KpiListItem {
   availability?: number | null;
   /** GP lists */
   amcDate?: string | null;
+  /** Source AMC date (not hidden by the selected reporting-week cutoff) */
+  amcSourceDate?: string | null;
   hotoDate?: string | null;
   /** penalty-prone block list */
   amcGps?: number;
@@ -680,6 +839,11 @@ export interface KpiListItem {
   hotoPct?: number | null;
   /** HOTO-pending block list: revised existing GPs in the block */
   revisedGps?: number;
+  /** all-blocks list: AMC breakdown columns */
+  amcOriginalGps?: number;
+  incrementalGps?: number;
+  totalAmcGps?: number;
+  nonAmcGps?: number;
   /** Non-AMC GP list: "Done" / "Pending" */
   hotoStatus?: string;
   /** existing-GP / removed-GP lists: In scope / Converted to NP / Closed / Deducted */
@@ -688,6 +852,9 @@ export interface KpiListItem {
   remark?: string | null;
   /** HOTO-pending list: area manager (null = not assigned in source) */
   amName?: string | null;
+  reason?: string;
+  /** HOTO block list: all GP rows in the block, with HOTO dates for completed GPs */
+  gpDetails?: { id: string; name: string; code: string; hotoDate: string | null }[];
   /** AMC plan lists (GP-wise plan of the GP sheet) */
   category?: string | null;
   plannedDate?: string | null;
@@ -718,6 +885,15 @@ export interface KpiListResponse {
   pages: number;
   sort: KpiListSort;
   items: KpiListItem[];
+  /** all-blocks only: aggregate totals across the filtered rows (for the mini KPI strip) */
+  blockSummary?: {
+    totalBlocks: number;
+    hotoDoneBlocks: number;
+    amcOriginalGps: number;
+    incrementalGps: number;
+    totalAmcGps: number;
+    nonAmcGps: number;
+  } | null;
 }
 
 /* ---------------------------------------------------------------- AMC conversion: plan vs execution */
@@ -852,6 +1028,10 @@ export interface AmcAreaManagerRow {
   name: string;
   /** false for "Not assigned" / "Vacant (no AM)" */
   assigned: boolean;
+  /** business areas (BA) of the AM's GPs: Escalation Matrix BA, else the master data's BA */
+  businessAreas: string[];
+  /** AM e-mail(s) from the Escalation Matrix; masked (sh*****@domain) unless the user is an admin */
+  emails: string[];
   blocks: number;
   existingGps: number;
   /** under AMC as of the reporting week's end (same rule as the KPI cards) */
@@ -872,6 +1052,9 @@ export interface AmcAreaManagers {
   /** where the AM names come from: the Escalation Matrix upload, else the master data's AM Name */
   amSource: "escalation" | "master";
   amSourceFile: string | null;
+  /** the active Escalation Matrix has AM e-mails */
+  hasEmails: boolean;
+  emailsMasked: boolean;
   month: { id: string; label: string; start: string; end: string; asOf: string };
   week: { id: string; number: number; label: string; start: string; end: string; asOf: string; complete: boolean };
   amcAsOf: string;
@@ -1160,6 +1343,23 @@ export interface AdminApi {
   getRunReport(runId: string): Promise<UploadReport>;
   getReconciliation(): Promise<ReconciliationResponse>;
   listUsers(): Promise<AppUser[]>;
-  createUser(body: { email: string; name: string; role: "admin" | "viewer"; password: string }): Promise<AppUser>;
-  updateUser(id: number, body: { name?: string; role?: "admin" | "viewer"; isActive?: boolean; password?: string }): Promise<AppUser>;
+  createUser(body: UserCreateBody): Promise<AppUser>;
+  updateUser(id: number, body: UserUpdateBody): Promise<AppUser>;
+  getUserLocations(): Promise<UserLocations>;
+  getMailStatus(): Promise<MailStatus>;
+  getMailOptions(): Promise<MailOptions>;
+  sendTestMail(to: string): Promise<{ ok: boolean; message: string }>;
+  listMailTemplates(): Promise<MailTemplateItem[]>;
+  createMailTemplate(body: MailTemplateBody): Promise<MailTemplateItem>;
+  updateMailTemplate(id: number, body: MailTemplateBody): Promise<MailTemplateItem>;
+  resetMailTemplate(id: number): Promise<MailTemplateItem>;
+  deleteMailTemplate(id: number): Promise<{ deleted: number }>;
+  previewMailTemplate(body: { subject: string; body: string; configId?: number; personId?: string }): Promise<MailPreview>;
+  listMailConfigs(): Promise<MailConfigItem[]>;
+  createMailConfig(body: MailConfigBody): Promise<MailConfigItem>;
+  updateMailConfig(id: number, body: MailConfigBody): Promise<MailConfigItem>;
+  setMailConfigEnabled(id: number, enabled: boolean): Promise<MailConfigItem>;
+  deleteMailConfig(id: number): Promise<{ deleted: number }>;
+  previewMailRecipients(id: number): Promise<MailRecipientPreview>;
+  listMailRuns(): Promise<MailRunItem[]>;
 }

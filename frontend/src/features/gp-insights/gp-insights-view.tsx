@@ -1,13 +1,12 @@
 "use client";
 
-import { ArrowRight, MapPin } from "lucide-react";
-import Link from "next/link";
+import { MapPin } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { LifecycleBadge } from "@/components/feedback/badges";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/feedback/states";
 import { BlockFilter, CircleFilter, DistrictFilter } from "@/components/filters/filter-bar";
 import { SearchableSelect } from "@/components/filters/searchable-select";
-import { Breadcrumbs } from "@/components/layout/page-header";
+import { RelatedViews, TitleBar, ViewHint } from "@/components/layout/page-header";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useDefaultSelection } from "@/hooks/use-default-selection";
@@ -41,55 +40,38 @@ export function GpInsightsView() {
   return (
     <div className="space-y-5">
       {/* ---------------- Title bar: same in every view (scrolls with the page) ---------------- */}
-      <header className="rounded-xl border border-border bg-card shadow-sm">
-        <div className="space-y-0.5 px-4 py-2.5">
-          <Breadcrumbs
-            items={[
-              { label: "Circle Overview", href: hrefTo("/dashboard") },
-              ...(d
-                ? [
-                    { label: d.gp.circleName, href: hrefTo("/dashboard/circle-insights", { district: undefined, block: undefined, gp: undefined }) },
-                    { label: d.gp.districtName },
-                    { label: d.gp.blockName, href: hrefTo("/dashboard/block-insights", { gp: undefined }) },
-                    { label: d.gp.name },
-                  ]
-                : [{ label: "GP Insights" }]),
-            ]}
-          />
-          {/* title and its context on one line ("data as of" is already in the top header) */}
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-            <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-lg font-semibold leading-tight">
-              {d ? d.gp.name : "GP Insights"}
-              <span className="text-subtle-foreground" aria-hidden>
-                ·
-              </span>
-              <span className="text-primary">{view.title}</span>
-              <span className="text-[13px] font-normal text-muted-foreground">
-                {d && period
-                  ? `LGD ${d.gp.lgdCode} · ID ${d.gp.id.toUpperCase()} · ${period.week.label} (${formatDate(period.week.startDate)} – ${formatDate(period.week.endDate)})`
-                  : "Select a Gram Panchayat to see its details."}
-              </span>
-            </h1>
-            {d && <LifecycleBadge status={d.gp.lifecycle} />}
-          </div>
-        </div>
+      <TitleBar
+        breadcrumbs={[
+          { label: "Circle Overview", href: hrefTo("/dashboard") },
+          ...(d
+            ? [
+                { label: d.gp.circleName, href: hrefTo("/dashboard/circle-insights", { district: undefined, block: undefined, gp: undefined }) },
+                { label: d.gp.districtName },
+                { label: d.gp.blockName, href: hrefTo("/dashboard/block-insights", { gp: undefined }) },
+                { label: d.gp.name },
+              ]
+            : [{ label: "GP Insights" }]),
+        ]}
+        title={d ? d.gp.name : "GP Insights"}
+        view={view.title}
+        period={period ? `${period.week.label} · ${formatDate(period.week.startDate)} – ${formatDate(period.week.endDate)}` : "Loading period…"}
+        note={d ? `LGD ${d.gp.lgdCode} · ID ${d.gp.id.toUpperCase()}` : "Select a Gram Panchayat to see its details."}
+        aside={d && <LifecycleBadge status={d.gp.lifecycle} />}
+      >
         {/* All pickers change this page; the view is kept */}
-        {/* four equal columns: every control lines up and none is squeezed */}
-        <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t border-border px-4 py-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <CircleFilter required className="sm:w-full" />
-          <DistrictFilter className="sm:w-full" />
-          <BlockFilter required className="sm:w-full" />
-          <SearchableSelect
-            label="Gram Panchayat"
-            className="w-full"
-            value={filters.gp}
-            disabled={!gpList.data}
-            placeholder={gpList.loading ? "Loading GPs…" : "Select a GP"}
-            options={(gpList.data?.items ?? []).map((g) => ({ value: g.id, label: g.name, hint: g.lgdCode }))}
-            onChange={(v) => setFilters({ gp: v })}
-          />
-        </div>
-      </header>
+        <CircleFilter required className="sm:w-full" />
+        <DistrictFilter className="sm:w-full" />
+        <BlockFilter required className="sm:w-full" />
+        <SearchableSelect
+          label="Gram Panchayat"
+          className="w-full"
+          value={filters.gp}
+          disabled={!gpList.data}
+          placeholder={gpList.loading ? "Loading GPs…" : "Select a GP"}
+          options={(gpList.data?.items ?? []).map((g) => ({ value: g.id, label: g.name, hint: g.lgdCode }))}
+          onChange={(v) => setFilters({ gp: v })}
+        />
+      </TitleBar>
 
       {!filters.gp ? (
         <Card>
@@ -102,10 +84,16 @@ export function GpInsightsView() {
       ) : !d ? (
         <PageSkeleton />
       ) : (
-        <section aria-label={view.title} className="space-y-4">
-          <p className="text-sm text-muted-foreground">{view.hint}</p>
+        <section key={viewId} aria-label={view.title} className="view-in space-y-4">
+          <ViewHint>{view.hint}</ViewHint>
           <ViewContent id={viewId} d={d} />
-          {viewId === "summary" && <MoreViews viewHref={viewHref} />}
+          {viewId === "summary" && (
+            <RelatedViews
+              label="More in GP Insights"
+              title="More for this GP"
+              items={GP_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: viewHref(v.id), title: v.title }))}
+            />
+          )}
         </section>
       )}
     </div>
@@ -117,16 +105,3 @@ function ViewContent({ id, d }: { id: GpViewId; d: GpDetailResponse }) {
   return <GpUptimeSection uptime={d.uptime} gpName={d.gp.name} />;
 }
 
-/** Summary only: one line that points to the other view, so nothing on this page goes unnoticed. */
-function MoreViews({ viewHref }: { viewHref: (id: string) => string }) {
-  return (
-    <nav aria-label="More in GP Insights" className="flex flex-wrap items-center gap-2 border-t border-border pt-4 text-sm">
-      <span className="text-muted-foreground">More for this GP:</span>
-      {GP_VIEWS.filter((v) => v.id !== "summary").map((v) => (
-        <Link key={v.id} href={viewHref(v.id)} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-1.5 font-medium hover:border-primary/40 hover:bg-primary-soft/40">
-          {v.title} <ArrowRight className="size-3.5 text-primary" aria-hidden />
-        </Link>
-      ))}
-    </nav>
-  );
-}

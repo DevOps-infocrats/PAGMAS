@@ -8,26 +8,39 @@ Management Review PowerPoint.
 ## Project structure
 
 ```
-E:\PRATAP\BSNL
-├── backend\                 Python FastAPI API – import, calculations, security, PPT/PDF   → backend\README.md
-│   ├── app\                 application code (ingestion, analytics, api, security, reports)
-│   ├── scripts\             generate_env.py (creates .env) · hash_password.py (admin password hash)
-│   ├── tests\               security + accuracy tests against the real workbook
-│   ├── var\app.db           SQLite database (users, audit log, imported datasets)   – git-ignored
-│   ├── .env                 secrets and settings (SECRET_KEY, JWT, admin login)      – git-ignored
-│   └── start.ps1            one-command start on port 8010
-├── frontend\                Next.js 16 dashboard (React 19, Tailwind, ECharts)         → frontend\README.md
-│   ├── src\app\             routes: /login, /dashboard (+ circle / block / gp insights, reports, operations, settings)
-│   ├── src\features\        one folder per screen (overview, circle-insights, …, review)
-│   ├── src\components\      shared UI: charts, tables, KPI cards, filters, layout, brand
-│   └── src\lib\api\         typed API contracts + HTTP client (talks to the backend via /api)
-├── data\                    company data – git-ignored, never public
-│   ├── raw\                 source workbooks (e.g. Master Data V8.2 Daily track 09-10-26.xlsb)
-│   ├── uploads\             workbooks uploaded from Data Operations
-│   └── review_plan.json     management plan: monthly AMC plans + weekly closure targets (Target & Achievement page)
-├── assets\brand\            Pratap logo source
-└── docs\                    project report PDF + sample Management Review deck
+BSNL/
+├── backend/                 Python FastAPI API – import, calculations, security, PPT/PDF   → backend/README.md
+│   ├── app/
+│   │   ├── main.py          app factory: middleware, error handling, start-up, /api/health + /api/ready
+│   │   ├── config.py        all settings from .env (validated; production refuses unsafe values)
+│   │   ├── db.py, models.py SQLAlchemy engine/session and tables
+│   │   ├── api/             HTTP layer only: auth, analytics (read), admin (upload, users), escalation
+│   │   ├── ingestion/       workbook → validated rows → database (one import at a time)
+│   │   ├── analytics/       in-memory snapshot of the active dataset + every KPI rule
+│   │   ├── reports/         Management Review PPTX, weekly PDF
+│   │   └── security/        passwords, JWT, CSRF, rate limits, security headers
+│   ├── scripts/             generate_env.py · hash_password.py · migrate_to_postgres.py
+│   ├── tests/               security, accuracy (real workbook), review, ingestion, hardening tests
+│   ├── requirements.txt     runtime deps  ·  requirements-dev.txt adds the test tools
+│   ├── start.ps1 / start.sh local start on port 8010  ·  start-production.sh (1 worker, proxy headers)
+│   └── .env                 secrets and settings – git-ignored (template: .env.example)
+├── frontend/                Next.js 16 dashboard (React 19, Tailwind 4, ECharts)        → frontend/README.md
+│   ├── src/app/             routes: /login, /dashboard/* (overview, insights, AMC, field team, review, operations, settings)
+│   ├── src/features/        one folder per screen
+│   ├── src/components/      shared UI: charts, tables, KPI cards, filters, layout, navigation, brand
+│   ├── src/lib/api/         typed API contracts + HTTP client (talks to the backend via /api)
+│   └── src/proxy.ts         route gate (redirects to /login without a session)
+├── deploy/                  nginx.conf – HTTPS reverse proxy for a server install
+├── data/                    company data – git-ignored, never public
+│   ├── raw/                 source workbooks; the newest master file is imported on first start
+│   ├── uploads/             workbooks uploaded from Data Operations (old ones are cleaned up automatically)
+│   └── review_plan.json     management plan: monthly AMC plans + weekly closure targets
+├── assets/brand/            Pratap logo source
+└── docs/                    project report PDF + sample Management Review deck (build_report.py)
 ```
+
+Layering rule: `api/` only parses requests and checks roles, `analytics/` and `ingestion/` hold the logic and never
+import from `api/`, and the frontend only ever talks to `/api/v1` through `src/lib/api`.
 
 ## How it works
 
@@ -79,6 +92,34 @@ npm run dev
 
 Open http://localhost:3000/login and sign in with the admin account. Stop either server with **Ctrl + C**.
 The backend runs without auto-reload: restart it after changing backend code or `.env`.
+
+macOS / Linux: `cd backend && ./start.sh`, then `cd frontend && npm install && npm run dev`.
+
+## Production deployment
+
+```
+Browser ──HTTPS──► nginx (443, TLS, real client IP) ──► Next.js (3000) ──/api/*──► FastAPI (8010, 1 worker) ──► PostgreSQL
+```
+
+1. `backend/.env`: `APP_ENV=production`, `DATABASE_URL=postgresql+psycopg://…`, `CORS_ORIGINS=["https://<your-domain>"]`,
+   `TRUSTED_HOSTS=["<your-domain>"]`, `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` (`python scripts/hash_password.py`).
+   The API refuses to start in production when one of these is unsafe (localhost-only origins, plain password …).
+2. Start `backend/start-production.sh`, then `cd frontend && npm ci && npm run build && npm start`, with
+   `deploy/nginx.conf` in front (replace `analytics.example.com` and the certificate paths).
+3. Run the API with **one worker** (the import lock, rate limits and the data snapshot live in the process).
+4. Probes: `GET /api/health` (process up) and `GET /api/ready` (database reachable) – 503 when not ready.
+
+## Disk usage – why the folder is ~2 GB
+
+Only about 3 MB of it is source code. The rest is generated or company data, all git-ignored and safe to rebuild:
+
+| Folder | Size | What it is | Safe to delete? |
+|---|---|---|---|
+| `frontend/node_modules` | ~715 MB | npm packages (Next.js, React, ECharts, TypeScript …) | yes – `npm install` restores it |
+| `frontend/.next` | ~400 MB | Next.js dev/build cache | yes – recreated on the next `npm run dev` / `build` |
+| `backend/.venv` | ~530 MB | Python packages (pandas, numpy, FastAPI …) | yes – `pip install -r requirements-dev.txt` restores it |
+| `data/uploads` | ~170 MB | every workbook uploaded so far (many duplicates) | old/failed uploads are now pruned automatically |
+| `backend/var/app.db` | ~55 MB | old SQLite database from before the PostgreSQL move | yes, once PostgreSQL is confirmed as the live database |
 
 ## Weekly routine
 

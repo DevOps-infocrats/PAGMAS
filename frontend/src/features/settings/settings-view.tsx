@@ -1,19 +1,15 @@
 "use client";
 
-import { Loader2, Monitor, Moon, Sun, UserPlus } from "lucide-react";
+import { Loader2, Monitor, Moon, Sun } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
-import { DemoBadge, StatusBadge } from "@/components/feedback/badges";
-import { ErrorState } from "@/components/feedback/states";
 import { AdminGuard } from "@/components/layout/admin-guard";
 import { PageHeader } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { useTheme, type ThemePreference } from "@/components/providers/theme-provider";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/overlays";
 import { Card, Input, Label } from "@/components/ui/primitives";
-import { useApiQuery } from "@/hooks/use-api-query";
-import { useSession } from "@/hooks/use-session";
-import { API_MODE, IS_LIVE, adminApi, type AppUser } from "@/lib/api";
+import { API_MODE, IS_LIVE } from "@/lib/api";
 import { changePassword } from "@/lib/auth/session";
 import { THRESHOLDS } from "@/lib/metrics/definitions";
 import { cn } from "@/lib/utils/cn";
@@ -38,7 +34,7 @@ function SettingsContent() {
 
   return (
     <div className="space-y-8">
-      <PageHeader breadcrumbs={[{ label: "Admin" }, { label: "Settings" }]} title="Settings" description="Users, security and workspace preferences." meta={<DemoBadge />} />
+      <PageHeader breadcrumbs={[{ label: "Administration" }, { label: "Settings" }]} title="Settings" description="Users, security and workspace preferences." />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <SettingsCard title="Data environment" description="Where the dashboard reads its data from.">
@@ -79,7 +75,11 @@ function SettingsContent() {
         </SettingsCard>
 
         {IS_LIVE && <ChangePasswordCard />}
-        {IS_LIVE && <UsersCard />}
+        <SettingsCard title="Users" description="Accounts, roles and e-mail areas are managed on their own page.">
+          <Link href="/dashboard/users" className="text-sm font-medium text-primary hover:underline">
+            Open User Management →
+          </Link>
+        </SettingsCard>
       </div>
     </div>
   );
@@ -125,106 +125,6 @@ function ChangePasswordCard() {
   );
 }
 
-function UsersCard() {
-  const { session } = useSession();
-  const [tick, setTick] = useState(0);
-  const q = useApiQuery(`users:${tick}`, () => adminApi.listUsers());
-  const [form, setForm] = useState({ email: "", name: "", role: "viewer" as "admin" | "viewer", password: "" });
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
-  const toggle = async (u: AppUser) => {
-    try {
-      await adminApi.updateUser(u.id, { isActive: !u.isActive });
-      setTick((n) => n + 1);
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed" });
-    }
-  };
-
-  return (
-    <SettingsCard title="Users" description="Admins can import data and manage users. Viewers can only read dashboards." className="xl:col-span-2">
-      {q.error ? (
-        <ErrorState error={q.error} onRetry={q.reload} />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                {["Name", "Email", "Role", "Last sign-in", "Status", ""].map((c) => (
-                  <th key={c} scope="col" className="py-2 pr-3 font-medium">
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(q.data ?? []).map((u) => (
-                <tr key={u.id} className="border-b border-border/60 last:border-0">
-                  <td className="py-2.5 pr-3 font-medium">{u.name}</td>
-                  <td className="py-2.5 pr-3 text-muted-foreground">{u.email}</td>
-                  <td className="py-2.5 pr-3 capitalize">{u.role}</td>
-                  <td className="py-2.5 pr-3 text-muted-foreground">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : "Never"}</td>
-                  <td className="py-2.5 pr-3">
-                    {u.locked ? <StatusBadge tone="warning">Locked</StatusBadge> : u.isActive ? <StatusBadge tone="good">Active</StatusBadge> : <StatusBadge tone="neutral">Disabled</StatusBadge>}
-                  </td>
-                  <td className="py-2.5 text-right">
-                    {u.email !== session?.email && (
-                      <Button size="sm" variant="outline" onClick={() => toggle(u)}>
-                        {u.isActive ? "Disable" : "Enable"}
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <form
-        className="mt-6 grid grid-cols-1 gap-3 border-t border-border pt-5 md:grid-cols-5 md:items-end"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setBusy(true);
-          setMsg(null);
-          try {
-            await adminApi.createUser(form);
-            setMsg({ ok: true, text: `User ${form.email} created.` });
-            setForm({ email: "", name: "", role: "viewer", password: "" });
-            setTick((n) => n + 1);
-          } catch (err) {
-            setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not create user" });
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <Field id="u-name" label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
-        <Field id="u-email" label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
-        <div className="space-y-1.5">
-          <Label htmlFor="u-role">Role</Label>
-          <Select
-            ariaLabel="Role"
-            className="w-full"
-            value={form.role}
-            onValueChange={(v) => setForm({ ...form, role: v as "admin" | "viewer" })}
-            options={[
-              { value: "viewer", label: "Viewer" },
-              { value: "admin", label: "Admin" },
-            ]}
-          />
-        </div>
-        <Field id="u-pass" label="Initial password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} autoComplete="new-password" />
-        <Button type="submit" variant="primary" disabled={busy || !form.email || !form.name || !form.password}>
-          {busy ? <Loader2 className="animate-spin" /> : <UserPlus />} Add user
-        </Button>
-      </form>
-      {msg && <p className={cn("mt-3 text-sm", msg.ok ? "text-good-text" : "text-critical-text")}>{msg.text}</p>}
-    </SettingsCard>
-  );
-}
-
 function Field({
   id,
   label,
@@ -251,7 +151,7 @@ function Field({
 function SettingsCard({ title, description, children, className }: { title: string; description: string; children: React.ReactNode; className?: string }) {
   return (
     <Card className={cn("p-5", className)}>
-      <h2 className="text-[15px] font-semibold">{title}</h2>
+      <h2 className="text-[15px] font-bold text-subheading">{title}</h2>
       <p className="mb-4 text-[13px] text-muted-foreground">{description}</p>
       {children}
     </Card>

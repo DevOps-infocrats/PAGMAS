@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { TableSkeleton } from "@/components/feedback/states";
 import { BlockFilter, CircleFilter, DistrictFilter } from "@/components/filters/filter-bar";
-import { Breadcrumbs } from "@/components/layout/page-header";
+import { TitleBar, ViewHint } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { StatCard, type StatBreakdown } from "@/components/kpi/stat-card";
 import { Segmented } from "@/components/ui/controls";
@@ -38,31 +38,24 @@ export function FieldTeamView() {
   const pageHref = `${base}${base.includes("?") ? "&" : "?"}view=${view.id}`;
   return (
     <div className="space-y-5">
-      <header className="rounded-xl border border-border bg-card shadow-sm">
-        <div className="space-y-0.5 px-4 py-2.5">
-          <Breadcrumbs
-            items={[
-              { label: "Circle Overview", href: hrefTo("/dashboard", { circle: undefined, district: undefined, block: undefined, gp: undefined }) },
-              stateName ? { label: "Field Team & Escalation", href: pageHref } : { label: "Field Team & Escalation" },
-              ...(stateName ? [{ label: stateName }] : []),
-            ]}
-          />
-          <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-lg font-semibold leading-tight">
-            {stateName ?? "Field Team & Escalation"}
-            <span className="text-subtle-foreground" aria-hidden>
-              ·
-            </span>
-            <span className="text-primary">{view.title}</span>
-            <span className="text-[13px] font-normal text-muted-foreground">{view.hint}</span>
-          </h1>
-        </div>
-        <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t border-border px-4 py-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <CircleFilter className="sm:w-full" />
-          {located && <DistrictFilter className="sm:w-full" />}
-          {located && <BlockFilter className="sm:w-full" />}
-        </div>
-      </header>
-      <ViewBody key={view.id} id={view.id} />
+      <TitleBar
+        breadcrumbs={[
+          { label: "Circle Overview", href: hrefTo("/dashboard", { circle: undefined, district: undefined, block: undefined, gp: undefined }) },
+          stateName ? { label: "Field Team & Escalation", href: pageHref } : { label: "Field Team & Escalation" },
+          ...(stateName ? [{ label: stateName }] : []),
+        ]}
+        title={stateName ?? "Field Team & Escalation"}
+        view={view.title}
+        note={stateName ? "Field team of this state" : "All states – select a state to see only its team."}
+      >
+        <CircleFilter className="sm:w-full" />
+        {located && <DistrictFilter className="sm:w-full" />}
+        {located && <BlockFilter className="sm:w-full" />}
+      </TitleBar>
+      <div key={view.id} className="view-in space-y-5">
+        <ViewHint>{view.hint}</ViewHint>
+        <ViewBody id={view.id} />
+      </div>
     </div>
   );
 }
@@ -121,7 +114,7 @@ function SummaryView() {
     <div className="space-y-5">
       {r && <Source fileName={r.source.fileName} importedAt={r.source.importedAt} asOf={r.asOf} week={r.week.label} />}
       <section aria-label="Field team" className="space-y-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-subtle-foreground">Field team – each person counted once</h2>
+        <h2 className="text-[13px] font-extrabold uppercase tracking-[0.08em] text-subheading">Field team – each person counted once</h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <StatCard
             compact

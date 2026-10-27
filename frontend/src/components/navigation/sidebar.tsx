@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronsLeft, ChevronsRight, LogOut } from "lucide-react";
+import { ChevronDown, ChevronLeft, LogOut } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -60,29 +60,48 @@ export function SidebarContent({
   const initials = session?.name.split(" ").map((p) => p[0]).join("").slice(0, 2) ?? "··";
 
   return (
-    <div className="flex h-full flex-col">
-      <div className={cn("flex h-16 shrink-0 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "px-5")}>
-        <Link href={hrefTo("/dashboard")} onClick={onNavigate} aria-label="Pratap – Circle Overview" className="rounded">
-          {collapsed ? <Logo variant="mark" width={30} eager /> : <Logo variant="wordmark" width={112} eager />}
+    <div className="sidebar-surface relative flex h-full flex-col text-sidebar-foreground">
+      <div className={cn("flex h-14 shrink-0 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "gap-2.5 px-5")}>
+        <Link href={hrefTo("/dashboard")} onClick={onNavigate} aria-label="Pratap – Circle Overview" className="flex items-center gap-2.5 rounded">
+          {collapsed ? <Logo variant="mark" width={28} eager /> : <Logo variant="wordmark" width={92} eager />}
         </Link>
+        {!collapsed && (
+          <span className="mt-1 border-l border-sidebar-border pl-2.5 text-[11px] font-semibold uppercase leading-tight tracking-[0.08em] text-sidebar-muted">
+            Network
+            <br />
+            Analytics
+          </span>
+        )}
       </div>
 
-      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-4">
-        {NAV.map((group) => {
+      {onToggle && (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="absolute -right-3 top-[17px] z-10 hidden size-6 items-center justify-center rounded-full border border-sidebar-border bg-card text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-primary lg:flex"
+        >
+          <ChevronLeft className={cn("size-3.5 transition-transform", collapsed && "rotate-180")} />
+        </button>
+      )}
+
+      <nav aria-label="Main" className={cn("scroll-thin flex-1 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}>
+        {NAV.map((group, gi) => {
           const items = group.items.filter((i) => !i.adminOnly || isAdmin);
           if (!items.length) return null;
           return (
-            <div key={group.label} className="mb-5">
+            <div key={group.label} className={cn(gi > 0 && "mt-5")}>
               {!collapsed ? (
-                <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-subtle-foreground">{group.label}</p>
+                <p className="mb-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">{group.label}</p>
               ) : (
-                <div className="mx-auto mb-2 h-px w-6 bg-sidebar-border" aria-hidden />
+                gi > 0 && <div className="mx-auto mb-3 h-px w-6 bg-sidebar-border" aria-hidden />
               )}
-              <ul className="space-y-1">
+              <ul className="space-y-0.5">
                 {items.map((item) => {
                   const active = isActive(pathname, item.href);
                   const menu = subMenus[item.href];
                   const showSub = !!menu && menu.open && !folded[item.href];
+                  const text = item.shortLabel ?? item.label;
                   const link = (
                     <Link
                       href={hrefTo(item.href)}
@@ -91,44 +110,31 @@ export function SidebarContent({
                         onNavigate?.();
                       }}
                       aria-current={active ? "page" : undefined}
-                      aria-label={collapsed ? item.label : undefined}
+                      aria-label={collapsed || item.shortLabel ? item.label : undefined}
                       className={cn(
-                        "relative flex items-center gap-3 rounded-md text-sm transition-colors",
-                        // two-line labels (e.g. "AMC Conversion Plan vs Execution") grow and keep breathing room
-                        collapsed ? "h-9 justify-center" : "min-h-9 px-3 py-1.5",
+                        "group relative flex h-9 items-center gap-3 rounded-md text-[13.5px] transition-colors",
+                        collapsed ? "justify-center" : "px-2.5",
                         menu?.open && !collapsed && "pr-8",
-                        active ? "bg-primary-soft font-medium text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                        active ? "brand-gradient font-semibold text-white shadow-[0_6px_16px_-6px_rgb(10_143_196/0.75)]" : "font-medium text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-strong",
                       )}
                     >
-                      {active && <span className="brand-gradient absolute inset-y-1.5 left-0 w-[3px] rounded-full" aria-hidden />}
-                      <item.icon className={cn("size-[18px] shrink-0", active && "text-primary")} />
-                      {!collapsed && <span className="line-clamp-2 leading-tight">{item.label}</span>}
+                      <item.icon className={cn("size-[18px] shrink-0 transition-colors", active ? "text-white" : "text-sidebar-muted group-hover:text-sidebar-strong")} />
+                      {!collapsed && <span className="truncate">{text}</span>}
                     </Link>
                   );
                   return (
                     <li key={item.href}>
-                      {collapsed ? (
+                      {collapsed || item.shortLabel ? (
                         <Tooltip content={item.label} side="right">
-                          {link}
+                          {menu?.open && !collapsed ? <SubToggle link={link} menu={menu} open={showSub} onToggle={() => setFolded((f) => ({ ...f, [item.href]: !f[item.href] }))} /> : link}
                         </Tooltip>
                       ) : menu?.open ? (
-                        <div className="relative">
-                          {link}
-                          <button
-                            type="button"
-                            onClick={() => setFolded((f) => ({ ...f, [item.href]: !f[item.href] }))}
-                            aria-expanded={showSub}
-                            aria-label={showSub ? `Hide ${menu.label}` : `Show ${menu.label}`}
-                            className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                          >
-                            <ChevronDown className={cn("size-4 transition-transform", !showSub && "-rotate-90")} />
-                          </button>
-                        </div>
+                        <SubToggle link={link} menu={menu} open={showSub} onToggle={() => setFolded((f) => ({ ...f, [item.href]: !f[item.href] }))} />
                       ) : (
                         link
                       )}
                       {menu && showSub && (
-                        <ul aria-label={menu.label} className={cn("mt-0.5 space-y-0.5", !collapsed && "ml-[21px] border-l border-sidebar-border pl-2")}>
+                        <ul aria-label={menu.label} className={cn("mt-0.5 space-y-0.5", collapsed ? "pb-1" : "relative mb-1.5 ml-[21px] border-l border-sidebar-border pl-2.5")}>
                           {menu.items.map((pg, i) => {
                             const on = menu.current === pg.id;
                             const sub = (
@@ -138,14 +144,19 @@ export function SidebarContent({
                                 aria-current={on ? "page" : undefined}
                                 aria-label={collapsed ? `${i + 1}: ${pg.title}` : undefined}
                                 className={cn(
-                                  "flex items-center gap-2 rounded-md text-[13px] transition-colors",
-                                  // full names: a long one wraps to a second line instead of being cut off
-                                  collapsed ? "mx-auto h-7 w-7 justify-center" : "min-h-8 px-2 py-1.5 leading-snug",
-                                  on ? "bg-primary-soft font-medium text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                                  "relative flex items-center rounded-md text-[13px] transition-colors",
+                                  collapsed ? "mx-auto h-7 w-7 justify-center text-[11px] font-semibold" : "min-h-8 px-2.5 py-1.5 leading-snug",
+                                  on
+                                    ? collapsed
+                                      ? "brand-gradient text-white"
+                                      : "bg-sidebar-hover font-semibold text-sidebar-strong"
+                                    : collapsed
+                                      ? "bg-sidebar-hover text-sidebar-foreground hover:bg-sidebar-active hover:text-sidebar-strong"
+                                      : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-strong",
                                 )}
                               >
-                                <span className={cn("flex size-5 shrink-0 items-center justify-center rounded text-[11px] font-semibold", on ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{i + 1}</span>
-                                {!collapsed && <span className="min-w-0 break-words">{pg.short}</span>}
+                                {!collapsed && on && <span className="absolute -left-[11.5px] inset-y-1.5 w-[3px] rounded-full brand-gradient-v" aria-hidden />}
+                                {collapsed ? i + 1 : <span className="min-w-0 break-words">{pg.short}</span>}
                               </Link>
                             );
                             return (
@@ -171,38 +182,42 @@ export function SidebarContent({
         })}
       </nav>
 
-      <div className="shrink-0 border-t border-sidebar-border p-3">
-        <div className={cn("flex items-center gap-3 rounded-md", collapsed ? "flex-col" : "px-2 py-1.5")}>
-          <div className="brand-gradient flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white" aria-hidden>
+      <div className={cn("shrink-0 border-t border-sidebar-border", collapsed ? "p-2" : "p-3")}>
+        <div className={cn("flex items-center gap-3 rounded-lg", collapsed ? "flex-col gap-2 py-1" : "bg-sidebar-hover px-2.5 py-2")}>
+          <div className="brand-gradient flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white shadow-xs" aria-hidden>
             {initials}
           </div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{session?.name ?? "—"}</p>
-              <p className="truncate text-xs capitalize text-muted-foreground">{session ? (IS_LIVE ? session.role : `${session.role} · demo`) : ""}</p>
+              <p className="truncate text-[13px] font-semibold leading-tight text-sidebar-strong">{session?.name ?? "—"}</p>
+              <p className="mt-0.5 truncate text-[11.5px] capitalize text-sidebar-muted">{session ? (IS_LIVE ? session.role : `${session.role} · demo`) : ""}</p>
             </div>
           )}
           <Tooltip content="Log out" side={collapsed ? "right" : "top"}>
-            <button type="button" onClick={logout} aria-label="Log out" className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground">
+            <button type="button" onClick={logout} aria-label="Log out" className="rounded-md p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-active hover:text-[#ff8f8f]">
               <LogOut className="size-4" />
             </button>
           </Tooltip>
         </div>
-        {onToggle && (
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={cn(
-              "mt-2 flex h-8 w-full items-center gap-2 rounded-md text-xs text-muted-foreground hover:bg-accent hover:text-foreground",
-              collapsed ? "justify-center" : "px-3",
-            )}
-          >
-            {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
-            {!collapsed && "Collapse"}
-          </button>
-        )}
       </div>
+    </div>
+  );
+}
+
+/** Nav link of an open page with the chevron that folds its view list away. */
+function SubToggle({ link, menu, open, onToggle }: { link: React.ReactNode; menu: SubMenu; open: boolean; onToggle: () => void }) {
+  return (
+    <div className="relative">
+      {link}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={open ? `Hide ${menu.label}` : `Show ${menu.label}`}
+        className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-white/85 hover:bg-white/15 hover:text-white"
+      >
+        <ChevronDown className={cn("size-4 transition-transform", !open && "-rotate-90")} />
+      </button>
     </div>
   );
 }

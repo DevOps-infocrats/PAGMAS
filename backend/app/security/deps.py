@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -27,24 +29,48 @@ class CurrentUser:
         return self.role == "admin"
 
 
+@lru_cache(maxsize=8)
+def _networks(proxies: tuple[str, ...]) -> tuple[IPv4Network | IPv6Network, ...]:
+    return tuple(ip_network(p.strip(), strict=False) for p in proxies if p.strip())
+
+
+def _parse_ip(value: str) -> IPv4Address | IPv6Address | None:
+    try:
+        addr = ip_address(value.strip().strip("[]"))
+    except ValueError:
+        return None
+    return (addr.ipv4_mapped or addr) if isinstance(addr, IPv6Address) else addr
+
+
+def _trusted(value: str, networks: tuple[IPv4Network | IPv6Network, ...]) -> bool:
+    addr = _parse_ip(value)
+    return addr is not None and any(addr.version == n.version and addr in n for n in networks)
+
+
 def real_ip(peer: str | None, forwarded_for: str | None) -> str:
-    """Client IP. X-Forwarded-For is only honoured when the direct peer is a trusted proxy, and then read from
-    the right: each proxy appends the address it received the request from, so the rightmost entry that is not
-    one of our own proxies is the real client. Entries further left were sent by the client and can be forged."""
+    """Client IP. X-Forwarded-For is only honoured when the direct peer is a trusted proxy (TRUSTED_PROXIES: IPs
+    or CIDRs), and then read from the right: each proxy appends the address it received the request from, so the
+    rightmost entry that is not one of our own proxies is the real client. Entries further left were sent by the
+    client and can be forged, so they are never used."""
     peer = peer or "unknown"
-    trusted = get_settings().trusted_proxies
-    if forwarded_for and peer in trusted:
-        hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
-        for hop in reversed(hops):
-            if hop not in trusted:
-                return hop[:64]
-        if hops:
-            return hops[0][:64]
-    return peer
+    networks = _networks(tuple(get_settings().trusted_proxies))
+    if not forwarded_for or not _trusted(peer, networks):
+        return peer
+    hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
+    nearest = peer
+    for hop in reversed(hops):
+        if _trusted(hop, networks):
+            nearest = hop
+            continue
+        # A malformed entry cannot have come from our proxies: fall back to the last hop we trust.
+        return str(_parse_ip(hop)) if _parse_ip(hop) else nearest[:64]
+    return nearest[:64]  # every entry is one of our proxies
 
 
 def client_ip(request: Request) -> str:
-    return real_ip(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
+    # Several X-Forwarded-For headers are one list, in order (RFC 7230 §3.2.2).
+    xff = ", ".join(request.headers.getlist("x-forwarded-for")) or None
+    return real_ip(request.client.host if request.client else None, xff)
 
 
 def audit(db: Session, action: str, request: Request | None, user_id: int | None = None, detail: str | None = None) -> None:

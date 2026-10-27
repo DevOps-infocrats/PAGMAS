@@ -40,6 +40,7 @@ export function StatCard({
   href,
   linkLabel = "View list",
   compact = false,
+  dense = false,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   /** CSS colour used for the icon tile */
@@ -62,17 +63,19 @@ export function StatCard({
   linkLabel?: string;
   /** Shorter card (less padding and spacing, slightly smaller number) – Circle Overview */
   compact?: boolean;
+  /** Further reduces vertical spacing for single-row summary cards. */
+  dense?: boolean;
 }) {
   if (loading) {
     return (
-      <div className={cn("rounded-xl border border-border bg-card p-5", className)} role="status" aria-label={`Loading ${label}`}>
+      <div className={cn("rounded-xl border border-border bg-card px-4 shadow-sm", dense ? "py-2" : "py-3", className)} role="status" aria-label={`Loading ${label}`}>
         <div className="flex items-center justify-between">
           <Skeleton className="h-3.5 w-28" />
-          <Skeleton className="size-9 rounded-lg" />
+          <Skeleton className="size-6 rounded-md" />
         </div>
-        <Skeleton className="mt-4 h-8 w-24" />
-        <Skeleton className="mt-3 h-2 w-full" />
-        <LoadingLabel className="mt-3" />
+        <Skeleton className="mt-2.5 h-6 w-24" />
+        <Skeleton className="mt-2 h-2 w-full" />
+        <LoadingLabel className="mt-2" />
       </div>
     );
   }
@@ -80,23 +83,30 @@ export function StatCard({
   const barTotal = (bar ?? []).reduce((s, b) => s + (b.value ?? 0), 0);
   const headline = (
     <div className="min-w-0">
-      <div className="flex items-center gap-1.5">
-        <span className="text-[13px] font-medium text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-2">
+        <span
+          className="flex size-6 shrink-0 items-center justify-center rounded-md"
+          style={{ background: `color-mix(in srgb, ${tone} 14%, transparent)`, color: tone }}
+          aria-hidden
+        >
+          <Icon className="size-3.5" />
+        </span>
+        <span className="text-[13px] font-bold text-subheading">{label}</span>
         <span className={cn(href && "relative z-10")}>
           <InfoTip label={label} content={info} />
         </span>
       </div>
-      <p className={cn("flex items-baseline gap-1.5", compact ? "mt-1.5" : "mt-2")}>
-        <span className={cn("tabular font-semibold leading-none tracking-tight", compact ? "text-[26px]" : "text-[30px]")}>{value}</span>
-        {unit && <span className="text-sm font-medium text-muted-foreground">{unit}</span>}
+      <p className={cn("flex items-baseline gap-1.5", dense ? "mt-1" : "mt-1.5")}>
+        <span className={cn("tabular font-bold leading-none tracking-tight text-heading", dense ? "text-[22px]" : compact ? "text-[24px]" : "text-[26px]")}>{value}</span>
+        {unit && <span className="text-[13px] font-medium text-muted-foreground">{unit}</span>}
       </p>
-      {caption && <p className={cn("text-xs text-muted-foreground", compact ? "mt-1.5" : "mt-2")}>{caption}</p>}
+      {caption && <p className={cn("text-xs text-muted-foreground", dense ? "mt-0.5" : "mt-1")}>{caption}</p>}
       {href && (
         // Stretched link: the ::after layer covers the card, so a click anywhere opens the list.
         <Link
           href={href}
           aria-label={`${linkLabel}: ${label}`}
-          className={cn(compact ? "mt-2" : "mt-3", "inline-flex items-center gap-1 text-xs font-semibold text-primary after:absolute after:inset-0 after:rounded-xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring/40")}
+          className={cn(dense ? "mt-1" : "mt-1.5", "inline-flex items-center gap-1 text-xs font-semibold text-primary after:absolute after:inset-0 after:rounded-xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring/40")}
         >
           {linkLabel} <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </Link>
@@ -105,7 +115,7 @@ export function StatCard({
   );
 
   const details = (breakdown?.length || bar?.length) && (
-    <div className={cn("min-w-0", compact ? "space-y-2" : "space-y-3")}>
+    <div className={cn("min-w-0", dense ? "space-y-1.5" : "space-y-2")}>
       {bar && barTotal > 0 && (
         <div className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={bar.map((b) => `${b.label} ${formatCount(b.value)}`).join(", ")}>
           {bar.map((b) => (
@@ -114,7 +124,7 @@ export function StatCard({
         </div>
       )}
       {breakdown && (
-        <dl className={cn("text-[13px]", compact ? "space-y-1" : "space-y-1.5")}>
+        <dl className={cn("text-[13px]", dense ? "space-y-0.5" : "space-y-1")}>
           {breakdown.map((b) => (
             <div key={b.label} className="flex items-center justify-between gap-3">
               <dt className="flex min-w-0 items-center gap-2 text-muted-foreground">
@@ -137,28 +147,23 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "group relative flex flex-col rounded-xl border border-border bg-card transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.18)]",
-        compact ? "px-5 py-4" : "p-5",
-        href && "cursor-pointer hover:border-primary/40",
+        "group relative flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-[box-shadow,transform,border-color] duration-200",
+        "px-4",
+        dense ? "py-2" : compact ? "py-3" : "py-3.5",
+        href && "cursor-pointer hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md",
         className,
       )}
     >
-      <span
-        className={cn("absolute right-5 flex size-9 items-center justify-center rounded-lg", compact ? "top-4" : "top-5")}
-        style={{ background: `color-mix(in srgb, ${tone} 12%, transparent)`, color: tone }}
-        aria-hidden
-      >
-        <Icon className="size-[18px]" />
-      </span>
+      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
       {layout === "split" && details ? (
-        <div className={cn("grid flex-1 grid-cols-1 pr-12", compact ? "gap-4" : "gap-5", "sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] sm:items-center")}>
+        <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] sm:items-center">
           {headline}
           {details}
         </div>
       ) : (
-        <div className={cn("flex flex-1 flex-col pr-12", compact ? "gap-3" : "gap-4")}>
+        <div className={cn("flex flex-1 flex-col", dense ? "gap-2" : "gap-2.5")}>
           {headline}
-          {details && <div className="-mr-12 mt-auto">{details}</div>}
+          {details && <div className="mt-auto">{details}</div>}
         </div>
       )}
     </div>

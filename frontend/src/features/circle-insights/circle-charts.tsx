@@ -27,7 +27,7 @@ export function FlipButton({ showGraph, onToggle }: { showGraph: boolean; onTogg
       onClick={onToggle}
       aria-pressed={showGraph}
       aria-label={showGraph ? "Show table" : "Show graph"}
-      className="group inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card pl-3.5 pr-1.5 text-[13px] font-medium text-foreground shadow-sm transition-colors hover:border-primary/40 hover:bg-primary-soft/60"
+      className="group inline-flex h-8 items-center gap-2 rounded-full border border-border bg-card pl-3 pr-1 text-[13px] font-medium text-foreground shadow-xs transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
     >
       {showGraph ? "Table" : "Graph"}
       <span className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform group-hover:translate-x-0.5">
@@ -42,7 +42,7 @@ function HeadCell({ children, first, className, compact }: { children: React.Rea
     <th
       scope="col"
       className={cn(
-        "whitespace-nowrap py-2.5 text-[11px] font-semibold uppercase text-muted-foreground",
+        "whitespace-nowrap py-2.5 text-[11.5px] font-bold uppercase text-subheading",
         compact ? "px-1.5 tracking-normal" : "px-2.5 tracking-wider",
         first ? "sticky left-0 z-10 bg-muted text-left" : "text-right",
         className,
@@ -182,7 +182,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
           <caption className="sr-only">Block-wise GP count with AMC status</caption>
           <thead>
             {/* group row: what each block of numbers means */}
-            <tr className="bg-muted text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <tr className="bg-muted text-[12.5px] font-semibold text-foreground">
               <th scope="colgroup" colSpan={3} className="px-3 pt-2.5 text-left" />
               <th scope="colgroup" colSpan={3} className="border-l border-border px-3 pt-2.5 text-center">
                 GPs
@@ -197,7 +197,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
                   key={c.label}
                   scope="col"
                   className={cn(
-                    "whitespace-nowrap px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground",
+                    "whitespace-nowrap px-3 py-2 text-[12.5px] font-semibold text-foreground",
                     i >= 3 ? "text-right" : "text-left",
                     i === 0 && "w-10",
                     (i === 3 || i === 6) && "border-l border-border",
@@ -482,10 +482,10 @@ export function UptimeSection({ kind, data, loading, stateName }: { kind: "gp" |
       }
     >
       {graph ? (
-        <div key="graph" className="flip-in rounded-xl border border-border bg-gradient-to-b from-muted/40 to-transparent p-4">
+        <div key="graph" className="flip-in rounded-lg border border-border bg-gradient-to-b from-muted/40 to-transparent p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h4 className="text-[15px] font-semibold">{chartTitle}</h4>
+              <h4 className="text-[15px] font-bold text-subheading">{chartTitle}</h4>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {trend.values.length ? (
                   <>
@@ -507,7 +507,7 @@ export function UptimeSection({ kind, data, loading, stateName }: { kind: "gp" |
                 <span className="text-xs text-muted-foreground">View</span>
                 <Select
                   ariaLabel="Graph columns"
-                  className="h-8 w-36 border-0 px-2 font-medium"
+                  className="h-8 w-36 border-0 px-2 font-medium shadow-none hover:bg-accent"
                   value={gView}
                   onValueChange={(v) => setGView(v as "week" | "month" | "day")}
                   options={[
@@ -519,7 +519,7 @@ export function UptimeSection({ kind, data, loading, stateName }: { kind: "gp" |
               </label>
               <label className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1">
                 <span className="text-xs text-muted-foreground">Show</span>
-                <Select ariaLabel="Graph measure" className="h-8 w-52 border-0 px-2 font-medium" value={gShow} onValueChange={setGShow} options={showOptions} />
+                <Select ariaLabel="Graph measure" className="h-8 w-52 border-0 px-2 font-medium shadow-none hover:bg-accent" value={gShow} onValueChange={setGShow} options={showOptions} />
               </label>
             </div>
           </div>

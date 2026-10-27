@@ -1,7 +1,8 @@
 """One-time move from SQLite (backend/var/app.db) to PostgreSQL.
 
     1. users + audit log are copied (logins, roles, password hashes and history stay as they are)
-    2. the master-data workbook in data/raw is imported into PostgreSQL (all sheets the dashboard uses)
+    2. the newest master-data workbook in data/raw is imported into PostgreSQL (all sheets the dashboard uses);
+       skipped when PostgreSQL already has active data, unless --force-import is given
     3. row counts are checked
 
 Run from backend/ with DATABASE_URL=postgresql+psycopg://… in .env:
@@ -57,6 +58,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--replace-users", action="store_true", help="overwrite users / audit log already in PostgreSQL")
     ap.add_argument("--skip-import", action="store_true", help="only copy users / audit log")
+    ap.add_argument("--force-import", action="store_true", help="import the workbook even when PostgreSQL already has active data")
     args = ap.parse_args()
 
     if not is_postgres():
@@ -70,6 +72,7 @@ def main() -> int:
     with target.connect() as c:
         have_users = c.scalar(select(func.count()).select_from(User)) or 0
         have_data = c.scalar(select(func.count()).select_from(Dataset)) or 0
+        have_active = c.scalar(select(func.count()).select_from(Dataset).where(Dataset.is_active.is_(True))) or 0
     if (have_users or have_data) and not args.replace_users:
         print(f"PostgreSQL already has {have_users} user(s) and {have_data} dataset(s). Run with --replace-users to overwrite users / audit log.")
         return 1
@@ -85,18 +88,22 @@ def main() -> int:
     print(f"audit log  : {audits} copied (SQLite {src_audits})")
     ok = users == src_users and audits == src_audits
 
-    if not args.skip_import:
+    if have_active and not args.skip_import and not args.force_import:
+        print("import     : skipped - PostgreSQL already has active data (pass --force-import to import the workbook again)")
+    elif not args.skip_import:
         raw = get_settings().raw_dir
-        files = sorted(p for p in raw.glob("*") if p.suffix.lower() in {".xlsb", ".xlsx", ".xlsm"})
+        # Newest by modification time: names carry dd-mm-yy dates, which do not sort.
+        files = [p for p in raw.glob("*") if p.suffix.lower() in {".xlsb", ".xlsx", ".xlsm"} and "escalation" not in p.name.lower()]
         if not files:
             print(f"No workbook in {raw} - upload one from Data Operations.")
             return 1
         from app.ingestion.service import import_file
 
+        newest = max(files, key=lambda p: p.stat().st_mtime)
         started = datetime.now(UTC)
-        ds = import_file(files[-1])
+        ds = import_file(newest)
         secs = (datetime.now(UTC) - started).total_seconds()
-        print(f"import     : {files[-1].name} -> dataset {ds.id} {ds.status} in {secs:.0f}s ({ds.rows_accepted} GP rows accepted, {ds.rows_rejected} rejected, data as of {ds.data_as_of})")
+        print(f"import     : {newest.name} -> dataset {ds.id} {ds.status} in {secs:.0f}s ({ds.rows_accepted} GP rows accepted, {ds.rows_rejected} rejected, data as of {ds.data_as_of})")
         with target.connect() as c:
             gps = c.scalar(select(func.count()).select_from(Gp).where(Gp.dataset_id == ds.id))
             vals = c.scalar(select(func.count()).select_from(GpAvailability).where(GpAvailability.dataset_id == ds.id))

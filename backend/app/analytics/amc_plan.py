@@ -68,7 +68,7 @@ def windows(store: Store, week_code: str, as_of: dt.date | None = None) -> Windo
     date (plan_data_date). With `as_of` (a picked date): as of that date, its month and its Fri–Thu week."""
     last = plan_data_date(store)
     if as_of is not None:
-        d = min(as_of, last)
+        d = max(min(as_of, last), store.weeks[0].start)  # never before the file's first week
         _, _, start, end = _week_of(store, d)
         return Windows(d, d, d.replace(day=1), d.replace(day=calendar.monthrange(d.year, d.month)[1]), start, end)
     w = store.week(week_code)
@@ -78,8 +78,9 @@ def windows(store: Store, week_code: str, as_of: dt.date | None = None) -> Windo
 
 
 def available_dates(store: Store) -> list[str]:
-    """Dates that can be picked on the page: every day with data, newest first."""
+    """Dates that can be picked on the page: every day with data from the file's first week on, newest first."""
     first = min(store.daily.columns) if len(store.daily.columns) else store.data_as_of
+    first = min(max(first, store.weeks[0].start), store.data_as_of)
     n = (store.data_as_of - first).days
     return [(store.data_as_of - dt.timedelta(days=i)).isoformat() for i in range(n + 1)]
 
@@ -156,10 +157,12 @@ def amc_plan_summary(store: Store, week_code: str, as_of: dt.date | None = None)
     if has_plan and no_plan:
         warnings.append(f"No GP-wise plan in the file for {', '.join(no_plan)} – counted as 0.")
     if has_plan:
-        # Only an Ach Date after the FILE's data date is suspicious; later dates seen from an earlier week are normal.
-        late = int(_between(p["ach_date"], win.month_as_of + dt.timedelta(days=1), dt.date.max).sum())
+        # Only an Ach Date after the FILE's plan data date is suspicious; later dates seen from an earlier week or a
+        # picked earlier date are normal.
+        plan_end = plan_data_date(store)
+        late = int(_between(p["ach_date"], plan_end + dt.timedelta(days=1), dt.date.max).sum())
         if late:
-            warnings.append(f"{late} GP{'s have an Ach Date' if late != 1 else ' has an Ach Date'} after the file's last week ({win.month_as_of:%d %b %Y}) – not counted; please check the date.")
+            warnings.append(f"{late} GP{'s have an Ach Date' if late != 1 else ' has an Ach Date'} after the file's last week ({plan_end:%d %b %Y}) – not counted; please check the date.")
         if tot["monthTarget"] == 0:
             warnings.append(f"No Planned Date in {win.month_start:%b %Y} in the file yet – the month target shows 0.")
 
@@ -258,14 +261,9 @@ def targets_stamp() -> float | None:
 
 
 def _week_of(store: Store, d: dt.date) -> tuple[str, int, dt.date, dt.date]:
-    """The file's Fri–Thu week containing d (weeks after the file's last week continue its 7-day rhythm)."""
-    for w in store.weeks:
-        if w.start <= d <= w.end:
-            return w.code, w.number, w.start, w.end
-    last = store.weeks[-1]
-    k = (d - last.start).days // 7
-    start = last.start + dt.timedelta(days=7 * k)
-    return f"W-{last.number + k}", last.number + k, start, start + dt.timedelta(days=6)
+    """The file's Fri–Thu week containing d (weeks outside the file's weeks continue its 7-day rhythm, numbered 1..52)."""
+    w = store.week_containing(d)
+    return w.code, w.number, w.start, w.end
 
 
 def _status(start: dt.date, end: dt.date, as_of: dt.date) -> str:
@@ -399,14 +397,17 @@ NOT_ASSIGNED = "Not assigned"
 VACANT = "Vacant (no AM)"
 
 
-def _am_names(store: Store, idx: pd.Index) -> tuple[pd.Series, str, str | None]:
+def _am_names(store: Store, idx: pd.Index) -> tuple[pd.Series, str, str | None, pd.DataFrame | None]:
     """Area manager of each GP: the Escalation Matrix (latest upload, complete per GP) when there is one, else the
-    master data's AM Name. Returns (names, source, source file). Blank -> "Not assigned", "Vacant…" -> VACANT."""
+    master data's AM Name. Returns (names, source, source file, matrix rows of the GPs or None).
+    Blank -> "Not assigned", "Vacant…" -> VACANT."""
     from .escalation import NoEscalationData, _frame, is_vacant
 
+    esc_rows: pd.DataFrame | None = None
     try:
         meta, esc = _frame(store)
-        raw = esc["am_name"].reindex(idx)
+        esc_rows = esc.reindex(idx)
+        raw = esc_rows["am_name"]
         source, file_name = "escalation", meta.get("fileName") or meta.get("file_name")
     except NoEscalationData:
         raw = store.gps.loc[idx, "am_name"]
@@ -417,10 +418,31 @@ def _am_names(store: Store, idx: pd.Index) -> tuple[pd.Series, str, str | None]:
             return NOT_ASSIGNED
         return VACANT if is_vacant(v) else " ".join(v.split())
 
-    return raw.map(label), source, file_name
+    return raw.map(label), source, file_name, esc_rows
 
 
-def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict[str, Any]:
+def _distinct(values: pd.Series, title: bool = False) -> list[str]:
+    """Distinct non-blank texts in first-seen order ("a / b" cells are split)."""
+    out: dict[str, None] = {}
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        for part in v.split(" / "):
+            part = " ".join(part.split())
+            if part and part != "0":
+                out[part.title() if title else part] = None
+    return list(out)
+
+
+def mask_email(v: str, full: bool) -> str:
+    """E-mail in full for admins, otherwise the first 2 characters of the name part (sh*****@pratap.co.in)."""
+    if full or "@" not in v:
+        return v
+    user, domain = v.split("@", 1)
+    return f"{user[:2]}{'*' * max(3, len(user) - 2)}@{domain}"
+
+
+def amc_plan_area_managers(store: Store, week_code: str, circle_id: str, full_contacts: bool = False) -> dict[str, Any]:
     """Area-manager-wise view of one state for AMC Conversion → Monthly / Weekly Plan vs Execution.
 
     Per area manager: blocks and existing GPs (GP Wise Data), AMC / non-AMC GPs as of the reporting week's end (same
@@ -432,7 +454,11 @@ def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict
     if not sel.any():
         raise KeyError(circle_id)
     sub = g[sel]
-    names, source, file_name = _am_names(store, sub.index)
+    names, source, file_name, esc_rows = _am_names(store, sub.index)
+    # Business area per GP: the matrix's BA column, else (no matrix, or a GP without a BA there) the master data's BA.
+    master_ba = sub["ba"] if "ba" in sub.columns else pd.Series(None, index=sub.index, dtype=object)
+    ba = esc_rows["ba"].where(esc_rows["ba"].notna(), master_ba) if esc_rows is not None and "ba" in esc_rows.columns else master_ba
+    am_email = esc_rows["am_email"] if esc_rows is not None and "am_email" in esc_rows.columns else pd.Series(None, index=sub.index, dtype=object)
     wf = store.week_frame(week_code).loc[sub.index]
     win = windows(store, week_code)
     code, number, _, _ = _week_of(store, win.week_start)
@@ -453,9 +479,12 @@ def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict
     for am, idx in sub.groupby(names).groups.items():
         part = sub.loc[idx]
         amc = wf.loc[idx, "amc"]
+        assigned = am not in (NOT_ASSIGNED, VACANT)
         row = {
             "name": am,
-            "assigned": am not in (NOT_ASSIGNED, VACANT),
+            "assigned": assigned,
+            "businessAreas": sorted(_distinct(ba.loc[idx], title=True)),
+            "emails": [mask_email(e, full_contacts) for e in _distinct(am_email.loc[idx])] if assigned else [],
             "blocks": int(part["block_id"].nunique()),
             "existingGps": len(idx),
             "amcGps": int(amc.sum()),
@@ -469,7 +498,7 @@ def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict
     # real names A–Z, then Vacant / Not assigned
     rows.sort(key=lambda r: (not r["assigned"], r["name"] == NOT_ASSIGNED, r["name"].lower()))
     keys = ("existingGps", "amcGps", "nonAmcGps", "monthTarget", "monthAchieved", "weekTarget", "weekAchieved")
-    total = {"name": "Total", "assigned": True, "blocks": int(sub["block_id"].nunique()), **{k: sum(r[k] for r in rows) for k in keys}}
+    total = {"name": "Total", "assigned": True, "businessAreas": sorted(_distinct(ba, title=True)), "emails": [], "blocks": int(sub["block_id"].nunique()), **{k: sum(r[k] for r in rows) for k in keys}}
     for r in [*rows, total]:
         r["monthAchievedPct"] = _pct(r["monthAchieved"], r["monthTarget"])
         r["weekAchievedPct"] = _pct(r["weekAchieved"], r["weekTarget"])
@@ -487,6 +516,9 @@ def amc_plan_area_managers(store: Store, week_code: str, circle_id: str) -> dict
         "circle": {"id": circle_id, "name": state},
         "amSource": source,
         "amSourceFile": file_name,
+        # e-mails come from the matrix's AM Email ID column; shown in full to admins only (like phone numbers)
+        "hasEmails": bool(am_email.notna().any()),
+        "emailsMasked": not full_contacts,
         "month": {"id": f"{win.month_start:%Y-%m}", "label": f"{win.month_start:%b %Y}", "start": win.month_start.isoformat(), "end": win.month_end.isoformat(), "asOf": win.month_as_of.isoformat()},
         "week": {"id": code, "number": number, "label": f"WK-{number}", "start": win.week_start.isoformat(), "end": win.week_end.isoformat(), "asOf": min(win.week_end, win.as_of).isoformat(), "complete": win.week_end <= win.as_of},
         "amcAsOf": min(store.week(week_code).end, store.data_as_of).isoformat(),

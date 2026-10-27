@@ -1,5 +1,8 @@
 "use client";
 
+import { Eye, EyeOff } from "lucide-react";
+import { useSyncExternalStore } from "react";
+
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
@@ -14,6 +17,38 @@ const dayMonth = (iso: string) => formatDate(iso).slice(0, 6);
 const GOOD_PCT = 50;
 /** Achieved % in green (this table only); — when there is no target. */
 const GreenPct = ({ pct }: { pct: number | null }) => (pct == null ? <span className="text-muted-foreground">—</span> : <span className="font-medium text-good-text">{formatPercent(pct, 1)}</span>);
+const Dash = () => <span className="text-muted-foreground">—</span>;
+
+/* Show / hide the e-mail column: remembered per browser and shared by the monthly and weekly tables. */
+const EMAIL_KEY = "pratap.amTable.showEmail";
+const EMAIL_EVENT = "pratap:am-email-toggle";
+let showEmailFallback = true; // used when browser storage is unavailable
+function readShowEmail() {
+  try {
+    const v = localStorage.getItem(EMAIL_KEY);
+    return v == null ? showEmailFallback : v !== "0";
+  } catch {
+    return showEmailFallback;
+  }
+}
+function subscribeShowEmail(cb: () => void) {
+  window.addEventListener(EMAIL_EVENT, cb);
+  window.addEventListener("storage", cb);
+  return () => {
+    window.removeEventListener(EMAIL_EVENT, cb);
+    window.removeEventListener("storage", cb);
+  };
+}
+function setShowEmail(show: boolean) {
+  showEmailFallback = show;
+  try {
+    localStorage.setItem(EMAIL_KEY, show ? "1" : "0");
+  } catch {
+    /* storage unavailable: the toggle still works until the next load */
+  }
+  window.dispatchEvent(new Event(EMAIL_EVENT));
+}
+const useShowEmail = () => useSyncExternalStore(subscribeShowEmail, readShowEmail, () => true);
 
 /**
  * One state's AMC conversion per area manager, under the state table of Monthly / Weekly Plan vs Execution.
@@ -26,6 +61,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
   const q = useApiQuery(period ? `amc-am:${period.weekId}:${circleId}` : null, () => api.getAmcAreaManagers(period!.weekId, circleId));
   const r = q.data ?? q.staleData;
   const monthly = view === "monthly";
+  const showEmail = useShowEmail();
 
   if (q.error)
     return (
@@ -56,6 +92,17 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
   return (
     <TableCard
       title={`Area manager-wise target vs achieved – ${r.circle.name}, ${periodLabel}`}
+      actions={
+        <button
+          type="button"
+          onClick={() => setShowEmail(!showEmail)}
+          aria-pressed={showEmail}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+        >
+          {showEmail ? <EyeOff className="size-3.5" aria-hidden /> : <Eye className="size-3.5" aria-hidden />}
+          {showEmail ? "Hide email" : "Show email"}
+        </button>
+      }
       description={
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>
@@ -74,18 +121,21 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
         <table className="w-full text-sm">
           <caption className="sr-only">Area manager-wise AMC conversion of {r.circle.name}</caption>
           <thead>
-            <tr className="bg-muted text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <tr className="bg-muted text-[12.5px] font-semibold text-foreground">
               <th scope="colgroup" colSpan={2} className="sticky left-0 bg-muted px-3 pt-2.5" />
+              <th scope="colgroup" className="bg-muted px-2.5 pt-2.5" />
               <th scope="colgroup" colSpan={4} className="border-l border-border/70 px-2.5 pt-2.5 text-center">
                 GPs
               </th>
               <th scope="colgroup" colSpan={3} className="border-l border-border/70 px-2.5 pt-2.5 text-center text-primary">
                 {monthly ? `${r.month.label} – target vs achieved` : `${r.week.label} – target vs achieved`}
               </th>
+              {showEmail && <th scope="colgroup" className="border-l border-border/70 bg-muted px-2.5 pt-2.5" />}
             </tr>
             <tr className={HEAD_ROW}>
               <Th className="w-10 text-left">#</Th>
               <Th first>Area manager</Th>
+              <Th className="text-left">Business area</Th>
               <Th group>Blocks</Th>
               <Th>Existing GPs</Th>
               <Th>AMC GPs</Th>
@@ -95,6 +145,11 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               </Th>
               <Th current>Achieved</Th>
               <Th current>Achieved %</Th>
+              {showEmail && (
+                <Th group className="text-left">
+                  Email ID
+                </Th>
+              )}
             </tr>
           </thead>
           <tbody className="tabular">
@@ -110,6 +165,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               >
                 <Td className={cn("text-left text-subtle-foreground", isTop(x) ? "border-l-4 border-l-good" : isGood(x) && "border-l-4 border-l-good/40")}>{i + 1}</Td>
                 <RowHead className={cn(isTop(x) ? "bg-good-soft font-bold text-good-text" : isGood(x) && "bg-good-soft/60")}>{x.assigned ? x.name : <span className="italic">{x.name}</span>}</RowHead>
+                <Td className="text-left font-normal">{x.businessAreas.length ? x.businessAreas.join(", ") : <Dash />}</Td>
                 <Td group>{formatCount(x.blocks)}</Td>
                 <Td>{formatCount(x.existingGps)}</Td>
                 <Td>{formatCount(x.amcGps)}</Td>
@@ -130,6 +186,23 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
                     <GreenPct pct={pct(x)} />
                   )}
                 </Td>
+                {showEmail && (
+                  <Td group className="text-left font-normal">
+                    {x.emails.length ? (
+                      x.emails.map((e) =>
+                        r.emailsMasked ? (
+                          <div key={e}>{e}</div>
+                        ) : (
+                          <a key={e} href={`mailto:${e}`} className="block text-primary hover:underline">
+                            {e}
+                          </a>
+                        ),
+                      )
+                    ) : (
+                      <Dash />
+                    )}
+                  </Td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -137,6 +210,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
             <tr className={TOTAL_ROW}>
               <Td className="text-left"> </Td>
               <RowHead total>Total – {r.circle.name}</RowHead>
+              <Td> </Td>
               <Td group>{formatCount(r.total.blocks)}</Td>
               <Td>{formatCount(r.total.existingGps)}</Td>
               <Td>{formatCount(r.total.amcGps)}</Td>
@@ -148,6 +222,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               <Td current>
                 <GreenPct pct={pct(r.total)} />
               </Td>
+              {showEmail && <Td group> </Td>}
             </tr>
           </tfoot>
         </table>

@@ -238,7 +238,7 @@ def _review_period(store: Store, week: str | None, compare: str | None) -> tuple
         if done is not None:
             week = done.code
     w, c = _period(store, week, compare)
-    if store.week(c).number >= store.week(w).number:
+    if store.week_index(c) >= store.week_index(w):
         raise HTTPException(422, "The comparison week must be earlier than the reporting week")
     return w, c
 
@@ -311,12 +311,18 @@ def amc_plan(week: OptWeekId = None, date: OptDate = None, store: Store = Depend
 
 
 @router.get("/amc-plan/area-managers")
-def amc_plan_by_area_manager(circle: Annotated[str, Query(pattern=r"^[a-z0-9-]{1,40}$")], week: OptWeekId = None, store: Store = Depends(get_store)) -> dict:
-    """One state's AMC plan vs achievement per area manager (Escalation Matrix AM names): current month and the
-    selected week. Not memoised: a new Escalation Matrix upload must show at once (the join is cached there)."""
+def amc_plan_by_area_manager(
+    circle: Annotated[str, Query(pattern=r"^[a-z0-9-]{1,40}$")],
+    week: OptWeekId = None,
+    store: Store = Depends(get_store),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """One state's AMC plan vs achievement per area manager (Escalation Matrix AM names, business area, e-mail):
+    current month and the selected week. E-mails in full for admins only. Not memoised: a new Escalation Matrix
+    upload must show at once (the join is cached there)."""
     w, _ = _period(store, week, None)
     try:
-        return amc_plan_area_managers(store, w, circle)
+        return amc_plan_area_managers(store, w, circle, full_contacts=user.is_admin)
     except KeyError:
         raise HTTPException(404, "Unknown state") from None
 

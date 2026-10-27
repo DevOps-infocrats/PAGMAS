@@ -11,7 +11,7 @@ because area-manager performance is a dashboard requirement.
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -32,6 +32,85 @@ class User(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserScope(Base):
+    """Circle / district / block a dashboard user may receive in the AMC Conversion e-mails (one row per area).
+    `scope_id` is the dashboard's location id: circle "haryana", district "haryana~hisar", block "hr-123".
+    Admins receive everything; a viewer without a valid row receives nothing (access is never widened)."""
+
+    __tablename__ = "user_scopes"
+    __table_args__ = (UniqueConstraint("user_id", "level", "scope_id", name="uq_user_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    level: Mapped[str] = mapped_column(String(10))  # circle | district | block
+    scope_id: Mapped[str] = mapped_column(String(120))
+
+
+class MailTemplate(Base):
+    """Customisable e-mail text with {{placeholders}} (see app.mail.template). Built-in templates have a `key` and can
+    be edited and reset to their original text, but not deleted."""
+
+    __tablename__ = "mail_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str | None] = mapped_column(String(40), unique=True, nullable=True)  # built-in id, None = admin-made
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MailConfig(Base):
+    """A schedule of the AMC Conversion e-mail: who (audiences + filters), what (template) and when.
+    Times are wall-clock times in MAIL_TIMEZONE; next_run_at is UTC. New schedules start disabled, and saving one never
+    sends anything (next_run_at is always in the future). JSON lists are stored as text."""
+
+    __tablename__ = "mail_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    template_id: Mapped[int | None] = mapped_column(ForeignKey("mail_templates.id", ondelete="SET NULL"), nullable=True)
+    audiences: Mapped[str] = mapped_column(Text, default='["am"]')  # am | sme | coh | cbh | users
+    filter_circles: Mapped[str] = mapped_column(Text, default="[]")  # circle ids; [] = all
+    filter_bas: Mapped[str] = mapped_column(Text, default="[]")  # business area names; [] = all
+    filter_blocks: Mapped[str] = mapped_column(Text, default="[]")  # block ids; [] = all
+    filter_people: Mapped[str] = mapped_column(Text, default="[]")  # person ids "am:haryana:hemant"; [] = everyone
+    user_ids: Mapped[str] = mapped_column(Text, default="[]")  # dashboard users ("users" audience); [] = all active
+    frequency: Mapped[str] = mapped_column(String(10))  # daily | weekly | monthly
+    start_date: Mapped[date] = mapped_column(Date)
+    send_time: Mapped[str] = mapped_column(String(5))  # "HH:MM"
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0 = Monday … 6 = Sunday
+    month_day: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1–31 (short months: last day)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MailRun(Base):
+    """One execution of a schedule for one planned time. The unique (config, scheduled_for) pair is the claim: the first
+    process to insert it sends, every other attempt for the same slot is refused – no double e-mails."""
+
+    __tablename__ = "mail_runs"
+    __table_args__ = (UniqueConstraint("config_id", "scheduled_for", name="uq_mail_run_slot"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    config_id: Mapped[int] = mapped_column(ForeignKey("mail_configs.id", ondelete="CASCADE"), index=True)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20))  # RUNNING | SUCCESS | PARTIAL | FAILED | SKIPPED
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)  # counts and reasons only: no addresses or content
 
 
 class AuditLog(Base):
@@ -93,6 +172,7 @@ class EscalationContact(Base):
     import_id: Mapped[int] = mapped_column(ForeignKey("escalation_imports.id", ondelete="CASCADE"), primary_key=True)
     gp_code: Mapped[str] = mapped_column(String(40), primary_key=True)
     circle: Mapped[str] = mapped_column(String(60))
+    ba: Mapped[str | None] = mapped_column(String(80), nullable=True)  # business area
     district: Mapped[str | None] = mapped_column(String(80), nullable=True)
     block_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     block_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -104,12 +184,16 @@ class EscalationContact(Base):
     fe_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     am_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     am_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    am_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     shq_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     shq_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    shq_email: Mapped[str | None] = mapped_column(String(200), nullable=True)  # SME / SHQ SPOC
     coh_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     coh_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    coh_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     cbh_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     cbh_phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    cbh_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class ImportReport(Base):

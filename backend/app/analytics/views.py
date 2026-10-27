@@ -47,8 +47,8 @@ def week_json(w: Week) -> dict[str, Any]:
 
 
 def history_weeks(store: Store, week_code: str) -> list[Week]:
-    target = store.week(week_code)
-    return [w for w in store.weeks if w.number <= target.number]
+    """The weeks up to and including `week_code`, in date order (week numbers wrap at the year end)."""
+    return store.weeks[: store.week_index(week_code) + 1]
 
 
 def kpis(store: Store, mask: Any, week: str, compare: str, keys: list[str]) -> list[dict[str, Any]]:
@@ -146,6 +146,7 @@ def _detail(store: Store, mask: np.ndarray | None, week: str, circle: str | None
         "hotoPendingBlocks": s["totalBlocks"] - s["hotoDoneBlocks"],
         "hotoDoneGps": s["hotoDoneGps"],
         "hotoPendingGps": s["hotoPendingGps"],
+        "amcAtHotoGps": s["amcAtHotoGps"],
         "amcGps": s["amcGps"],
         "amcOriginalGps": s["amcOriginalGps"],
         "incrementalGps": s["incrementalGps"],
@@ -156,6 +157,10 @@ def _detail(store: Store, mask: np.ndarray | None, week: str, circle: str | None
         "gpsAtZero": s["gpsAtZero"],
         "naGps": s["naGps"],
         "penaltyBlocks": s["penaltyBlocks"],
+        "gpsBelowPenalty": s["gpsBelowPenalty"],
+        "blocksAbove98": s["blocksAbove98"],
+        "reportingGps": s["reportingGps"],
+        "reportingBlocks": s["reportingBlocks"],
         "oneTimeUp": s["oneTimeUp"],
         "totalRkm": s["totalRkm"],
         "bsnlRkm": s["bsnlRkm"],
@@ -194,7 +199,7 @@ def overview(store: Store, week: str, compare: str) -> dict[str, Any]:
         "kpis": kpis(store, None, week, compare, OVERVIEW_KPIS),
         "circles": [_circle_summary(store, c, week) for c in cids],
         "circlesPrevious": [_circle_summary(store, c, compare) for c in cids],
-        "areaManagers": sorted(managers, key=lambda m: (m["circleId"], -(m["availability"] or -1))),
+        "areaManagers": sorted(managers, key=lambda m: (m["circleId"], m["availability"] is None, -(m["availability"] or 0))),
         "summary": _detail(store, None, week),
         "stateDetails": [
             {"id": c, "name": g.loc[g["circle_id"] == c, "circle"].iloc[0].title(), **_detail(store, (g["circle_id"] == c).to_numpy(), week, g.loc[g["circle_id"] == c, "circle"].iloc[0])}
@@ -278,7 +283,8 @@ def _band_series(store: Store, mask: np.ndarray, weeks: list[Week], per_block: b
     labels = [b[0] for b in BANDS]
     above = [lb for lb, lo, _ in BANDS if lo >= healthy]
     mid = [lb for lb, lo, hi in BANDS if lo >= penalty and hi <= healthy and lo != hi]
-    low = [lb for lb, lo, hi in BANDS if hi <= penalty and lb != "0%"]
+    # GPs: 0% is its own series; blocks have no 0% series, so a 0% block belongs to "<90%" (as in review._band_table).
+    low = [lb for lb, lo, hi in BANDS if hi <= penalty and (per_block or lb != "0%")]
     series = [grouped(f">{healthy:g}%", above), grouped(f"{penalty:g}–{healthy:g}%", mid), grouped(f"<{penalty:g}%", low)]
     if not per_block:
         series.append(grouped("0%", ["0%"]))
@@ -317,7 +323,7 @@ def circle_insights(store: Store, cid: str, week: str, compare: str) -> dict[str
                 "amc": amc,
                 "amcOriginal": amc - inc,
                 "incremental": inc,
-                "nonAmc": int(d["revised"].sum()) - amc,
+                "nonAmc": int((d["revised"] & ~w["amc"]).sum()),
             }
         )
     weeks = history_weeks(store, week)
@@ -466,7 +472,7 @@ def block_insights(store: Store, block_id: str, week: str, compare: str) -> dict
     wf = store.week_frame(week).loc[sub.index]
     amc = wf["amc"]
     cats = [
-        {"label": "AMC (original)", "count": int((amc & (sub["amc_category"] == "AMC")).sum())},
+        {"label": "AMC (original)", "count": int((amc & (sub["amc_category"] != "INCREMENTAL")).sum())},
         {"label": "Incremental", "count": int((amc & (sub["amc_category"] == "INCREMENTAL")).sum())},
         {"label": "Non-AMC", "count": int((sub["revised"] & ~amc).sum())},
         {"label": "Converted / closed", "count": int((~sub["revised"]).sum())},
@@ -680,7 +686,7 @@ def list_gps(store: Store, week: str, circle: str | None, district: str | None, 
         mask &= (g["block_id"] == block).to_numpy()
     if search:
         q = search.strip().lower()
-        mask &= (g["name"].str.lower().str.contains(q, regex=False) | g.index.str.contains(q, regex=False)).to_numpy()
+        mask &= (g["name"].str.lower().str.contains(q, regex=False) | g.index.str.lower().str.contains(q, regex=False)).to_numpy()
     total = int(mask.sum())
     idx = np.flatnonzero(mask)[(page - 1) * page_size : page * page_size]
     sel = np.zeros(len(g), dtype=bool)
@@ -701,7 +707,7 @@ def search(store: Store, query: str) -> list[dict[str, Any]]:
     hit = blocks[blocks["block_name"].str.lower().str.contains(q, regex=False) | (blocks["block_code"].astype(str) == q)]
     for r in hit.head(12).itertuples():
         out.append({"type": "block", "id": r.block_id, "label": r.block_name.title(), "sublabel": f"Block · {r.block_code} · {r.district.title()}, {r.circle.title()}", "circleId": r.circle_id, "districtId": r.district_id, "blockId": r.block_id})
-    gh = g[g["name"].str.lower().str.contains(q, regex=False) | g.index.str.startswith(q)]
+    gh = g[g["name"].str.lower().str.contains(q, regex=False) | g.index.str.lower().str.startswith(q)]
     for code, r in gh.head(15).iterrows():
         out.append({"type": "gp", "id": code, "label": str(r["name"]).title(), "sublabel": f"GP · {code} · {r['block_name'].title()} block", "circleId": r["circle_id"], "districtId": r["district_id"], "blockId": r["block_id"]})
     return out
@@ -756,7 +762,8 @@ def weekly_report(store: Store, week: str, compare: str, circle: str | None, dis
     old = summarize(store, mask, compare)
     comparison = [{"key": k, "label": label, "unit": unit, "polarity": pol, "previous": old[k], "current": cur[k]} for k, label, unit, pol in REPORT_ROWS]
 
-    unit_col = "block_id" if circle else "circle_id"
+    by_block = bool(circle or district or block)
+    unit_col = "block_id" if by_block else "circle_id"
     wf_cur = store.week_frame(week).loc[sub.index]
     wf_old = store.week_frame(compare).loc[sub.index]
     m_cur = wf_cur["mtd"].where(wf_cur["amc"])
@@ -770,7 +777,7 @@ def weekly_report(store: Store, week: str, compare: str, circle: str | None, dis
         ranking.append(
             {
                 "id": uid,
-                "name": (u["block_name"] if circle else u["circle"]).iloc[0].title(),
+                "name": (u["block_name"] if by_block else u["circle"]).iloc[0].title(),
                 "availability": r2(m_cur.loc[idx].mean()) if m_cur.loc[idx].notna().any() else None,
                 "previous": r2(m_old.loc[idx].mean()) if m_old.loc[idx].notna().any() else None,
                 "amcPct": r2(amc_n / rev_n * 100) if rev_n else None,

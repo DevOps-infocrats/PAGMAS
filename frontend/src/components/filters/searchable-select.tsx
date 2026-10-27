@@ -53,7 +53,7 @@ export function SearchableSelect({
             aria-expanded={open}
             aria-controls={listId}
             aria-label={label}
-            className="inline-flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm hover:bg-accent disabled:opacity-50"
+            className="inline-flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs transition-colors hover:border-subtle-foreground/50 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:opacity-50 aria-expanded:border-ring aria-expanded:ring-2 aria-expanded:ring-ring/20"
           >
             <span className={cn("truncate", !selected && "text-subtle-foreground")}>
               {selected?.label ?? (allowClear && !value ? clearLabel : placeholder)}

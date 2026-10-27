@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .column_map import GP_HEADER_ANCHORS, GP_REQUIRED, MASTER_BLOCK_HEADER_ANCHORS, MASTER_BLOCK_REQUIRED, ColumnMap, find_header_row, load_column_map, locate, resolve_sheet, suggest
-from .workbook import Grid, WorkbookError, as_date, is_blank, norm, open_workbook, read_sheet
+from .workbook import Grid, WorkbookError, as_date, clean_code, code_key, is_blank, norm, open_workbook, read_sheet
 
 # Display names of the sheets in messages; the accepted names (and every column name) live in column_map.py
 # and can be extended with data/column_map.json without code changes.
@@ -73,27 +75,27 @@ def _text(v: Any) -> str | None:
     return re.sub(r"\s+", " ", str(v)).strip()
 
 
-def _code(v: Any) -> str | None:
-    """Codes arrive as floats (262368.0) or text; normalise to digit/text string."""
-    if is_blank(v):
-        return None
-    if isinstance(v, (int, float)):
-        return str(int(v)) if float(v).is_integer() else str(v)
-    return str(v).strip()
+_code = clean_code
+BLANK_TEXT = {"", "-", "–", "NA", "N/A"}
 
 
 def _number(v: Any) -> tuple[float | None, bool]:
-    """Returns (value, was_valid). Numeric strings like '4.378' are accepted."""
+    """Returns (value, was_valid). Numeric strings like '4.378', '1,234.5' and '99.5%' are accepted; '-' / 'NA' are blank."""
     if is_blank(v):
         return None, True
     if isinstance(v, bool):
         return None, False
     if isinstance(v, (int, float)):
-        return float(v), True
-    try:
-        return float(str(v).strip()), True
-    except ValueError:
-        return None, False
+        num = float(v)
+    else:
+        s = re.sub(r"[\s,]", "", str(v))
+        if s.upper() in BLANK_TEXT:
+            return None, True
+        try:
+            num = float(s[:-1] if s.endswith("%") else s)
+        except ValueError:
+            return None, False
+    return (num, True) if math.isfinite(num) else (None, False)
 
 
 def _availability(v: Any) -> tuple[float | None, bool]:
@@ -106,17 +108,25 @@ def _availability(v: Any) -> tuple[float | None, bool]:
     return min(num, 100.0), True
 
 
-def _parse_week_range(label: Any, year: int) -> tuple[dt.date, dt.date] | None:
-    """'2-8 Oct' -> (2 Oct, 8 Oct); '25-1 Oct' -> (25 Sep, 1 Oct); '28-3 Sept' -> (28 Aug, 3 Sep)."""
+def _parse_week_range(label: Any, last_day: dt.date) -> tuple[dt.date, dt.date] | None:
+    """'2-8 Oct' -> (2 Oct, 8 Oct); '25-1 Oct' -> (25 Sep, 1 Oct); '28-3 Sept' -> (28 Aug, 3 Sep). The year is the one of
+    the file's last daily date, or the year before when that puts the week end more than 7 days after it ('22-28 Dec'
+    in a January file)."""
     m = WEEK_RANGE_RE.match(norm(label))
     if not m:
         return None
     d1, d2, mon = int(m.group(1)), int(m.group(2)), MONTHS.get(m.group(3)[:4]) or MONTHS.get(m.group(3)[:3])
     if not mon:
         return None
-    end = dt.date(year, mon, d2)
-    start_month, start_year = (mon, year) if d1 <= d2 else ((mon - 1) or 12, year if mon > 1 else year - 1)
-    start = dt.date(start_year, start_month, d1)
+    try:
+        year = last_day.year
+        if dt.date(year, mon, d2) > last_day + dt.timedelta(days=7):
+            year -= 1
+        end = dt.date(year, mon, d2)
+        start_month, start_year = (mon, year) if d1 <= d2 else ((mon - 1) or 12, year if mon > 1 else year - 1)
+        start = dt.date(start_year, start_month, d1)
+    except ValueError:
+        raise WorkbookError(f"Week label '{label}' is not a valid date range") from None
     return start, end
 
 
@@ -173,7 +183,26 @@ def _locate_periods(grid: Grid, hdr: int) -> dict[str, Any]:
         c += 1
     if not daily:
         raise WorkbookError("No daily availability columns found after the weekly columns")
+    if (stray := next((cc for cc in range(c, len(header)) if as_date(header[cc])), None)) is not None:
+        raise WorkbookError(
+            f"Daily date columns must be contiguous: column {_col(c)} ('{_text(header[c]) or ''}') interrupts them and date column {_col(stray)} ({as_date(header[stray])}) follows"
+        )
+    for kind, cols in (("weekly", [(cc, f"W-{n}") for cc, n in weekly]), ("monthly", monthly), ("AMC monthly", amc_monthly), ("daily", [(cc, d.isoformat()) for cc, d in daily])):
+        dup = [p for p, n in Counter(p for _, p in cols).items() if n > 1]
+        if dup:
+            where = "; ".join(f"{p} (columns {', '.join(_col(cc) for cc, q in cols if q == p)})" for p in dup)
+            raise WorkbookError(f"Duplicate {kind} availability columns: {where} - each period may appear only once")
     return {"weekly": weekly, "amc_monthly": amc_monthly, "monthly": monthly, "daily": daily, "above": above}
+
+
+def _col(c: int) -> str:
+    """0-based column index -> Excel letters (0 -> A, 27 -> AB)."""
+    s = ""
+    c += 1
+    while c:
+        c, r = divmod(c - 1, 26)
+        s = chr(65 + r) + s
+    return s
 
 
 def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = None, sheet: str = GP_SHEET) -> None:
@@ -197,11 +226,11 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
             out.unknown_columns.append(label)
     out.missing_optional = [k for k in cmap.gp if k not in cols]
     daily = periods["daily"]
-    year = daily[-1][1].year
+    last_day = max(d for _, d in daily)
 
     # Weeks from the label row above the W-nn headers (e.g. "2-8 Oct").
     for c, number in sorted(periods["weekly"], key=lambda x: x[1]):
-        rng = _parse_week_range(periods["above"][c], year)
+        rng = _parse_week_range(periods["above"][c], last_day)
         if not rng or (rng[1] - rng[0]).days != 6:
             raise WorkbookError(f"Week W-{number}: date range label '{periods['above'][c]}' could not be parsed as a 7-day range")
         out.weeks.append({"code": f"W-{number}", "number": number, "start_date": rng[0], "end_date": rng[1]})
@@ -226,16 +255,20 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
         gp_code = _code(cell(row, "gp_code"))
         if not gp_code or not circle_raw:
             out.rows_rejected += 1
-            out.issues.append(Issue(GP_SHEET, "critical", "ROW_REJECTED", "Row has no GP code or circle", excel_row))
+            out.issues.append(Issue(sheet, "critical", "ROW_REJECTED", "Row has no GP code or circle", excel_row))
             continue
-        if gp_code in seen:
+        if code_key(gp_code) in seen:
             out.rows_rejected += 1
-            out.issues.append(Issue(GP_SHEET, "critical", "DUPLICATE_GP", f"Duplicate GP code {gp_code}; later row ignored", excel_row, "GP Code", gp_code))
+            out.issues.append(Issue(sheet, "critical", "DUPLICATE_GP", f"Duplicate GP code {gp_code}; later row ignored", excel_row, "GP Code", gp_code))
             continue
-        seen.add(gp_code)
+        seen.add(code_key(gp_code))
 
         def warn(code: str, msg: str, column: str | None = None, severity: str = "warning") -> None:
-            out.issues.append(Issue(GP_SHEET, severity, code, msg, excel_row, column, gp_code))
+            out.issues.append(Issue(sheet, severity, code, msg, excel_row, column, gp_code))
+
+        location = {"district": _text(cell(row, "district")), "block_name": _text(cell(row, "block_name")), "block_code": _code(cell(row, "block_code"))}
+        if missing_loc := [k.replace("_", " ") for k, v in location.items() if not v]:
+            warn("BLOCK_MISSING", f"{', '.join(missing_loc).capitalize()} missing - shown as UNKNOWN", "Block Code" if not location["block_code"] else None)
 
         nums: dict[str, float | None] = {}
         for key, label in (("bbnl_km", "BBNL Live KM"), ("bsnl_km", "BSNL Live KM"), ("total_rkm", "TOTAL RKM")):
@@ -294,9 +327,9 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
                 "name": _text(cell(row, "gp_name")) or gp_code,
                 "circle": circle_raw.upper(),
                 "ba": _text(cell(row, "ba")),
-                "district": (_text(cell(row, "district")) or "UNKNOWN").upper(),
-                "block_name": (_text(cell(row, "block_name")) or "UNKNOWN").upper(),
-                "block_code": _code(cell(row, "block_code")) or "UNKNOWN",
+                "district": (location["district"] or "UNKNOWN").upper(),
+                "block_name": (location["block_name"] or "UNKNOWN").upper(),
+                "block_code": location["block_code"] or "UNKNOWN",
                 "block_hoto_status": _text(cell(row, "block_hoto_status")),
                 "np_status": np_status,
                 "gp_type": _text(cell(row, "gp_type")),
@@ -359,13 +392,18 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
                 if last_day_with_data is None or day > last_day_with_data:
                     last_day_with_data = day
 
-    out.data_as_of = last_day_with_data
     if not out.gps:
-        raise WorkbookError(f"'{GP_SHEET}' contains no GP rows")
-    _derive_missing_weeks(out)
+        raise WorkbookError(f"'{sheet}' contains no GP rows")
+    if last_day_with_data is None:
+        raise WorkbookError(f"No daily availability values found in '{sheet}'")
+    if last_day_with_data > dt.date.today() + dt.timedelta(days=1):
+        col = next(c for c, d in daily if d == last_day_with_data)
+        raise WorkbookError(f"'{sheet}' column {_col(col)}: daily date {last_day_with_data} is in the future - check the date headers")
+    out.data_as_of = last_day_with_data
+    _derive_missing_weeks(out, sheet)
 
 
-def _derive_missing_weeks(out: ParsedWorkbook) -> None:
+def _derive_missing_weeks(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
     """Daily data beyond the file's last W-nn week (e.g. data till 18 Oct, last week column W-42 = 9-15 Oct): add the
     next Fri–Thu weeks so the dashboard reaches the data date. Their weekly availability follows the file's own rule
     for its week columns (verified exact on W-39…W-41, and on the in-progress W-42 up to its data date): per GP under
@@ -373,7 +411,7 @@ def _derive_missing_weeks(out: ParsedWorkbook) -> None:
     week end or the data date. GPs without any daily value in that range stay NA."""
     if not out.weeks or out.data_as_of is None:
         return
-    last = max(out.weeks, key=lambda w: w["number"])
+    last = max(out.weeks, key=lambda w: w["end_date"])  # not the highest number: W-52 is followed by W-1
     first_new = last["end_date"] + dt.timedelta(days=1)
     if out.data_as_of < first_new:
         return
@@ -384,10 +422,11 @@ def _derive_missing_weeks(out: ParsedWorkbook) -> None:
             day = dt.date.fromisoformat(period)
             if first_new <= day <= out.data_as_of:
                 daily.setdefault(gp, []).append((day, val))
-    number, start = last["number"], first_new
+    number, start, prev_end = last["number"], first_new, last["end_date"]
     while start <= out.data_as_of:
-        number += 1
         end = start + dt.timedelta(days=6)
+        number = 1 if end.year > prev_end.year else number + 1  # weeks are numbered by the year of their end date
+        prev_end = end
         code = f"W-{number}"
         out.weeks.append({"code": code, "number": number, "start_date": start, "end_date": end})
         for gp, vals in daily.items():
@@ -400,7 +439,7 @@ def _derive_missing_weeks(out: ParsedWorkbook) -> None:
         upto = min(end, out.data_as_of)
         out.issues.append(
             Issue(
-                GP_SHEET,
+                sheet,
                 "info",
                 "WEEK_DERIVED",
                 f"{code} ({start:%d %b} – {end:%d %b}) is not a column of the file: added because daily data runs to {out.data_as_of:%d %b}; "
@@ -413,7 +452,7 @@ def _derive_missing_weeks(out: ParsedWorkbook) -> None:
 # ---------------------------------------------------------------- reference sheets
 
 
-def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = None) -> None:
+def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = None, sheet: str = MASTER_BLOCK_SHEET) -> None:
     cmap = cmap or load_column_map()
     hdr = find_header_row(grid, cmap.master_block, MASTER_BLOCK_HEADER_ANCHORS)
     if hdr is None:
@@ -423,15 +462,19 @@ def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None 
     if missing:
         raise WorkbookError(f"missing columns: {', '.join(missing)}")
     for k, headers in loc.duplicates.items():
-        out.issues.append(Issue(MASTER_BLOCK_SHEET, "warning", "COLUMN_DUPLICATE", f"{len(headers)} columns match '{k}' ({', '.join(headers)}) - '{headers[0]}' was used"))
+        out.issues.append(Issue(sheet, "warning", "COLUMN_DUPLICATE", f"{len(headers)} columns match '{k}' ({', '.join(headers)}) - '{headers[0]}' was used"))
     idx = loc.columns
     get = lambda row, key: row[idx[key]] if key in idx and idx[key] < len(row) else None  # noqa: E731
+    first_row: dict[str, int] = {}
     for i in range(hdr + 1, len(grid)):
         row = grid[i]
         code = _code(get(row, "block_code"))
         state = _text(get(row, "state"))
         if not code or not state:
             continue
+        if code in first_row:
+            out.issues.append(Issue(sheet, "warning", "DUPLICATE_BLOCK", f"Block code {code} also on row {first_row[code]}; this later row is used", i + 1, "Block Code"))
+        first_row.setdefault(code, i + 1)
 
         def as_int(key: str) -> int | None:
             v, ok = _number(get(row, key))
@@ -481,15 +524,18 @@ def _parse_key_numbers(grid: Grid, out: ParsedWorkbook) -> None:
 ONE_TIME_UP_ROWS = {"one time up gps": "oneTimeUpGps", "one time up amc": "oneTimeUpAmc", "one time up non-amc": "oneTimeUpNonAmc"}
 
 
-def _circle_column_key(header: Any, year: int) -> str | None:
-    """Circle-sheet column header -> period key: "Sept" -> "2026-09", "WK-40" -> "W-40"; date columns are skipped."""
+def _circle_column_key(header: Any, as_of: dt.date) -> str | None:
+    """Circle-sheet column header -> period key: "Sept" -> "2026-09" (the latest such month not after `as_of`),
+    "WK-40" -> "W-40"; date columns are skipped."""
     if isinstance(header, (dt.date, dt.datetime)):
         return None
     text = norm(header)
     if m := re.fullmatch(r"wk-?\s*(\d{1,2})", text):
         return f"W-{int(m.group(1))}"
     month = MONTHS.get(text[:3])
-    return f"{year}-{month:02d}" if month else None
+    if not month:
+        return None
+    return f"{as_of.year if month <= as_of.month else as_of.year - 1}-{month:02d}"
 
 
 def _parse_circle_sheets(wb: Any, out: ParsedWorkbook) -> None:
@@ -507,7 +553,7 @@ def _parse_circle_sheets(wb: Any, out: ParsedWorkbook) -> None:
         if hdr is None:
             out.issues.append(Issue(sheet, "warning", "CIRCLE_SHEET", "Header row 'Parameters' not found - One-Time-Up rows skipped"))
             continue
-        keys = [_circle_column_key(h, out.data_as_of.year) for h in grid[hdr]]
+        keys = [_circle_column_key(h, out.data_as_of) for h in grid[hdr]]
         seen: set[tuple[str, str]] = set()
         for row in grid[hdr + 1 :]:
             metric = ONE_TIME_UP_ROWS.get(norm(row[0]) if row else "")
@@ -529,13 +575,13 @@ def parse_workbook(path: Path) -> ParsedWorkbook:
     if gp_sheet is None:
         raise WorkbookError(f"Required sheet not found: {' / '.join(cmap.sheets['gp'])} (found: {', '.join(wb.sheet_names)}) - a renamed sheet can be added to data/column_map.json under sheets.gp")
     _parse_gp_sheet(read_sheet(wb, gp_sheet), out, cmap, gp_sheet)
-    optional = (("masterBlock", MASTER_BLOCK_SHEET, lambda g: _parse_master_block(g, out, cmap)), ("om", OM_SHEET, lambda g: _parse_key_numbers(g, out)))
+    optional = (("masterBlock", MASTER_BLOCK_SHEET, lambda g, n: _parse_master_block(g, out, cmap, n)), ("om", OM_SHEET, lambda g, n: _parse_key_numbers(g, out)))
     for key, label, fn in optional:
         name = resolve_sheet(wb.sheet_names, key, cmap)
         try:
             if name is None:
                 raise WorkbookError(f"Sheet {' / '.join(cmap.sheets[key])} not found")
-            fn(read_sheet(wb, name))
+            fn(read_sheet(wb, name), name)
         except WorkbookError as exc:  # reference sheets are optional
             out.issues.append(Issue(name or label, "warning", "REFERENCE_SHEET", f"{exc} - reconciliation for this sheet skipped"))
     try:

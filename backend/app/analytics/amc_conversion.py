@@ -72,7 +72,10 @@ def amc_conversion(store: Store, week_code: str, compare_code: str) -> dict[str,
             else:
                 target, partial = _sum([vals.get(c["key"].upper()) for c in circles])
             started = mc["status"] != "not started"
-            achieved = converted(cid, dt.date.fromisoformat(mc["start"]), dt.date.fromisoformat(mc["end"])) if started else None
+            a, b = dt.date.fromisoformat(mc["start"]), dt.date.fromisoformat(mc["end"])
+            achieved = converted(cid, a, b) if started else None
+            # Overall % / gap: only the circles that have a plan for the month (plan and achieved over the same circles)
+            matched = achieved if key_of or not partial or not started else sum(converted(c["id"], a, b) for c in circles if vals.get(c["key"].upper()) is not None)
             cum_plan = cum_plan + target if cum_plan is not None and target is not None else None
             if started and cum_actual is not None:
                 cum_actual += achieved
@@ -81,8 +84,8 @@ def amc_conversion(store: Store, week_code: str, compare_code: str) -> dict[str,
                     "plan": target,
                     "planPartial": partial,  # Overall only: a circle has no plan for this month
                     "achieved": achieved,
-                    "achievedPct": _pct(achieved, target),
-                    "gap": max(0, target - achieved) if target is not None and achieved is not None else None,
+                    "achievedPct": _pct(matched, target),
+                    "gap": max(0, target - matched) if target is not None and matched is not None else None,
                     "cumulativePlan": cum_plan,
                     "cumulativeAchieved": cum_actual if started else None,
                 }
@@ -93,23 +96,24 @@ def amc_conversion(store: Store, week_code: str, compare_code: str) -> dict[str,
     monthly_total = {"id": "all", "code": "ALL", "name": "Overall", "months": month_cells(None, None)}
 
     # ---------------------------------------------------------------- weekly
-    known = {w.code: w for w in store.weeks}
-    last = store.weeks[-1]
     week_cols = []
-    for code in sorted(plan.weeklyClosureTargets if plan else {}, key=lambda k: int(k[2:])):
-        n = int(code[2:])
-        w = known.get(code)
-        start = w.start if w else last.start + dt.timedelta(days=7 * (n - last.number))
-        end = w.end if w else last.end + dt.timedelta(days=7 * (n - last.number))
-        week_cols.append({"id": code, "label": f"WK-{n}", "start": start.isoformat(), "end": end.isoformat(), "status": _status(start, end, D)})
+    plan_weeks = [(store.week_by_number(int(code[2:])), code) for code in (plan.weeklyClosureTargets if plan else {})]
+    for w, code in sorted(plan_weeks, key=lambda x: x[0].start):  # by date: week numbers wrap at the year end
+        week_cols.append({"id": code, "label": f"WK-{w.number}", "start": w.start.isoformat(), "end": w.end.isoformat(), "status": _status(w.start, w.end, D)})
 
     def week_cells(cid: str | None, key_of: str | None) -> list[dict[str, Any]]:
         cells = []
         for wc in week_cols:
             vals = plan.weeklyClosureTargets[wc["id"]] if plan else {}
-            target = vals.get(key_of) if key_of else _sum([vals.get(c["key"].upper()) for c in circles])[0]
-            achieved = converted(cid, dt.date.fromisoformat(wc["start"]), dt.date.fromisoformat(wc["end"])) if wc["status"] != "not started" else None
-            cells.append({"target": target, "achieved": achieved, "achievedPct": _pct(achieved, target)})
+            a, b = dt.date.fromisoformat(wc["start"]), dt.date.fromisoformat(wc["end"])
+            started = wc["status"] != "not started"
+            achieved = converted(cid, a, b) if started else None
+            if key_of:
+                target, matched = vals.get(key_of), achieved
+            else:
+                target, partial = _sum([vals.get(c["key"].upper()) for c in circles])
+                matched = sum(converted(c["id"], a, b) for c in circles if vals.get(c["key"].upper()) is not None) if partial and started else achieved
+            cells.append({"target": target, "achieved": achieved, "achievedPct": _pct(matched, target)})
         return cells
 
     weekly_rows = [{"id": c["id"], "code": c["code"], "name": c["name"], "weeks": week_cells(c["id"], c["key"].upper())} for c in circles]

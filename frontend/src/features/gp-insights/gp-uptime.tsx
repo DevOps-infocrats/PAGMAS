@@ -108,7 +108,7 @@ function gpTrendOption(
       type: "value",
       min: Math.max(0, Math.floor((lo - 5) / 5) * 5),
       max: 100,
-      splitLine: { lineStyle: { color: t.grid } },
+      splitLine: { lineStyle: { color: t.grid, type: [4, 4] } },
       axisLabel: {
         color: t.muted,
         fontSize: 11,
@@ -381,11 +381,11 @@ export function GpUptimeSection({
       {graph ? (
         <div
           key="graph"
-          className="flip-in rounded-xl border border-border bg-gradient-to-b from-muted/40 to-transparent p-4"
+          className="flip-in rounded-lg border border-border bg-gradient-to-b from-muted/40 to-transparent p-4"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h4 className="text-[15px] font-semibold">{chartTitle}</h4>
+              <h4 className="text-[15px] font-bold text-subheading">{chartTitle}</h4>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {known.length ? (
                   <>
@@ -423,7 +423,7 @@ export function GpUptimeSection({
               <span className="text-xs text-muted-foreground">View</span>
               <Select
                 ariaLabel="Graph columns"
-                className="h-8 w-36 border-0 px-2 font-medium"
+                className="h-8 w-36 border-0 px-2 font-medium shadow-none hover:bg-accent"
                 value={gView}
                 onValueChange={(v) => setGView(v as GraphView)}
                 options={[

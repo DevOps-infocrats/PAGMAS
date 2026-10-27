@@ -6,12 +6,15 @@ import hashlib
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import SessionLocal, is_postgres
 from ..models import CircleSheetValue, Dataset, DatasetWeek, Gp, GpAmcPlan, GpAvailability, GpAvailabilityPack, MasterBlock, ReportedNumber, ValidationIssue
 from .history import merge_daily
@@ -33,8 +36,8 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def create_dataset(db: Session, path: Path, file_name: str, user_id: int | None) -> Dataset:
-    ds = Dataset(file_name=file_name, stored_path=str(path), sha256=sha256_of(path), status="PROCESSING", uploaded_by=user_id)
+def create_dataset(db: Session, path: Path, file_name: str, user_id: int | None, sha: str | None = None) -> Dataset:
+    ds = Dataset(file_name=file_name, stored_path=str(path), sha256=sha or sha256_of(path), status="PROCESSING", uploaded_by=user_id)
     db.add(ds)
     db.commit()
     db.refresh(ds)
@@ -113,8 +116,11 @@ def _run_ingestion(dataset_id: int) -> None:
         ds = db.get(Dataset, dataset_id)
         if ds is None:
             return
-        try:
-            parsed = parse_workbook(Path(ds.stored_path))
+        path = Path(ds.stored_path)
+    try:
+        parsed = parse_workbook(path)  # outside any transaction: parsing takes many seconds
+        with SessionLocal() as db:
+            ds = db.get(Dataset, dataset_id)
             if is_postgres():
                 db.execute(text("SET LOCAL statement_timeout = 0"))  # bulk import: no per-statement limit
             # Remove partial rows from a previous attempt of the same dataset (retry).
@@ -131,46 +137,99 @@ def _run_ingestion(dataset_id: int) -> None:
             ds.status = "PARTIAL" if parsed.rows_rejected else "SUCCESS"
             ds.message = None
             ds.finished_at = datetime.now(UTC)
-            # Activate atomically together with the data.
-            db.execute(update(Dataset).where(Dataset.id != ds.id).values(is_active=False))
-            ds.is_active = True
+            db.flush()
+            # Activate atomically together with the data – unless another stored dataset has newer data.
+            best_id = _best_dataset(db)
+            activated = best_id in (None, ds.id)
+            if activated:
+                db.execute(update(Dataset).where(Dataset.id != ds.id).values(is_active=False))
+                ds.is_active = True
+            else:
+                best = db.get(Dataset, best_id)
+                ds.is_active = False
+                ds.message = f"Imported but not activated: run #{best.id} has newer data (as of {best.data_as_of}) and stays active."
             db.commit()
-        except WorkbookError as exc:
-            db.rollback()
-            _fail(db, ds.id, str(exc))
-            return
-        except Exception:  # unexpected – never leak internals to the UI
-            db.rollback()
-            log.exception("Ingestion %s failed", dataset_id)
-            _fail(db, ds.id, "Unexpected error while processing the file. See server logs.")
-            return
-    log.info("Dataset %s imported in %.1fs", dataset_id, time.perf_counter() - started)
-    from ..analytics.store import reload_store
+    except WorkbookError as exc:
+        _fail(dataset_id, str(exc))
+        return
+    except Exception:  # unexpected – never leak internals to the UI
+        log.exception("Ingestion %s failed", dataset_id)
+        _fail(dataset_id, "Unexpected error while processing the file. See server logs.")
+        return
+    log.info("Dataset %s imported in %.1fs (%s)", dataset_id, time.perf_counter() - started, "active" if activated else "not activated")
+    if activated:
+        from ..analytics.store import reload_store
 
-    reload_store()  # dashboard switches to the new data once its snapshot is ready
+        reload_store()  # dashboard switches to the new data once its snapshot is ready
     with SessionLocal() as db:
         _prune(db)
 
 
-def _fail(db: Session, ds_id: int, message: str) -> None:
-    ds = db.get(Dataset, ds_id)
-    if ds:
+OK_STATUSES = ("SUCCESS", "PARTIAL")
+
+
+def _best_dataset(db: Session, exclude: int | None = None) -> int | None:
+    """The successful dataset with rows still stored and the newest data date (tie: the later import)."""
+    has_rows = select(Gp.gp_code).where(Gp.dataset_id == Dataset.id).exists()
+    q = select(Dataset.id).where(Dataset.status.in_(OK_STATUSES), has_rows)
+    if exclude is not None:
+        q = q.where(Dataset.id != exclude)
+    return db.scalar(q.order_by(Dataset.data_as_of.is_(None), Dataset.data_as_of.desc(), Dataset.id.desc()).limit(1))
+
+
+def _fail(ds_id: int, message: str) -> None:
+    switched = False
+    with SessionLocal() as db:
+        ds = db.get(Dataset, ds_id)
+        if ds is None:
+            return
         ds.status = "FAILED"
         ds.message = message
         ds.finished_at = datetime.now(UTC)
+        if ds.is_active:  # a failed dataset is never served: fall back to the best remaining one
+            ds.is_active = False
+            if (other := _best_dataset(db, exclude=ds.id)) is not None:
+                db.execute(update(Dataset).where(Dataset.id == other).values(is_active=True))
+            switched = True
         db.commit()
+        _prune(db)
+    if switched:
+        from ..analytics.store import reload_store
+
+        reload_store()
+
+
+def unlink_upload(path: str | Path) -> None:
+    """Delete a stored upload; files outside the upload folder (CLI / start-up imports from data/raw) are never touched."""
+    p = Path(path).resolve()
+    if p.is_relative_to(get_settings().upload_dir.resolve()):
+        p.unlink(missing_ok=True)
+
+
+def prune_files(rows: Sequence[Any], keep_ids: set[int]) -> None:
+    """Delete the upload files of pruned imports and of failed ones beyond the newest KEEP_DATASETS (rows: id, status,
+    is_active, stored_path – newest first). Files still referenced by a kept import or the active one stay."""
+    failed = [r.id for r in rows if r.status == "FAILED"][KEEP_DATASETS:]
+    drop = {r.id for r in rows if r.status in OK_STATUSES and r.id not in keep_ids} | set(failed)
+    keep_paths = {r.stored_path for r in rows if r.id not in drop or r.is_active}
+    for r in rows:
+        if r.id in drop and not r.is_active and r.stored_path not in keep_paths:
+            unlink_upload(r.stored_path)
 
 
 def _prune(db: Session) -> None:
-    """Keep the newest successful datasets (and their files' metadata) only."""
-    ids = db.scalars(select(Dataset.id).where(Dataset.status.in_(["SUCCESS", "PARTIAL"])).order_by(Dataset.id.desc())).all()
-    old = ids[KEEP_DATASETS:]
+    """Keep the rows of the newest successful datasets and of the active one; delete upload files nobody needs."""
+    rows = db.execute(select(Dataset.id, Dataset.status, Dataset.is_active, Dataset.stored_path).order_by(Dataset.id.desc())).all()
+    ok = [r for r in rows if r.status in OK_STATUSES]
+    keep = {r.id for r in ok[:KEEP_DATASETS]} | {r.id for r in rows if r.is_active}
+    old = [r.id for r in ok if r.id not in keep]
     if old:
         if is_postgres():
             db.execute(text("SET LOCAL statement_timeout = 0"))
         for model in DATA_TABLES:
             db.execute(delete(model).where(model.dataset_id.in_(old)))
         db.commit()
+    prune_files(rows, keep)
 
 
 def import_file(path: Path, user_id: int | None = None) -> Dataset:

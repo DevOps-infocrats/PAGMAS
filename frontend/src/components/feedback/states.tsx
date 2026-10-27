@@ -80,9 +80,9 @@ export function ChartSkeleton({ height = 280, text = "Loading chart…" }: { hei
 
 export function KpiSkeleton() {
   return (
-    <div className="space-y-3 p-5" role="status" aria-label="Loading metric">
+    <div className="space-y-2.5 px-4 py-3.5" role="status" aria-label="Loading metric">
       <Skeleton className="h-3.5 w-28" />
-      <Skeleton className="h-8 w-24" />
+      <Skeleton className="h-7 w-24" />
       <LoadingLabel />
     </div>
   );

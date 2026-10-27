@@ -57,3 +57,30 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
 
     Base.metadata.create_all(engine)
+    _add_missing_columns()
+
+
+# Nullable columns added after a table first shipped: create_all does not alter existing tables.
+ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "escalation_contacts": {
+        "ba": "VARCHAR(80)",
+        "am_email": "VARCHAR(200)",
+        "shq_email": "VARCHAR(200)",
+        "coh_email": "VARCHAR(200)",
+        "cbh_email": "VARCHAR(200)",
+    },
+}
+
+
+def _add_missing_columns() -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    for table, columns in ADDED_COLUMNS.items():
+        if not insp.has_table(table):
+            continue
+        have = {c["name"] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, ddl in columns.items():
+                if name not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))

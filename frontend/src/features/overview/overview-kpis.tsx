@@ -33,6 +33,8 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
   const listHref = (kind: KpiListKind) => kpiListHref(listBase, kind);
   // HOTO cards open done and pending side by side (tabs); Back returns to this summary.
   const hotoHref = (group: KpiListGroup) => stateDetailHref(listBase, group);
+  // AMC GPs card opens the AMC GP details page (all AMC GPs, AMC at HOTO, incremental) with its KPI strip.
+  const amcHref = stateDetailHref(listBase, "amcGps", "amc-gps");
   const mtd = asOf ? `Month-to-date up to ${formatDate(asOf)}` : "Month-to-date";
   const byState = (pick: (d: States[number]) => number | null) => (states ?? []).map((d) => `${d.name} ${formatCount(pick(d))}`).join(" · ");
 
@@ -41,6 +43,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
       <KpiRow title="Network scope">
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={Globe2}
@@ -52,6 +55,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={Boxes}
@@ -65,6 +69,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-6"
           layout="split"
@@ -152,6 +157,8 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
             { label: "Incremental", value: s?.incrementalGps ?? null, color: C.yellow, showShare: true },
             { label: "Non-AMC", value: s?.nonAmcGps ?? null, color: "var(--na)", showShare: true },
           ]}
+          href={amcHref}
+          linkLabel="View AMC GP details"
         />
       </KpiRow>
 

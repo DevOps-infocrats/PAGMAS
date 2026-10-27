@@ -23,6 +23,7 @@ export const KPI_LISTS: Record<KpiListKind, { unit: "gp" | "block"; linkLabel: s
   "non-amc-gps": { unit: "gp", linkLabel: "View GP list" },
   "amc-original-gps": { unit: "gp", linkLabel: "View GP list" },
   "incremental-gps": { unit: "gp", linkLabel: "View GP list" },
+  "amc-gps": { unit: "gp", linkLabel: "View GP list" },
   "removed-gps": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-month": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-mtd": { unit: "gp", linkLabel: "View GP list" },
@@ -85,13 +86,15 @@ export const KPI_LIST_GROUPS = {
     tabs: [
       { kind: "hoto-gps", label: "HOTO done GPs" },
       { kind: "hoto-pending-gps", label: "HOTO pending GPs" },
+      { kind: "removed-gps", label: "Converted to NP / Closed" },
     ],
   },
   // Block Insights → AMC GPs card: the two kinds of AMC GP side by side.
   amcGps: {
-    title: "AMC GPs",
+    title: "AMC GP details",
     view: "summary",
     tabs: [
+      { kind: "amc-gps", label: "All AMC GPs" },
       { kind: "amc-original-gps", label: "AMC (original) GPs" },
       { kind: "incremental-gps", label: "Incremental GPs" },
     ],

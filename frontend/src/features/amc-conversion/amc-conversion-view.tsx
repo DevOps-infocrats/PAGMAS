@@ -2,7 +2,7 @@
 
 import { useSearchParams } from "next/navigation";
 import { CircleFilter } from "@/components/filters/filter-bar";
-import { Breadcrumbs } from "@/components/layout/page-header";
+import { TitleBar, ViewHint } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { useFilters } from "@/hooks/use-filters";
 import { AMC_PATH, AMC_VIEWS, amcViewFrom } from "@/lib/amc-views";
@@ -26,31 +26,24 @@ export function AmcConversionView() {
   return (
     <div className="space-y-5">
       {/* ---------------- Title bar: same in every view, like the other pages ---------------- */}
-      <header className="rounded-xl border border-border bg-card shadow-sm">
-        <div className="space-y-0.5 px-4 py-2.5">
-          <Breadcrumbs
-            items={[
-              { label: "Circle Overview", href: hrefTo("/dashboard", { circle: undefined, district: undefined, block: undefined, gp: undefined }) },
-              stateName ? { label: "AMC Conversion Plan vs Execution", href: pageHref } : { label: "AMC Conversion Plan vs Execution" },
-              ...(stateName ? [{ label: stateName }] : []),
-            ]}
-          />
-          <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-lg font-semibold leading-tight">
-            {stateName ?? "AMC Conversion Plan vs Execution"}
-            <span className="text-subtle-foreground" aria-hidden>
-              ·
-            </span>
-            <span className="text-primary">{view.title}</span>
-            <span className="text-[13px] font-semibold text-foreground">{stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."}</span>
-          </h1>
-        </div>
+      <TitleBar
+        breadcrumbs={[
+          { label: "Circle Overview", href: hrefTo("/dashboard", { circle: undefined, district: undefined, block: undefined, gp: undefined }) },
+          stateName ? { label: "AMC Conversion Plan vs Execution", href: pageHref } : { label: "AMC Conversion Plan vs Execution" },
+          ...(stateName ? [{ label: stateName }] : []),
+        ]}
+        title={stateName ?? "AMC Conversion Plan vs Execution"}
+        view={view.title}
+        note={stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."}
+      >
         {/* State (shared filter); the view is kept */}
-        <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t border-border px-4 py-2.5 sm:grid-cols-2 lg:grid-cols-4">
-          <CircleFilter className="sm:w-full" />
-        </div>
-      </header>
-      {view.id === "summary" && <AmcPlanSummaryView />}
-      {(view.id === "monthly" || view.id === "weekly") && <AmcPlanTimelineView key={view.id} view={view.id} />}
+        <CircleFilter className="sm:w-full" />
+      </TitleBar>
+      <div key={view.id} className="view-in space-y-5">
+        <ViewHint>{view.hint}</ViewHint>
+        {view.id === "summary" && <AmcPlanSummaryView />}
+        {(view.id === "monthly" || view.id === "weekly") && <AmcPlanTimelineView key={view.id} view={view.id} />}
+      </div>
     </div>
   );
 }

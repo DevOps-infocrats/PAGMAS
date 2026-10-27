@@ -45,15 +45,16 @@ export function ChartCard({
 }) {
   const [view, setView] = useState<"chart" | "table">("chart");
   return (
-    <Card className={cn("flex min-w-0 flex-col", className)}>
-      <div className="flex flex-wrap items-start justify-between gap-3 px-5 pt-4 sm:flex-nowrap">
+    <Card className={cn("flex min-w-0 flex-col overflow-hidden transition-shadow duration-200 hover:shadow-md", className)}>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-gradient-to-r from-primary-soft/70 via-card to-card px-5 py-3 sm:flex-nowrap">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h3 className="text-[15px] font-semibold">{title}</h3>
+          <div className="flex items-center gap-2">
+            <span className="brand-gradient-v h-[18px] w-1 shrink-0 rounded-full" aria-hidden />
+            <h3 className="text-[15.5px] font-bold text-subheading">{title}</h3>
             {info && <InfoTip label={title} content={info} />}
           </div>
           {(description || period) && (
-            <p className="mt-0.5 text-[13px] text-muted-foreground">
+            <p className="mt-0.5 pl-3 text-[13px] leading-relaxed text-subheading/70">
               {description}
               {description && period && " · "}
               {period && <span className="text-subtle-foreground">{period}</span>}
@@ -63,25 +64,27 @@ export function ChartCard({
         <div className="flex shrink-0 items-center gap-2">
           {actions}
           {table && (
-            <div className="inline-flex rounded-md border border-border p-0.5" role="group" aria-label={`${title} view`}>
-              <button
-                type="button"
-                aria-pressed={view === "chart"}
-                aria-label="Chart view"
-                onClick={() => setView("chart")}
-                className={cn("rounded p-1 text-muted-foreground hover:text-foreground", view === "chart" && "bg-muted text-foreground")}
-              >
-                <BarChart3 className="size-4" />
-              </button>
-              <button
-                type="button"
-                aria-pressed={view === "table"}
-                aria-label="Table view"
-                onClick={() => setView("table")}
-                className={cn("rounded p-1 text-muted-foreground hover:text-foreground", view === "table" && "bg-muted text-foreground")}
-              >
-                <Table2 className="size-4" />
-              </button>
+            <div className="inline-flex items-center overflow-hidden rounded-md border border-input" role="group" aria-label={`${title} view`}>
+              {(
+                [
+                  ["chart", "Chart", BarChart3],
+                  ["table", "Table", Table2],
+                ] as const
+              ).map(([v, label, Icon]) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={view === v}
+                  onClick={() => setView(v)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors last:border-l last:border-input hover:bg-accent hover:text-foreground",
+                    view === v && "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" aria-hidden />
+                  {label}
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -109,10 +112,10 @@ export function ChartCard({
 export function MiniTable({ columns, rows }: { columns: string[]; rows: (string | number)[][] }) {
   return (
     <table className="w-full text-[13px]">
-      <thead className="sticky top-0 bg-card">
-        <tr className="border-b border-border text-left text-muted-foreground">
+      <thead className="sticky top-0 bg-table-head">
+        <tr className="border-b border-border text-left text-heading">
           {columns.map((c, i) => (
-            <th key={c} scope="col" className={cn("px-2 py-2 font-medium", i > 0 && "text-right")}>
+            <th key={c} scope="col" className={cn("px-2.5 py-2 text-[12.5px] font-semibold", i > 0 && "text-right")}>
               {c}
             </th>
           ))}
@@ -120,9 +123,9 @@ export function MiniTable({ columns, rows }: { columns: string[]; rows: (string 
       </thead>
       <tbody>
         {rows.map((r, ri) => (
-          <tr key={ri} className="border-b border-border/60 last:border-0">
+          <tr key={ri} className="border-b border-border/60 last:border-0 even:bg-muted/45 hover:bg-accent">
             {r.map((cell, ci) => (
-              <td key={ci} className={cn("px-2 py-1.5", ci > 0 && "tabular text-right")}>
+              <td key={ci} className={cn("px-2.5 py-2", ci > 0 && "tabular text-right", ci === 0 && "font-medium")}>
                 {cell}
               </td>
             ))}

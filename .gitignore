@@ -1,4 +1,4 @@
-# Company data and secrets stay out of Git (frontend/ and future backend/)
+# Company data and secrets stay out of Git
 /data/
 /private/
 *.xlsx
@@ -16,3 +16,10 @@
 # Generated decks / reports with client figures stay local (the generator script is committed)
 /docs/*.pptx
 /docs/*.pdf
+
+# TLS certificates for deploy/
+/deploy/certs/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

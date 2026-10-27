@@ -160,6 +160,13 @@ def _sum(vals: list[float | int | None]) -> tuple[float | None, bool]:
     return (sum(have) if have else None), len(have) != len(vals)
 
 
+def _paired_pct(rows: list[dict[str, Any]], num: str, den: str) -> float | None:
+    """Overall % = Σ num / Σ den over the rows that have BOTH values (a circle without one never skews the share)."""
+    pairs = [(r[num], r[den]) for r in rows if r[num] is not None and r[den] is not None]
+    d = sum(b for _, b in pairs)
+    return r2(sum(a for a, _ in pairs) / d * 100) if pairs and d else None
+
+
 def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]]) -> dict[str, Any]:
     g = store.gps
     plan, problem, plan_sources = effective_plan(store)
@@ -184,10 +191,13 @@ def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]
     month_end = D.replace(day=calendar.monthrange(D.year, D.month)[1])
     plan_rows = store.amc_plan
     ach_state = g["circle"].reindex(plan_rows.index).to_numpy() if not plan_rows.empty else None
+    states_with_plan = set(ach_state) if ach_state is not None else set()
+    file_month = {k.upper() for k in _file_month_plan(store).get(month, {})}
 
     def plan_achieved(state_key: str, a: dt.date, b: dt.date) -> int | None:
-        """GPs of the state whose Ach Date falls in [a, b]; None when the file has no GP-wise plan."""
-        if ach_state is None:
+        """GPs of the state whose Ach Date falls in [a, b]; None when the file has no GP-wise plan rows for the state
+        (an Ach-Date count of 0 would read as "nothing achieved")."""
+        if ach_state is None or state_key not in states_with_plan:
             return None
         hit = [isinstance(v, dt.date) and a <= v <= b for v in plan_rows["ach_date"]]
         return int(sum(1 for h, c in zip(hit, ach_state) if h and c == state_key))
@@ -206,7 +216,8 @@ def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]
         cumulative = int((amc[m] <= pd.Timestamp(D)).sum())
         mtd_plan = month_plan.get(key)
         projection = om["values"].get(key) if om else None
-        achieved_plan = plan_achieved(c["key"], month_start, min(ach_cutoff, month_end))
+        # Achieved is counted from the file's Ach Dates, so it is only comparable with a plan that comes from the file too.
+        achieved_plan = plan_achieved(c["key"], month_start, min(ach_cutoff, month_end)) if key in file_month else None
         rows.append(
             {
                 "id": c["id"],
@@ -240,8 +251,8 @@ def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]
         "futurePlans": [_sum([r["futurePlans"][i] for r in rows])[0] for i in range(len(future))],
         "futurePlansPartial": [_sum([r["futurePlans"][i] for r in rows])[1] for i in range(len(future))],
     }
-    total["planAchievedPct"] = r2(total["planAchieved"] / total["mtdPlan"] * 100) if total["planAchieved"] is not None and total["mtdPlan"] else None
-    total["projectedCoveragePct"] = r2(total["projection"] / total["revisedScope"] * 100) if total["projection"] is not None and total["revisedScope"] else None
+    total["planAchievedPct"] = _paired_pct(rows, "planAchieved", "mtdPlan")
+    total["projectedCoveragePct"] = _paired_pct(rows, "projection", "revisedScope")
 
     # Weekly closure targets – computed from the GP-wise plan block of the file, like AMC Conversion → Weekly:
     #   new target = GPs whose Planned Date falls in the Fri–Thu week, achieved = Ach Date in the week (up to the
@@ -345,28 +356,19 @@ def _weekly_columns(store: Store, p: ReportingPeriods, plan: _Plan | None, month
     """Week columns of the weekly closure table: the first WEEKS_FROM_START weeks of the plan + the reporting week
     (if later). The plan starts at the first manually set week (review_plan.json), else the week holding the 1st of
     the reporting month. Dates continue the file's Fri–Thu weeks after its last week."""
-    weeks_known = {w.code: w for w in store.weeks}
-    last = store.weeks[-1]
-
-    def dates(n: int) -> tuple[dt.date, dt.date]:
-        w = weeks_known.get(f"W-{n}")
-        if w:
-            return w.start, w.end
-        return last.start + dt.timedelta(days=7 * (n - last.number)), last.end + dt.timedelta(days=7 * (n - last.number))
-
-    manual = sorted(int(k[2:]) for k in (plan.weeklyClosureTargets if plan else {}))
+    # Ordered by date, never by week number (numbers wrap W-52 -> W-1 at the year end).
+    manual = [store.week_by_number(int(k[2:])) for k in (plan.weeklyClosureTargets if plan else {})]
     if manual:
-        first = manual[0]
+        first = min(manual, key=lambda w: w.start)
     else:
-        first = next((w.number for w in store.weeks if w.start <= month_start <= w.end), p.week.number)
-    numbers = list(range(first, first + WEEKS_FROM_START))
-    if p.week.number > numbers[-1]:
-        numbers.append(p.week.number)
+        first = next((w for w in store.weeks if w.start <= month_start <= w.end), p.week)
+    weeks = [store.week_containing(first.start + dt.timedelta(days=7 * i)) for i in range(WEEKS_FROM_START)]
+    if p.week.start > weeks[-1].start:
+        weeks.append(p.week)
     cols = []
-    for n in numbers:
-        start, end = dates(n)
-        status = "done" if end <= cutoff else ("in progress" if start <= cutoff else "not started")
-        cols.append({"id": f"W-{n}", "label": f"WK-{n}", "start": start.isoformat(), "end": end.isoformat(), "status": status, "current": n == p.week.number})
+    for w in weeks:
+        status = "done" if w.end <= cutoff else ("in progress" if w.start <= cutoff else "not started")
+        cols.append({"id": w.code, "label": f"WK-{w.number}", "start": w.start.isoformat(), "end": w.end.isoformat(), "status": status, "current": w.code == p.week.code})
     return cols
 
 

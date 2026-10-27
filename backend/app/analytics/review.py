@@ -31,7 +31,7 @@ from ..models import CircleSheetValue
 from .metrics import BANDS, band_counts, r2
 from .reconcile import reconcile
 from .review_periods import reporting_periods
-from .review_summary import executive_summary
+from .review_summary import executive_summary, pick_target
 from .review_targets import targets_page
 from .review_critical import critical_table
 from .store import Store, Week, circle_code, slug
@@ -44,23 +44,17 @@ BANDS_DESC = [b[0] for b in reversed(BANDS)]  # ">98%" first, like the O&M table
 # ---------------------------------------------------------------- source reference values
 
 
-def _source_targets(store: Store) -> dict[str, float]:
-    """O&M KEY NUMBERS "Target for Operational GP (<month> Target)" per circle (upper-case name)."""
-    rep = store.reported
-    if rep.empty:
-        return {}
-    rows = rep[rep["metric"].map(lambda m: bool(re.match(r"\s*target for operational gp", str(m), re.I)))]
-    return {r.state: float(r.value_num) for r in rows.itertuples() if r.value_num is not None and not pd.isna(r.value_num)}
-
-
-def _target_label(store: Store) -> str | None:
-    rep = store.reported
-    hit = rep[rep["metric"].map(lambda m: bool(re.match(r"\s*target for operational gp", str(m), re.I)))] if not rep.empty else rep
-    if not len(hit):
-        return None
-    label = re.sub(r"\s+", " ", str(hit["metric"].iloc[0])).strip()  # "Target for Operational GP (Oct-26Target)"
+def _source_targets(store: Store, td_end: dt.date) -> tuple[dict[str, float], str | None, bool]:
+    """O&M KEY NUMBERS "Target for Operational GP (<month> Target)" per circle (upper-case name) for the month of
+    `td_end`, else the latest month available – the same pick as the Executive Summary (review_summary.pick_target).
+    Returns (targets, label, month matches)."""
+    want = f"{td_end:%Y-%m}"
+    month, t = pick_target(store, want)
+    if not t:
+        return {}, None, False
+    label = t["label"]  # "Target for Operational GP (Oct-26Target)"
     period = re.search(r"\(([^)]*?)\s*target\s*\)", label, re.I)
-    return f"Operational GP target ({period.group(1)})" if period else label
+    return dict(t["values"]), (f"Operational GP target ({period.group(1)})" if period else label), month == want
 
 
 _ONE_TIME_UP = {
@@ -281,7 +275,7 @@ def _block_detail(store: Store, mask: np.ndarray, week: Week, compare: Week, td_
 
 
 def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dict[str, Any], month_start: dt.date) -> dict[str, Any]:
-    targets = _source_targets(store)
+    targets, label, month_matches = _source_targets(store, td["end"])
     g = store.gps
     amc_dt = frame.amc_dt
     month_end = month_start.replace(day=calendar.monthrange(month_start.year, month_start.month)[1])
@@ -312,7 +306,7 @@ def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dic
                 "targetGap": r2(gap),
                 "targetAchievedPct": r2(m["amcGps"] / target * 100) if target else None,
                 "targetCoveragePct": r2(target / m["revisedExisting"] * 100) if target and m["revisedExisting"] else None,
-                "requiredPerDay": r2(gap / days_left) if gap and days_left else None,
+                "requiredPerDay": r2(gap / days_left) if gap and days_left and month_matches else None,
                 "addedThisMonth": added,
                 "rfpTarget": rfp,
                 "rfpGap": r2(max(0.0, rfp - m["amcGps"])),
@@ -321,7 +315,7 @@ def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dic
             }
         )
     return {
-        "label": _target_label(store),
+        "label": label,
         "source": "O&M sheet – KEY NUMBERS" if targets else None,
         "monthEnd": month_end.isoformat(),
         "daysLeft": days_left,

@@ -166,7 +166,7 @@ function KpiRow({ title, subtitle, children }: { title: string; subtitle?: strin
   return (
     <section aria-label={title} className="space-y-2.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-subtle-foreground">{title}</h2>
+        <h2 className="text-[13px] font-extrabold uppercase tracking-[0.08em] text-subheading">{title}</h2>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">{children}</div>
@@ -216,7 +216,7 @@ function PlanCard({
   const done = Math.min(100, Math.max(0, pct ?? 0));
   if (loading) {
     return (
-      <div className="rounded-xl border border-border bg-card p-5" role="status" aria-label={`Loading ${label}`}>
+      <div className="rounded-lg border border-border bg-card p-5 shadow-xs" role="status" aria-label={`Loading ${label}`}>
         <Skeleton className="h-3.5 w-36" />
         <Skeleton className="mt-4 h-8 w-28" />
         {progress && <Skeleton className="mt-3 h-2 w-full" />}
@@ -225,22 +225,22 @@ function PlanCard({
     );
   }
   return (
-    <div className="group relative flex flex-col rounded-xl border border-border bg-card px-5 py-4 transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.18)]">
+    <div className="group relative flex flex-col rounded-lg border border-border bg-card px-4 py-3 shadow-xs transition-[box-shadow,border-color] duration-200 hover:border-primary/30 hover:shadow-md">
       {/* header: icon + label, period on the right */}
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="flex size-7 shrink-0 items-center justify-center rounded-lg" style={{ background: `color-mix(in srgb, ${tone} 12%, transparent)`, color: tone }} aria-hidden>
             <Icon className="size-3.5" />
           </span>
-          <span className="text-base font-bold text-[#0A3A5F] dark:text-[#7cc4ea]">{label}</span>
+          <span className="text-[14px] font-bold text-subheading">{label}</span>
           <InfoTip label={label} content={info} />
         </div>
         {tag && <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{tag}</span>}
       </div>
 
       {/* the number (achieved cards: with the % pill) */}
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="tabular text-[26px] font-semibold leading-none tracking-tight">{formatCount(value ?? null)}</span>
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="tabular text-[23px] font-bold leading-none tracking-tight text-heading">{formatCount(value ?? null)}</span>
         {unit && <span className="text-sm font-medium text-muted-foreground">{unit}</span>}
         {progress && (
           <span className={cn("ml-auto rounded-md px-2 py-0.5 text-sm font-semibold tabular", pctBg(pct ?? null), pctTone(pct ?? null))}>

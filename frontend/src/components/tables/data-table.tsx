@@ -159,7 +159,7 @@ export function DataTable<T extends RowData>({
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="border-b border-border bg-muted/50">
+                <tr key={hg.id} className="border-b border-border bg-table-head">
                   {hg.headers.map((header) => {
                     const sorted = header.column.getIsSorted();
                     const canSort = header.column.getCanSort();
@@ -169,7 +169,7 @@ export function DataTable<T extends RowData>({
                         key={header.id}
                         scope="col"
                         aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-                        className={cn("whitespace-nowrap px-4 py-2.5 text-xs font-medium text-muted-foreground", isNum ? "text-right" : "text-left")}
+                        className={cn("whitespace-nowrap px-3.5 py-2.5 text-[12.5px] font-semibold text-heading", isNum ? "text-right" : "text-left")}
                       >
                         {header.isPlaceholder ? null : canSort ? (
                           <button
@@ -209,10 +209,10 @@ export function DataTable<T extends RowData>({
                         }
                       : undefined
                   }
-                  className={cn("border-b border-border/70 last:border-0", onRowClick && "cursor-pointer hover:bg-accent/60 focus-visible:bg-accent")}
+                  className={cn("border-b border-border/70 transition-colors last:border-0 even:bg-muted/45 hover:bg-accent", onRowClick && "cursor-pointer hover:bg-primary-soft/50 focus-visible:bg-accent")}
                 >
                   {row.getAllCells().map((cell) => (
-                    <td key={cell.id} className={cn("whitespace-nowrap px-4 py-2.5", numeric.has(cell.column.id) && "tabular text-right")}>
+                    <td key={cell.id} className={cn("whitespace-nowrap px-3.5 py-2.5", numeric.has(cell.column.id) && "tabular text-right")}>
                       <table.FlexRender cell={cell} />
                     </td>
                   ))}

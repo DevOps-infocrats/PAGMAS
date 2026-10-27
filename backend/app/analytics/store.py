@@ -2,8 +2,9 @@
 
 The active dataset (~16k GPs) is loaded once into pandas/numpy and reused for
 every request. After a new import the next snapshot is built in the background
-and swapped in (requests keep using the previous one meanwhile). Computed API
-payloads are memoised on the snapshot, so they are dropped with it.
+and swapped in (requests keep using the previous one meanwhile). A dataset
+activated by another process (CLI import) is noticed within CHECK_EVERY_S.
+Computed API payloads are memoised on the snapshot, so they are dropped with it.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ from ..models import Dataset, DatasetWeek, GpAmcPlan, GpAvailabilityPack, Master
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 MEMO_MAX = 256  # computed payloads kept per snapshot (overview / circle / block pages, reconciliation …)
+WEEKS_PER_YEAR = 52
+CHECK_EVERY_S = 30.0  # how often a request checks whether another process activated a new dataset
+RETRY_AFTER_S = 10.0  # back-off after a failed snapshot load
 
 CIRCLE_CODES = {"RAJASTHAN": "RJ", "HARYANA": "HR", "ASSAM": "AS"}
 
@@ -115,15 +119,44 @@ class Store:
             return value
 
     # ---------------------------------------------------------------- periods
+    # `weeks` is in chronological order (start date). Never order by Week.number: numbers wrap W-52 -> W-1.
     def week(self, code: str) -> Week:
         for w in self.weeks:
             if w.code == code:
                 return w
         raise KeyError(code)
 
+    def week_index(self, code: str) -> int:
+        """Chronological position of a week (use this, not the number, to compare / order weeks)."""
+        for i, w in enumerate(self.weeks):
+            if w.code == code:
+                return i
+        raise KeyError(code)
+
     @property
     def latest_week(self) -> Week:
         return self.weeks[-1]
+
+    def week_containing(self, d: dt.date) -> Week:
+        """The file's Fri–Thu week holding `d`; outside the file's weeks the 7-day rhythm continues (numbers 1..52)."""
+        for w in self.weeks:
+            if w.start <= d <= w.end:
+                return w
+        anchor = self.weeks[-1] if d > self.weeks[-1].end else self.weeks[0]
+        k = (d - anchor.start).days // 7
+        n = (anchor.number - 1 + k) % WEEKS_PER_YEAR + 1
+        start = anchor.start + dt.timedelta(days=7 * k)
+        return Week(f"W-{n}", n, start, start + dt.timedelta(days=6))
+
+    def week_by_number(self, n: int) -> Week:
+        """Week "W-n": the file's own week, else the nearest W-n (either side of the file's last week, across the
+        year end) on the file's 7-day rhythm."""
+        for w in self.weeks:
+            if w.number == n:
+                return w
+        last = self.weeks[-1]
+        k = (n - last.number + WEEKS_PER_YEAR // 2) % WEEKS_PER_YEAR - WEEKS_PER_YEAR // 2
+        return Week(f"W-{n}", n, last.start + dt.timedelta(days=7 * k), last.end + dt.timedelta(days=7 * k))
 
     # ---------------------------------------------------------------- availability
     def mtd(self, end: dt.date) -> pd.Series:
@@ -177,38 +210,53 @@ class Store:
 
     @cached_property
     def one_time_up_sept(self) -> pd.Series:
-        """GP had availability > 0 during September (all GPs, monthly column)."""
-        col = f"{self.data_as_of.year}-09"
-        if col not in self.monthly.columns:
+        """GP had availability > 0 during September (all GPs, monthly column) – the latest September column not after
+        the data date (in Jan 2027 that is 2026-09)."""
+        limit = f"{self.data_as_of:%Y-%m}"
+        cols = [c for c in self.monthly.columns if re.fullmatch(r"\d{4}-09", str(c)) and str(c) <= limit]
+        if not cols:
             return pd.Series(False, index=self.gps.index)
-        return self.monthly[col].fillna(0) > 0
+        return self.monthly[max(cols)].fillna(0) > 0
 
 
 _cache: Store | None = None
-_cache_lock = threading.Lock()
+_cache_lock = threading.Lock()  # guards the variables below; held only for quick reads / swaps, never during a load
+_load_lock = threading.Lock()  # single flight: at most one snapshot load at a time
+_generation = 0  # bumped on every swap / invalidation so a slower, older load never overwrites a newer state
+_checked_at = 0.0  # time.monotonic() of the last active-dataset check
+_failed_at = float("-inf")  # time.monotonic() of the last failed load
+_last_error: Exception | None = None
+
+
+def _swap(store: Store | None) -> None:
+    global _cache, _generation, _checked_at
+    with _cache_lock:
+        _cache = store
+        _generation += 1
+        _checked_at = time.monotonic()
 
 
 def invalidate_cache() -> None:
-    global _cache
+    global _failed_at
+    _swap(None)
     with _cache_lock:
-        _cache = None
+        _failed_at = float("-inf")
 
 
 def reload_store() -> None:
     """Build the snapshot of the (new) active dataset and swap it in. Requests keep being served from the
     previous snapshot while it loads. Falls back to a lazy load on the next request if it fails."""
-    global _cache
-    try:
-        fresh = _load()
-    except NoDataError:
-        invalidate_cache()
-        return
-    except Exception:
-        log.exception("Snapshot reload failed - next request will load it")
-        invalidate_cache()
-        return
-    with _cache_lock:
-        _cache = fresh
+    with _load_lock:
+        try:
+            fresh = _load()
+        except NoDataError:
+            invalidate_cache()
+            return
+        except Exception:
+            log.exception("Snapshot reload failed - next request will load it")
+            invalidate_cache()
+            return
+        _swap(fresh)
     warm(fresh)
 
 
@@ -229,11 +277,91 @@ def warm(store: Store) -> None:
 
 
 def get_store() -> Store:
-    global _cache
-    with _cache_lock:
-        if _cache is None:
-            _cache = _load()
-        return _cache
+    """The current snapshot. At most every CHECK_EVERY_S a request also checks (one cheap query) whether another
+    process – e.g. a CLI import – activated a different dataset; the new snapshot is then built in the background
+    while requests keep the current one."""
+    global _checked_at
+    cached = _cache
+    if cached is not None:
+        now = time.monotonic()
+        with _cache_lock:
+            due = now - _checked_at >= CHECK_EVERY_S and now - _failed_at >= RETRY_AFTER_S
+            if due:
+                _checked_at = now
+        if due:
+            _check_active(cached)
+        return _cache or cached
+    return _cold_load()
+
+
+def _active_dataset_id() -> int | None:
+    with SessionLocal() as db:
+        row = db.execute(select(Dataset.id, Dataset.data_as_of).where(Dataset.is_active.is_(True)).order_by(Dataset.id.desc()).limit(1)).first()
+    return row.id if row is not None and row.data_as_of is not None else None
+
+
+def _check_active(cached: Store) -> None:
+    try:
+        active = _active_dataset_id()
+    except Exception:
+        log.warning("Active dataset check failed", exc_info=True)
+        return
+    if active == cached.dataset_id or not _load_lock.acquire(blocking=False):
+        return  # unchanged, or a load is already running
+    log.info("Active dataset changed (%s -> %s) – reloading the snapshot in the background", cached.dataset_id, active)
+    try:
+        threading.Thread(target=_background_reload, args=(_generation,), name="snapshot-reload", daemon=True).start()
+    except Exception:
+        _load_lock.release()
+        raise
+
+
+def _background_reload(generation: int) -> None:
+    """Runs with _load_lock held (acquired by _check_active)."""
+    global _failed_at
+    fresh = None
+    try:
+        fresh = _load()
+    except NoDataError:
+        with _cache_lock:
+            stale = generation != _generation
+        if not stale:
+            _swap(None)
+    except Exception:
+        log.exception("Background snapshot reload failed – keeping the current snapshot, retrying later")
+        with _cache_lock:
+            _failed_at = time.monotonic()
+    finally:
+        _load_lock.release()
+    if fresh is not None:
+        with _cache_lock:
+            stale = generation != _generation
+        if not stale:
+            _swap(fresh)
+            warm(fresh)
+
+
+def _cold_load() -> Store:
+    """No snapshot yet: load it (single flight – concurrent requests wait for the same load; after a failure they
+    get the same error without retrying for RETRY_AFTER_S)."""
+    global _failed_at, _last_error
+    with _load_lock:
+        if _cache is not None:
+            return _cache
+        if _last_error is not None and time.monotonic() - _failed_at < RETRY_AFTER_S:
+            raise _last_error
+        try:
+            fresh = _load()
+        except NoDataError:
+            raise
+        except Exception as exc:
+            with _cache_lock:
+                _failed_at, _last_error = time.monotonic(), exc
+            raise
+        _swap(fresh)
+        with _cache_lock:
+            _failed_at, _last_error = float("-inf"), None
+        return fresh
 
 
 def _wide(frame: pd.DataFrame, index: pd.Index, as_date: bool = False) -> pd.DataFrame:
@@ -271,7 +399,7 @@ def _load() -> Store:
             raise NoDataError("No dataset has been imported yet")
         weeks = [
             Week(w.code, w.number, w.start_date, w.end_date)
-            for w in db.scalars(select(DatasetWeek).where(DatasetWeek.dataset_id == ds.id).order_by(DatasetWeek.number))
+            for w in db.scalars(select(DatasetWeek).where(DatasetWeek.dataset_id == ds.id).order_by(DatasetWeek.start_date, DatasetWeek.number))
         ]
         reported = pd.DataFrame(
             [(r.state, r.metric, r.value_num, r.value_text) for r in db.scalars(select(ReportedNumber).where(ReportedNumber.dataset_id == ds.id))],

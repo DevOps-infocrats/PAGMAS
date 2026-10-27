@@ -238,11 +238,11 @@ export function BlockUptimeSection({
       {graph ? (
         <div
           key="graph"
-          className="flip-in rounded-xl border border-border bg-gradient-to-b from-muted/40 to-transparent p-4"
+          className="flip-in rounded-lg border border-border bg-gradient-to-b from-muted/40 to-transparent p-4"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h4 className="text-[15px] font-semibold">{chartTitle}</h4>
+              <h4 className="text-[15px] font-bold text-subheading">{chartTitle}</h4>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {known.length ? (
                   <>
@@ -278,7 +278,7 @@ export function BlockUptimeSection({
               <Labeled label="View">
                 <Select
                   ariaLabel="Graph columns"
-                  className="h-8 w-36 border-0 px-2 font-medium"
+                  className="h-8 w-36 border-0 px-2 font-medium shadow-none hover:bg-accent"
                   value={gView}
                   onValueChange={(v) => setGView(v as GraphView)}
                   options={[
@@ -291,7 +291,7 @@ export function BlockUptimeSection({
               <Labeled label="Show">
                 <Select
                   ariaLabel="Graph measure"
-                  className="h-8 w-52 border-0 px-2 font-medium"
+                  className="h-8 w-52 border-0 px-2 font-medium shadow-none hover:bg-accent"
                   value={gShow}
                   onValueChange={setGShow}
                   options={showOptions}

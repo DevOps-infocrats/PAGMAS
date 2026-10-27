@@ -16,9 +16,19 @@ from sqlalchemy.orm import Session
 
 from ..models import GpDailyHistory
 from .packs import pack, unpack
+from .workbook import clean_code
 
 log = logging.getLogger(__name__)
 KEEP_MONTHS = 4  # months of history kept before the newest merged month (enough for "previous month to date")
+
+
+def _recode(frame: pd.DataFrame) -> pd.DataFrame:
+    """GP codes of packs written before codes were cleaned ('O033977' -> '0033977'); the later row wins on a clash."""
+    codes = [clean_code(c) or c for c in frame.index]
+    if codes == list(frame.index):
+        return frame
+    frame.index = pd.Index(codes, name=frame.index.name)
+    return frame[~frame.index.duplicated(keep="last")]
 
 
 def merge_daily(db: Session, daily: pd.DataFrame, data_as_of: dt.date, source_file: str) -> list[str]:
@@ -38,7 +48,7 @@ def merge_daily(db: Session, daily: pd.DataFrame, data_as_of: dt.date, source_fi
         if row is None:
             merged, as_of = new, data_as_of
         else:
-            old = unpack(row.gp_codes, row.periods, row.values)
+            old = _recode(unpack(row.gp_codes, row.periods, row.values))
             newer = data_as_of >= row.data_as_of
             idx = old.index.union(new.index)
             cols = sorted(set(old.columns) | set(new.columns))
@@ -68,7 +78,7 @@ def history_frame(db: Session, before: dt.date) -> pd.DataFrame:
     """Daily values (gp_code × date) of the history for the days BEFORE `before` (the active file's first day)."""
     frames = []
     for row in db.scalars(select(GpDailyHistory).where(GpDailyHistory.month <= f"{before:%Y-%m}")):
-        f = unpack(row.gp_codes, row.periods, row.values)
+        f = _recode(unpack(row.gp_codes, row.periods, row.values))
         f.columns = [dt.date.fromisoformat(c) for c in f.columns]
         keep = [c for c in f.columns if c < before]
         if keep:

@@ -45,7 +45,7 @@ function Tile({
   caption?: React.ReactNode;
 }) {
   return (
-    <div className="relative flex flex-col rounded-xl border border-border bg-card p-5 transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_8px_24px_-12px_rgba(15,23,42,0.18)]">
+    <div className="relative flex flex-col rounded-lg border border-border bg-card px-4 py-3 shadow-xs">
       <div className="flex items-center gap-2">
         <span
           className="flex size-7 shrink-0 items-center justify-center rounded-lg"
@@ -57,14 +57,14 @@ function Tile({
         >
           <Icon className="size-3.5" />
         </span>
-        <span className="whitespace-nowrap text-[13px] font-medium text-muted-foreground">
+        <span className="whitespace-nowrap text-[13px] font-bold text-subheading">
           {label}
         </span>
         <InfoTip label={label} content={info} />
       </div>
       <p
         className={cn(
-          "mt-2 text-xl font-semibold leading-tight tracking-tight",
+          "mt-1.5 text-xl font-bold leading-tight tracking-tight",
           valueClass,
         )}
       >

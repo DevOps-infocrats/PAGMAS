@@ -50,7 +50,7 @@ function KpiValueText({ kpi, size }: { kpi: KpiValue; size: "hero" | "compact" }
   const { num, unit } = splitValue(kpi.value, def.unit);
   const suffix = unit || def.suffix;
   return (
-    <p className={cn("flex items-baseline gap-1 font-semibold tracking-tight", size === "hero" ? "text-[28px] leading-9" : "text-xl")}>
+    <p className={cn("flex items-baseline gap-1 font-bold tracking-tight text-heading", size === "hero" ? "text-[24px] leading-8" : "text-lg")}>
       <span className={cn(kpi.value == null && "text-muted-foreground")}>{num}</span>
       {kpi.value != null && suffix && (
         <span className={cn("font-medium text-muted-foreground", size === "hero" ? "text-sm" : "text-xs")}>{suffix}</span>
@@ -73,7 +73,7 @@ export function KpiCard({
 }) {
   const def = metric(kpi.key);
   return (
-    <Card className={cn("p-5", className)}>
+    <Card className={cn("px-4 py-3.5", className)}>
       <KpiBody kpi={kpi} def={def} compareLabel={compareLabel} periodLabel={periodLabel} />
     </Card>
   );
@@ -91,9 +91,9 @@ export function KpiBody({
   periodLabel?: string;
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-medium text-muted-foreground">{def.label}</span>
+        <span className="truncate text-[13px] font-bold text-subheading">{def.label}</span>
         <InfoTip
           label={def.label}
           content={
@@ -117,9 +117,9 @@ export function KpiBody({
 export function CompactMetric({ kpi, compareLabel }: { kpi: KpiValue; compareLabel?: string }) {
   const def = metric(kpi.key);
   return (
-    <div className="flex flex-col gap-1.5 p-4">
+    <div className="flex flex-col gap-1 px-4 py-3">
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-[13px] text-muted-foreground">{def.label}</span>
+        <span className="truncate text-[13px] font-semibold text-subheading">{def.label}</span>
         <InfoTip label={def.label} content={def.description} />
       </div>
       <KpiValueText kpi={kpi} size="compact" />
