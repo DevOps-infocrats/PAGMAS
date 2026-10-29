@@ -606,6 +606,11 @@ def gp_detail(store: Store, gp_code: str, week: str, issues: list[dict[str, Any]
             events.append({"date": d.isoformat(), "event": label})
     if row["lifecycle"] != "ACTIVE":
         events.append({"date": None, "event": f"Status: {row['np_status']} (date not recorded in source)"})
+    # Block HOTO status for the GP Insights card – same rule as "HOTO Done Blocks": a block is done when at least one
+    # of its GPs has a HOTO date on or before the reporting week end (additive field, nothing else changes).
+    in_block = (store.gps["block_id"] == row["block_id"]).to_numpy()
+    block_done_gps = int(store.week_frame(week)["hoto_done"].to_numpy()[in_block].sum())
+    block_hoto = {"done": block_done_gps > 0, "hotoDoneGps": block_done_gps, "totalGps": int(in_block.sum())}
     na_weeks = [x for x in weekly_hist if x["value"] is None]
     for x in na_weeks:
         issues.append({"code": "NA_WEEK", "message": "Weekly availability not reported (NA)", "weekId": x["weekId"], "severity": "warning"})
@@ -619,6 +624,7 @@ def gp_detail(store: Store, gp_code: str, week: str, issues: list[dict[str, Any]
         "olt": {"id": snap["oltId"], "blockId": snap["blockId"], "location": snap["oltLocation"], "ponPorts": None} if snap["oltId"] else None,
         "addedWeek": None,
         "revisedExisting": bool(row["revised"]),
+        "blockHoto": block_hoto,
         "issues": issues,
         "dataAsOf": store.data_as_of.isoformat(),
         "uptime": _gp_uptime_single(store, gp_code, week),

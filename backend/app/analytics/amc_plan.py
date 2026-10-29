@@ -104,6 +104,15 @@ def masks(store: Store, win: Windows) -> dict[str, np.ndarray]:
     }
 
 
+def approval_masks(values: pd.Series) -> dict[str, np.ndarray]:
+    """'Approval Status' of the plan rows. The letter goes to IE first, then to BSNL, so a GP approved by BSNL has also
+    been accepted by IE. Case and spacing are ignored ("Pending by IE" = "Pending By IE")."""
+    s = values.fillna("").astype(str).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
+    bsnl = s.str.startswith("approved by bsnl").to_numpy()
+    ie_ok = s.str.startswith("approved by ie").to_numpy()
+    return {"bsnl-accepted": bsnl, "ie-accepted": bsnl | ie_ok, "ie-rejected": s.str.startswith("rejected by ie").to_numpy(), "ie-pending": s.str.startswith("pending by ie").to_numpy()}
+
+
 def _pct(a: int, b: int) -> float | None:
     return r2(a / b * 100) if b else None
 
@@ -123,6 +132,7 @@ def amc_plan_summary(store: Store, week_code: str, as_of: dt.date | None = None)
     status = p["letter_status"].fillna("").astype(str).str.strip().str.lower()
     letter = {"submitted": status.str.startswith("submit").to_numpy(), "pending": status.str.startswith("pend").to_numpy()}
     letter["other"] = ~(letter["submitted"] | letter["pending"])
+    approval = approval_masks(p["approval_status"] if "approval_status" in p.columns else pd.Series([None] * len(p), index=p.index))
 
     # Circles in the same order as the rest of the dashboard (by revised scope), plan or not.
     sizes = g[g["revised"]].groupby("circle").size().reindex(g["circle"].unique(), fill_value=0).sort_values(ascending=False)
@@ -142,12 +152,14 @@ def amc_plan_summary(store: Store, week_code: str, as_of: dt.date | None = None)
         for key, prefix in (("mtd-achieved", "mtd"), ("week-achieved", "week")):
             for status, field in (("submitted", "LetterSubmitted"), ("pending", "LetterPending"), ("other", "LetterNotRecorded")):
                 row[prefix + field] = int((sel & m[key] & letter[status]).sum())
+            for status, field in (("ie-accepted", "IeAccepted"), ("bsnl-accepted", "BsnlAccepted"), ("ie-rejected", "IeRejected"), ("ie-pending", "IePending")):
+                row[prefix + field] = int((sel & m[key] & approval[status]).sum())
         rows.append(row)
 
     def total(field: str) -> int:
         return sum(r[field] for r in rows)
 
-    letter_fields = [p_ + f for p_ in ("mtd", "week") for f in ("LetterSubmitted", "LetterPending", "LetterNotRecorded")]
+    letter_fields = [p_ + f for p_ in ("mtd", "week") for f in ("LetterSubmitted", "LetterPending", "LetterNotRecorded", "IeAccepted", "BsnlAccepted", "IeRejected", "IePending")]
     tot = {"id": "all", "code": "ALL", "name": "Overall", **{f: total(f) for f in ("planGps", "withoutPlannedDate", "monthTarget", "mtdTarget", "mtdAchieved", "weekTarget", "weekAchieved", "overdue", *letter_fields)}}
     for r in [*rows, tot]:
         r["mtdAchievedPct"] = _pct(r["mtdAchieved"], r["mtdTarget"])
@@ -183,6 +195,9 @@ def amc_plan_summary(store: Store, week_code: str, as_of: dt.date | None = None)
 
     return {
         "hasPlan": has_plan,
+        # False when the file (or an import made before this column was read) has no 'Approval Status' – the page then
+        # hides the approval line instead of showing zeros.
+        "hasApproval": bool(has_plan and "approval_status" in p.columns and p["approval_status"].notna().any()),
         "asOf": win.as_of.isoformat(),
         "monthAsOf": win.month_as_of.isoformat(),
         "month": {"id": f"{win.month_start:%Y-%m}", "label": f"{win.month_start:%b %Y}", "start": win.month_start.isoformat(), "end": win.month_end.isoformat(), "daysElapsed": (win.month_as_of - win.month_start).days + 1, "daysInMonth": win.month_end.day},
@@ -198,6 +213,7 @@ def amc_plan_summary(store: Store, week_code: str, as_of: dt.date | None = None)
             f"Month-to-date = 1 – {win.month_as_of:%d %b} ({(win.month_as_of - win.month_start).days + 1} days, up to the latest data): target = Planned Date in that range, achieved = Ach Date in that range.",
             f"Week {number} = {win.week_start:%d %b} – {win.week_end:%d %b} (Fri–Thu): target = Planned Date in the week, achieved = Ach Date in the week up to {win.as_of:%d %b}.",
             "Overdue = Planned Date on or before the latest data date but not achieved by then. GPs in the plan without a Planned Date are not in any target.",
+            "Approval (“Approval Status” column) of the achieved GPs: IE accepted = Approved By IE or Approved By BSNL (BSNL approves after IE); BSNL accepted = Approved By BSNL; IE rejected = Rejected BY IE; IE pending = Pending by IE.",
         ],
         "warnings": warnings,
     }

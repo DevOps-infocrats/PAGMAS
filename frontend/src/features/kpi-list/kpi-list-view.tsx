@@ -63,6 +63,7 @@ const AMC_PLAN_COLS: Col[] = [
   { key: "achDate", header: "Ach date", render: (r) => <span className={cn("whitespace-nowrap", r.achDate && "font-medium text-good-text")}>{date(r.achDate)}</span> },
   { key: "planStatus", header: "Current status", render: (r) => r.planStatus ?? "—" },
   { key: "letterStatus", header: "Letter status", render: (r) => r.letterStatus ?? "—" },
+  { key: "approvalStatus", header: "Approval status", render: (r) => r.approvalStatus ?? "—" },
 ];
 const PLANNED_SORTS: { value: KpiListSort; label: string }[] = [
   { value: "value-asc", label: "Earliest planned date first" },

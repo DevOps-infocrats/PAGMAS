@@ -23,8 +23,9 @@ export function AmcConversionView() {
     const base = hrefTo(AMC_PATH, { circle: undefined, district: undefined, block: undefined, gp: undefined });
     return `${base}${base.includes("?") ? "&" : "?"}view=${view.id}`;
   })();
+  const planPage = view.id === "monthly" || view.id === "weekly";
   return (
-    <div className="space-y-5">
+    <div className={planPage ? "space-y-3" : "space-y-5"}>
       {/* ---------------- Title bar: same in every view, like the other pages ---------------- */}
       <TitleBar
         breadcrumbs={[
@@ -35,11 +36,12 @@ export function AmcConversionView() {
         title={stateName ?? "AMC Conversion Plan vs Execution"}
         view={view.title}
         note={stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."}
+        compact={planPage}
       >
         {/* State (shared filter); the view is kept */}
         <CircleFilter className="sm:w-full" />
       </TitleBar>
-      <div key={view.id} className="view-in space-y-5">
+      <div key={view.id} className={planPage ? "view-in space-y-3" : "view-in space-y-5"}>
         <ViewHint>{view.hint}</ViewHint>
         {view.id === "summary" && <AmcPlanSummaryView />}
         {(view.id === "monthly" || view.id === "weekly") && <AmcPlanTimelineView key={view.id} view={view.id} />}

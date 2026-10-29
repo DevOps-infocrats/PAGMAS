@@ -127,6 +127,17 @@ def test_amc_gp_list_and_amc_at_hoto_counts(imported, client):
     assert client.get("/api/v1/kpi-lists/amc-gps.xlsx", params={"week": "W-41"}).content[:2] == b"PK"
 
 
+def test_gp_detail_block_hoto_status(imported, client):
+    """GP Insights 'Block HOTO Status': same rule as HOTO Done Blocks (at least one GP of the block handed over)."""
+    login(client)
+    d = client.get("/api/v1/gps/262368", params={"week": "W-41"}).json()
+    g = imported.gps
+    in_block = (g["block_id"] == g.loc["262368", "block_id"]).to_numpy()
+    done = int(imported.week_frame("W-41")["hoto_done"].to_numpy()[in_block].sum())
+    assert d["blockHoto"] == {"done": done > 0, "hotoDoneGps": done, "totalGps": int(in_block.sum())}
+    assert d["gp"]["amcCategory"] == "INCREMENTAL"  # existing fields unchanged
+
+
 def test_state_comparison_figures(imported, client):
     """State Performance Comparison: GP and block thresholds computed separately, states add up to the total."""
     login(client)

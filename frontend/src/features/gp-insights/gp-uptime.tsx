@@ -423,7 +423,7 @@ export function GpUptimeSection({
               <span className="text-xs text-muted-foreground">View</span>
               <Select
                 ariaLabel="Graph columns"
-                className="h-8 w-36 border-0 px-2 font-medium shadow-none hover:bg-accent"
+                className="h-8 w-36 border-0 px-2 font-semibold shadow-none hover:bg-accent"
                 value={gView}
                 onValueChange={(v) => setGView(v as GraphView)}
                 options={[

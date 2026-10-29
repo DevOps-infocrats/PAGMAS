@@ -278,7 +278,7 @@ export function BlockUptimeSection({
               <Labeled label="View">
                 <Select
                   ariaLabel="Graph columns"
-                  className="h-8 w-36 border-0 px-2 font-medium shadow-none hover:bg-accent"
+                  className="h-8 w-36 border-0 px-2 font-semibold shadow-none hover:bg-accent"
                   value={gView}
                   onValueChange={(v) => setGView(v as GraphView)}
                   options={[
@@ -291,7 +291,7 @@ export function BlockUptimeSection({
               <Labeled label="Show">
                 <Select
                   ariaLabel="Graph measure"
-                  className="h-8 w-52 border-0 px-2 font-medium shadow-none hover:bg-accent"
+                  className="h-8 w-52 border-0 px-2 font-semibold shadow-none hover:bg-accent"
                   value={gShow}
                   onValueChange={setGShow}
                   options={showOptions}

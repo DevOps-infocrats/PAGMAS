@@ -73,6 +73,7 @@ export function TitleBar({
   children,
   tabs,
   sticky,
+  compact,
 }: {
   breadcrumbs?: Crumb[];
   /** Scope: state / block / GP name or the page name */
@@ -89,14 +90,16 @@ export function TitleBar({
   /** Tab strip between the title and the filters */
   tabs?: React.ReactNode;
   sticky?: boolean;
+  /** Shorter bar (less padding, slightly smaller title) for table-first pages */
+  compact?: boolean;
 }) {
   return (
     <header className={cn("relative overflow-hidden rounded-xl border border-border bg-card shadow-sm", sticky && "sticky top-[4.25rem] z-20")}>
       <span className="brand-gradient absolute inset-x-0 top-0 h-[3px]" aria-hidden />
-      <div className="hero-surface flex flex-col gap-3 px-6 pb-4 pt-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0 space-y-1.5">
+      <div className={cn("hero-surface flex flex-col lg:flex-row lg:items-center lg:justify-between", compact ? "gap-2 px-5 pb-2.5 pt-3.5" : "gap-3 px-6 pb-4 pt-5")}>
+        <div className={cn("min-w-0", compact ? "space-y-1" : "space-y-1.5")}>
           {breadcrumbs && <Breadcrumbs items={breadcrumbs} />}
-          <h1 className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 text-[25px] font-extrabold leading-tight tracking-tight">
+          <h1 className={cn("flex min-w-0 flex-wrap items-baseline gap-x-2.5 font-extrabold leading-tight tracking-tight", compact ? "text-[21px]" : "text-[25px]")}>
             <span className="text-brand">{title}</span>
             {view && (
               <>
@@ -122,7 +125,9 @@ export function TitleBar({
         {aside && <div className="flex flex-wrap items-center gap-2 lg:justify-end">{aside}</div>}
       </div>
       {tabs && <div className="border-t border-border px-6 py-2">{tabs}</div>}
-      {children && <div className="grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border px-6 py-3.5 sm:grid-cols-2 lg:grid-cols-4">{children}</div>}
+      {children && (
+        <div className={cn("grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border sm:grid-cols-2 lg:grid-cols-4", compact ? "px-5 py-2.5" : "px-6 py-3.5")}>{children}</div>
+      )}
     </header>
   );
 }

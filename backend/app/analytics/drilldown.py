@@ -269,7 +269,7 @@ def _rows(store: Store, kind: str, week: str, as_of: dt.date | None = None) -> p
         from .amc_plan import masks, windows
 
         plan = store.amc_plan
-        cols = ["category", "plannedDate", "achDate", "planStatus", "letterStatus"]
+        cols = ["category", "plannedDate", "achDate", "planStatus", "letterStatus", "approvalStatus"]
         if plan.empty:
             return pd.DataFrame(columns=[*_gp_frame(g.iloc[:0]).keys(), *cols, "value"])
         sel_plan = plan[masks(store, windows(store, week, as_of))[AMC_LISTS[kind][0]]]
@@ -284,6 +284,9 @@ def _rows(store: Store, kind: str, week: str, as_of: dt.date | None = None) -> p
                 "achDate": achieved,
                 "planStatus": sel_plan["current_status"].where(sel_plan["current_status"].notna(), None).to_numpy(),
                 "letterStatus": sel_plan["letter_status"].where(sel_plan["letter_status"].notna(), None).to_numpy(),
+                "approvalStatus": (
+                    sel_plan["approval_status"].where(sel_plan["approval_status"].notna(), None).to_numpy() if "approval_status" in sel_plan.columns else [None] * len(sel_plan)
+                ),
                 "value": value,
             }
         )

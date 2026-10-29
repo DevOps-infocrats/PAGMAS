@@ -65,12 +65,12 @@ function HeaderWeekSelect() {
   const weeks = [...(meta?.weeks ?? [])].reverse();
   return (
     <div className="hidden items-center gap-2 md:flex">
-      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground/75">
         <CalendarDays className="size-4" aria-hidden /> Week
       </span>
       <Select
         ariaLabel="Reporting week"
-        className="h-9 w-[180px] font-medium"
+        className="h-9 w-[180px]"
         value={period?.weekId}
         placeholder="Loading weeks…"
         disabled={!meta}

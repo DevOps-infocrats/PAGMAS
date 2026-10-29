@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate } from "@/lib/utils/format";
 import { FlipButton } from "@/features/circle-insights/circle-charts";
 import { AreaManagerTable } from "./amc-area-managers";
-import { BODY_ROW, HEAD_ROW, PctValue, RowHead, TOTAL_ROW, TableCard, Td, Th } from "./table-ui";
+import { BODY_ROW, GRID_TABLE, GRID_WRAP, HEAD_ROW, PctValue, RowHead, TOTAL_ROW, TableCard, Td, Th } from "./table-ui";
 
 const dash = (v: number | null | undefined) => (v == null ? "—" : formatCount(v));
 const shortDate = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" });
@@ -73,7 +73,7 @@ export function AmcPlanTimelineView({ view }: { view: "monthly" | "weekly" }) {
   const table = r ? (view === "monthly" ? r.monthly : r.weekly) : undefined;
   const monthly = view === "monthly";
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {/* one chip: up to which date achieved is counted (the table descriptions say what target / achieved are) */}
       {r && (
         <div className="flex flex-wrap gap-2 text-xs">
@@ -103,7 +103,7 @@ export function AmcPlanTimelineView({ view }: { view: "monthly" | "weekly" }) {
       </section>
       {/* one state selected: the same figures per area manager of that state (current month / selected week) */}
       {filters.circle && r?.monthly.total.id === filters.circle && (
-        <section aria-label="By area manager">
+        <section aria-label="By area manager" className="pt-2">
           <AreaManagerTable view={view} circleId={filters.circle} />
         </section>
       )}
@@ -187,8 +187,8 @@ function PlanTable({ unit, periods, table, weekly, toggle }: { unit: string; per
       description={weekly ? "Target = Planned Date in the week · Achieved = Ach Date · “due” = target GPs whose Planned Date has passed" : "Target = Planned Date in the month · Achieved = Ach Date"}
       actions={toggle}
     >
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className={cn("w-full text-[13px]", !weekly && (periods.length > 3 ? "min-w-[900px]" : "min-w-[560px]"))}>
+      <div className={GRID_WRAP}>
+        <table className={cn("w-full text-[13px]", GRID_TABLE, !weekly && (periods.length > 3 ? "min-w-[900px]" : "min-w-[560px]"))}>
           <caption className="sr-only">{unit}-wise AMC conversion target vs achieved by state</caption>
           <thead>
             <tr className="bg-muted">
@@ -279,8 +279,8 @@ function MonthlyPlanTable({ periods, table, asOf, toggle }: { periods: AmcPlanPe
 
   return (
     <TableCard title="Month-wise target vs achieved – by state" description={`Target = Planned Date in the month · Achieved = Ach Date (up to ${formatDate(asOf)})`} actions={toggle}>
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-[13px]">
+      <div className={GRID_WRAP}>
+        <table className={cn("w-full text-[13px]", GRID_TABLE)}>
           <caption className="sr-only">Month-wise AMC conversion target vs achieved by state</caption>
           <thead>
             <tr className="bg-muted">

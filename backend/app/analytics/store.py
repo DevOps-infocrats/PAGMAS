@@ -88,7 +88,7 @@ class Store:
     weeks: list[Week]
     reported: pd.DataFrame
     master_blocks: pd.DataFrame
-    # GP-wise AMC conversion plan (index gp_code): category, planned_date, ach_date, current_status, letter_status, letter_date
+    # GP-wise AMC conversion plan (index gp_code): category, planned_date, ach_date, current_status, letter_status, letter_date, approval_status
     amc_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
     # days in `daily` that come from the upload history (earlier files), not from the active file
     history_days: list[dt.date] = field(default_factory=list)
@@ -414,7 +414,11 @@ def _load() -> Store:
     with engine.connect() as conn:
         gps = pd.read_sql(text("SELECT * FROM gps WHERE dataset_id = :d"), conn, params={"d": meta[0]})
         avail = _availability(conn, meta[0])
-        amc_plan = pd.read_sql(text("SELECT gp_code, category, planned_date, ach_date, current_status, letter_status, letter_date FROM gp_amc_plan WHERE dataset_id = :d"), conn, params={"d": meta[0]})
+        amc_plan = pd.read_sql(
+            text("SELECT gp_code, category, planned_date, ach_date, current_status, letter_status, letter_date, approval_status FROM gp_amc_plan WHERE dataset_id = :d"),
+            conn,
+            params={"d": meta[0]},
+        )
 
     gps = gps.drop(columns=["dataset_id"]).set_index("gp_code").sort_index()
     for c in ("hoto_date", "amc_date", "lms_amc_date", "letter_date"):

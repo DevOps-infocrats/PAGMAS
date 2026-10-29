@@ -21,8 +21,8 @@ const pct = (a: number, b: number) =>
 
 /**
  * Five headline KPIs of one block:
- *  1. GPs (existing / new / revised) and fibre route (BSNL / BBNL)
- *  2. HOTO done (done / pending), AMC (AMC / incremental / non-AMC) and Non-AMC GPs
+ *  1. Total GPs (existing / new / revised), HOTO Done GPs (done / pending), AMC GPs (AMC / incremental / non-AMC), Non-AMC GPs
+ *  2. Total fibre route (BSNL / BBNL)
  * AMC GPs and Non-AMC GPs open the GP lists of this block; Back returns here.
  */
 export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
@@ -32,12 +32,13 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
   const listBase = hrefTo(KPI_LIST_PATH, { gp: undefined });
   const notApplicable = s ? s.existingGps - s.revisedExisting : 0;
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div className="space-y-3">
+      {/* Row 1: Total GPs, HOTO Done GPs, AMC GPs, Non-AMC GPs (2 per row on tablets, 1 on phones) */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           compact
+          dense
           loading={L}
-          layout="split"
           icon={Users}
           tone="var(--series-1)"
           label="Total GPs"
@@ -84,52 +85,11 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
         />
         <StatCard
           compact
-          loading={L}
-          layout="split"
-          icon={Cable}
-          tone="var(--series-1)"
-          label="Total Fibre Route"
-          info={
-            <>
-              <b>Total</b> = Σ TOTAL RKM of the block&rsquo;s GP rows.{" "}
-              <b>BSNL</b> / <b>BBNL</b> = Σ BSNL / BBNL Live KM.
-              {s?.rkmPartsDifference
-                ? ` BSNL + BBNL differs from the total by ${rkm(Math.abs(s.rkmPartsDifference))} RKM (rounding / rows whose parts do not add up).`
-                : ""}
-            </>
-          }
-          value={rkm(s?.totalRkm)}
-          unit="RKM"
-          caption={s ? `AMC fibre: ${rkm(s.amcRkm)} RKM` : undefined}
-          total={s ? s.bsnlRkm + s.bbnlRkm : null}
-          bar={[
-            { label: "BSNL", value: s?.bsnlRkm ?? 0, color: "var(--series-1)" },
-            { label: "BBNL", value: s?.bbnlRkm ?? 0, color: "var(--series-3)" },
-          ]}
-          breakdown={[
-            {
-              label: "BSNL RKM",
-              value: s?.bsnlRkm ?? null,
-              display: `${rkm(s?.bsnlRkm)} · ${s ? pct(s.bsnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
-              color: "var(--series-1)",
-            },
-            {
-              label: "BBNL RKM",
-              value: s?.bbnlRkm ?? null,
-              display: `${rkm(s?.bbnlRkm)} · ${s ? pct(s.bbnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
-              color: "var(--series-3)",
-            },
-          ]}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <StatCard
-          compact
+          dense
           loading={L}
           icon={CircleCheckBig}
           tone="var(--good)"
-          label="HOTO Done"
+          label="HOTO Done GPs"
           info="GPs with a HOTO date on or before the reporting week end, out of the revised existing GPs (converted / closed GPs are not applicable)."
           value={formatCount(s?.hotoDoneGps)}
           unit={s ? `of ${formatCount(s.revisedExisting)} GPs` : undefined}
@@ -171,6 +131,7 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
         />
         <StatCard
           compact
+          dense
           loading={L}
           icon={Wrench}
           tone="var(--series-2)"
@@ -221,6 +182,7 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
         />
         <StatCard
           compact
+          dense
           loading={L}
           icon={CircleDashed}
           tone="var(--na)"
@@ -235,6 +197,49 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
           }
           href={kpiListHref(listBase, "non-amc-gps", "block")}
           linkLabel={KPI_LISTS["non-amc-gps"].linkLabel}
+        />
+      </div>
+
+      {/* Row 2: fibre route – same 4-column grid as row 1, so the card has the standard width */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          compact
+          dense
+          loading={L}
+          icon={Cable}
+          tone="var(--series-1)"
+          label="Total Fibre Route"
+          info={
+            <>
+              <b>Total</b> = Σ TOTAL RKM of the block&rsquo;s GP rows.{" "}
+              <b>BSNL</b> / <b>BBNL</b> = Σ BSNL / BBNL Live KM.
+              {s?.rkmPartsDifference
+                ? ` BSNL + BBNL differs from the total by ${rkm(Math.abs(s.rkmPartsDifference))} RKM (rounding / rows whose parts do not add up).`
+                : ""}
+            </>
+          }
+          value={rkm(s?.totalRkm)}
+          unit="RKM"
+          caption={s ? `AMC fibre: ${rkm(s.amcRkm)} RKM` : undefined}
+          total={s ? s.bsnlRkm + s.bbnlRkm : null}
+          bar={[
+            { label: "BSNL", value: s?.bsnlRkm ?? 0, color: "var(--series-1)" },
+            { label: "BBNL", value: s?.bbnlRkm ?? 0, color: "var(--series-3)" },
+          ]}
+          breakdown={[
+            {
+              label: "BSNL RKM",
+              value: s?.bsnlRkm ?? null,
+              display: `${rkm(s?.bsnlRkm)} · ${s ? pct(s.bsnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
+              color: "var(--series-1)",
+            },
+            {
+              label: "BBNL RKM",
+              value: s?.bbnlRkm ?? null,
+              display: `${rkm(s?.bbnlRkm)} · ${s ? pct(s.bbnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
+              color: "var(--series-3)",
+            },
+          ]}
         />
       </div>
     </div>

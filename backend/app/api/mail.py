@@ -382,7 +382,7 @@ def preview_recipients(cid: int, db: Session = Depends(get_db)) -> dict:
         "skipped": [{"name": s.name, "role": s.role, "reason": s.reason} for s in skipped],
     }
 
-
+#REFRACTOR TEST AMC = TRUE
 @router.get("/runs")
 def list_runs(config: Annotated[int | None, Query(ge=1)] = None, limit: Annotated[int, Query(ge=1, le=200)] = 50, db: Session = Depends(get_db)) -> list[dict]:
     q = select(MailRun, MailConfig.name).join(MailConfig, MailConfig.id == MailRun.config_id).order_by(MailRun.id.desc()).limit(limit)

@@ -69,6 +69,7 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "coh_email": "VARCHAR(200)",
         "cbh_email": "VARCHAR(200)",
     },
+    "gp_amc_plan": {"approval_status": "VARCHAR(60)"},
 }
 
 

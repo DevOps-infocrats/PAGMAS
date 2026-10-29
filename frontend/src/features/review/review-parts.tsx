@@ -132,7 +132,7 @@ export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey 
 export function CircleSelect({ circles, value, onChange }: { circles: { id: string; name: string; code: string }[]; value: string; onChange: (id: string) => void }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-muted-foreground">Circle</span>
+      <span className="text-xs font-semibold text-foreground/75">Circle</span>
       <Select ariaLabel="Circle" className="w-full sm:w-52" value={value} onValueChange={onChange} options={circles.map((c) => ({ value: c.id, label: `${c.name} (${c.code})` }))} />
     </div>
   );

@@ -10,7 +10,7 @@ import { useFilters } from "@/hooks/use-filters";
 import { api, type AmcAreaManagerRow } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate, formatPercent } from "@/lib/utils/format";
-import { BODY_ROW, HEAD_ROW, RowHead, TOTAL_ROW, TableCard, Td, Th } from "./table-ui";
+import { BODY_ROW, GRID_TABLE, GRID_WRAP, HEAD_ROW, RowHead, TOTAL_ROW, TableCard, Td, Th } from "./table-ui";
 
 const dayMonth = (iso: string) => formatDate(iso).slice(0, 6);
 /** Area managers at or above this achievement % are highlighted. */
@@ -117,8 +117,8 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
         </span>
       }
     >
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
+      <div className={GRID_WRAP}>
+        <table className={cn("w-full text-sm", GRID_TABLE)}>
           <caption className="sr-only">Area manager-wise AMC conversion of {r.circle.name}</caption>
           <thead>
             <tr className="bg-muted text-[12.5px] font-semibold text-foreground">
@@ -135,7 +135,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
             <tr className={HEAD_ROW}>
               <Th className="w-10 text-left">#</Th>
               <Th first>Area manager</Th>
-              <Th className="text-left">Business area</Th>
+              <Th className="w-44 max-w-[11rem] text-left">Business area</Th>
               <Th group>Blocks</Th>
               <Th>Existing GPs</Th>
               <Th>AMC GPs</Th>
@@ -165,7 +165,16 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               >
                 <Td className={cn("text-left text-subtle-foreground", isTop(x) ? "border-l-4 border-l-good" : isGood(x) && "border-l-4 border-l-good/40")}>{i + 1}</Td>
                 <RowHead className={cn(isTop(x) ? "bg-good-soft font-bold text-good-text" : isGood(x) && "bg-good-soft/60")}>{x.assigned ? x.name : <span className="italic">{x.name}</span>}</RowHead>
-                <Td className="text-left font-normal">{x.businessAreas.length ? x.businessAreas.join(", ") : <Dash />}</Td>
+                {/* Business area: narrow column, at most two lines; the full list is in the tooltip. */}
+                <Td className="w-44 min-w-[8rem] max-w-[11rem] whitespace-normal py-2 text-left font-normal">
+                  {x.businessAreas.length ? (
+                    <span className="line-clamp-2 break-words text-[12.5px] leading-snug" title={x.businessAreas.join(", ")}>
+                      {x.businessAreas.join(", ")}
+                    </span>
+                  ) : (
+                    <Dash />
+                  )}
+                </Td>
                 <Td group>{formatCount(x.blocks)}</Td>
                 <Td>{formatCount(x.existingGps)}</Td>
                 <Td>{formatCount(x.amcGps)}</Td>

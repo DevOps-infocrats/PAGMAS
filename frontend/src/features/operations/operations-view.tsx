@@ -12,9 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/controls";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { IS_LIVE, adminApi, api, type ReconciliationRow } from "@/lib/api";
+import { IS_LIVE, adminApi, api, type EscalationImportRun, type ReconciliationRow } from "@/lib/api";
 import { formatCount, formatDate, formatDateTime, formatDuration } from "@/lib/utils/format";
 import type { IngestionRun } from "@/types";
+import { UploadPanel, UploadToasts, jobOutcome, type UploadJob } from "./upload-progress";
 import { UploadReport } from "./upload-report";
 
 type StatusFilter = "ALL" | IngestionRun["status"];
@@ -57,6 +58,85 @@ function OperationsContent() {
     }
   }, [processing, runs, refresh]);
 
+  // Escalation Matrix imports (also polled while one is processing).
+  const [escPoll, setEscPoll] = useState(0);
+  const escQ = useApiQuery(IS_LIVE ? `escalation-imports:${escTick}:${escPoll}` : null, () => adminApi.getEscalationImports());
+  const escList = escQ.data ?? escQ.staleData;
+  const escProcessing = escList?.some((x) => x.status === "PROCESSING");
+  const escWasProcessing = useRef(false);
+  useEffect(() => {
+    if (escProcessing) {
+      escWasProcessing.current = true;
+      const t = setTimeout(() => setEscPoll((n) => n + 1), 3000);
+      return () => clearTimeout(t);
+    }
+    if (escWasProcessing.current) {
+      escWasProcessing.current = false;
+      refresh();
+    }
+  }, [escProcessing, escList, refresh]);
+
+  // Files uploaded from this page: where each one stands is read from the two lists above.
+  const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const [now, setNow] = useState(0);
+  const [toastsSeen, setToastsSeen] = useState<string[]>([]);
+  const outcomes = jobs.map((job) => ({ job, outcome: jobOutcome(job, runs, escList) }));
+  const uploading = jobs.some((j) => j.phase === "uploading");
+  const jobsBusy = outcomes.some((x) => x.outcome.state !== "done");
+  useEffect(() => {
+    if (!jobsBusy) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [jobsBusy]);
+  const toasts = outcomes.flatMap(({ job, outcome }) =>
+    outcome.state === "done" && !toastsSeen.includes(job.key) ? [{ key: job.key, name: job.name, tone: outcome.tone, title: outcome.title }] : [],
+  );
+  const toastKeys = toasts.map((t) => t.key).join("|");
+  useEffect(() => {
+    if (!toastKeys) return;
+    const t = setTimeout(() => setToastsSeen((seen) => [...seen, ...toastKeys.split("|")]), 8000);
+    return () => clearTimeout(t);
+  }, [toastKeys]);
+  const newRunIds = jobs.flatMap((j) => (j.kind === "master" && j.runId ? [j.runId] : [])).join(",");
+
+  const startUpload = async (files: File[]) => {
+    const t0 = Date.now();
+    const picked: UploadJob[] = files.map((f, i) => {
+      const ok = /\.(xlsb|xlsx|xlsm)$/i.test(f.name);
+      return {
+        key: `${t0}-${i}`,
+        name: f.name,
+        size: f.size,
+        phase: ok ? "uploading" : "rejected",
+        progress: 0,
+        error: ok ? undefined : "Not an Excel workbook – please choose a .xlsb, .xlsx or .xlsm file.",
+      };
+    });
+    setJobs(picked);
+    setToastsSeen([]);
+    setNow(t0);
+    setMessage(null);
+    const update = (key: string, patch: Partial<UploadJob>) => setJobs((js) => js.map((j) => (j.key === key ? { ...j, ...patch } : j)));
+    for (const [i, job] of picked.entries()) {
+      if (job.phase !== "uploading") continue;
+      try {
+        const res = await adminApi.uploadWorkbook(files[i], (p) => update(job.key, { progress: p }));
+        const kind = res.kind ?? "master";
+        update(job.key, { phase: "accepted", progress: 1, kind, runId: res.id.replace(/^esc-/, ""), processingSince: Date.now() });
+        if (kind === "escalation") setEscTick((n) => n + 1);
+        else setTick((n) => n + 1);
+      } catch (err) {
+        update(job.key, { phase: "rejected", error: err instanceof Error ? err.message : "Upload failed." });
+      }
+    }
+  };
+
+  const showRun = (id: string) => {
+    setStatus("ALL");
+    setSelectedId(id);
+    requestAnimationFrame(() => (document.getElementById("ops-report") ?? document.getElementById("ops-history"))?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+
   const latest = runs?.[0];
   const active = runs?.find((r) => r.isActive) ?? runs?.find((r) => r.status === "SUCCESS");
   const filtered = useMemo(() => (runs ?? []).filter((r) => status === "ALL" || r.status === status), [runs, status]);
@@ -83,11 +163,14 @@ function OperationsContent() {
           <span className="font-medium">
             {c.getValue()}
             {c.row.original.isActive && <span className="ml-2 rounded bg-good-soft px-1.5 py-0.5 text-[11px] text-good-text">Active</span>}
+            {newRunIds.split(",").includes(c.row.original.id) && (
+              <span className="ml-2 rounded bg-primary-soft px-1.5 py-0.5 text-[11px] text-primary">Just uploaded</span>
+            )}
           </span>
         ),
       }),
       h.accessor("startedAt", { header: "Started", cell: (c) => (c.getValue() ? formatDateTime(c.getValue() as string) : "—") }),
-      h.accessor("status", { header: "Status", cell: (c) => <StatusBadge tone={STATUS_TONE[c.row.original.status]}>{STATUS_LABEL[c.row.original.status]}</StatusBadge> }),
+      h.accessor("status", { header: "Status", cell: (c) => <RunStatus status={c.row.original.status} /> }),
       h.accessor((r) => r.dataAsOf ?? "", { id: "dataAsOf", header: "Data as of", cell: (c) => formatDate(c.row.original.dataAsOf ?? null) }),
       h.accessor("accepted", { header: "Accepted", cell: (c) => formatCount(c.getValue()) }),
       h.accessor("rejected", { header: "Rejected", cell: (c) => formatCount(c.getValue()) }),
@@ -112,7 +195,7 @@ function OperationsContent() {
           ) : null,
       }),
     ];
-  }, [retrying]);
+  }, [retrying, newRunIds]);
 
   return (
     <div className="space-y-8">
@@ -122,16 +205,7 @@ function OperationsContent() {
         description="Import the master data workbook and the Escalation Matrix (one at a time or together), monitor processing and check data accuracy."
         actions={
           IS_LIVE ? (
-            <UploadButton
-              onDone={(results) => {
-                const failed = results.some((x) => x.error);
-                const text = results.map((x) => x.error ?? `${x.name} (${x.kind === "escalation" ? "Escalation Matrix" : "master data"}) uploaded – processing started.`).join("  ");
-                setMessage({ tone: failed ? "error" : "info", text });
-                setTick((n) => n + 1);
-                setEscTick((n) => n + 1);
-              }}
-              onError={(text) => setMessage({ tone: "error", text })}
-            />
+            <UploadButton onFiles={(files) => void startUpload(files)} uploading={uploading} processing={jobsBusy && !uploading} />
           ) : null
         }
       />
@@ -142,6 +216,8 @@ function OperationsContent() {
           <p>Demo mode: these runs are generated placeholders. Start the backend and use NEXT_PUBLIC_API_MODE=live to import real files.</p>
         </div>
       )}
+
+      {IS_LIVE && <UploadPanel jobs={jobs} runs={runs} escalation={escList} now={now} onClear={() => setJobs([])} onShowRun={showRun} />}
 
       {message && (
         <p
@@ -181,7 +257,7 @@ function OperationsContent() {
         </Card>
       )}
 
-      {IS_LIVE && <EscalationImports tick={escTick} onFinished={refresh} />}
+      {IS_LIVE && <EscalationImports list={escList} error={escQ.error} onRetry={escQ.reload} />}
 
       {IS_LIVE && <Reconciliation key={active?.id ?? "none"} />}
 
@@ -215,16 +291,25 @@ function OperationsContent() {
 
       {selected && IS_LIVE && <UploadReport key={`report-${selected.id}`} run={selected} />}
       {selected && (IS_LIVE ? <RunIssues run={selected} /> : <DemoIssues run={selected} />)}
+
+      <UploadToasts items={toasts} onClose={(key) => setToastsSeen((seen) => [...seen, key])} />
     </div>
   );
 }
 
-type UploadResult = { name: string; kind?: "master" | "escalation"; error?: string };
+/** Status badge; the icon turns while an import is processing. */
+function RunStatus({ status }: { status: keyof typeof STATUS_TONE }) {
+  return (
+    <StatusBadge tone={STATUS_TONE[status]} className={status === "PROCESSING" ? "[&>svg]:animate-spin" : undefined}>
+      {STATUS_LABEL[status]}
+    </StatusBadge>
+  );
+}
 
-/** Uploads one or more workbooks; each is recognised by its content (master data or Escalation Matrix). */
-function UploadButton({ onDone, onError }: { onDone: (r: UploadResult[]) => void; onError: (msg: string) => void }) {
+/** Picks one or more workbooks; each is recognised by the server from its content (master data or Escalation Matrix). */
+function UploadButton({ onFiles, uploading, processing }: { onFiles: (files: File[]) => void; uploading: boolean; processing: boolean }) {
   const input = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
+  const busy = uploading || processing;
   return (
     <>
       <input
@@ -235,52 +320,22 @@ function UploadButton({ onDone, onError }: { onDone: (r: UploadResult[]) => void
         className="hidden"
         aria-hidden
         tabIndex={-1}
-        onChange={async (e) => {
+        onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          if (!files.length) return;
-          const wrong = files.filter((f) => !/\.(xlsb|xlsx|xlsm)$/i.test(f.name));
-          if (wrong.length) return onError(`Please choose Excel workbooks (.xlsb, .xlsx or .xlsm): ${wrong.map((f) => f.name).join(", ")}`);
-          setBusy(true);
-          const results: UploadResult[] = [];
-          for (const file of files) {
-            try {
-              const res = await adminApi.uploadWorkbook(file);
-              results.push({ name: res.fileName, kind: res.kind });
-            } catch (err) {
-              results.push({ name: file.name, error: `${file.name}: ${err instanceof Error ? err.message : "upload failed"}` });
-            }
-          }
-          setBusy(false);
-          onDone(results);
+          if (files.length) onFiles(files);
         }}
       />
-      <Button variant="primary" onClick={() => input.current?.click()} disabled={busy}>
+      <Button variant="primary" onClick={() => input.current?.click()} disabled={busy} title={processing ? "Please wait until the current import finishes" : undefined}>
         {busy ? <Loader2 className="animate-spin" /> : <FileUp />}
-        {busy ? "Uploading…" : "Upload data files"}
+        {uploading ? "Uploading…" : processing ? "Processing…" : "Upload data files"}
       </Button>
     </>
   );
 }
 
-/** Escalation Matrix uploads: status of each; the active one feeds Field Team & Escalation. Polls while processing. */
-function EscalationImports({ tick, onFinished }: { tick: number; onFinished: () => void }) {
-  const [poll, setPoll] = useState(0);
-  const q = useApiQuery(`escalation-imports:${tick}:${poll}`, () => adminApi.getEscalationImports());
-  const list = q.data ?? q.staleData;
-  const processing = list?.some((x) => x.status === "PROCESSING");
-  const was = useRef(false);
-  useEffect(() => {
-    if (processing) {
-      was.current = true;
-      const t = setTimeout(() => setPoll((n) => n + 1), 3000);
-      return () => clearTimeout(t);
-    }
-    if (was.current) {
-      was.current = false;
-      onFinished();
-    }
-  }, [processing, list, onFinished]);
+/** Escalation Matrix uploads: status of each; the active one feeds Field Team & Escalation (polled by the page). */
+function EscalationImports({ list, error, onRetry }: { list: EscalationImportRun[] | undefined; error?: Error; onRetry: () => void }) {
   const active = list?.find((x) => x.isActive);
   return (
     <section className="space-y-4" aria-labelledby="ops-escalation">
@@ -290,8 +345,8 @@ function EscalationImports({ tick, onFinished }: { tick: number; onFinished: () 
         description="GP-wise field team and escalation contacts – used by Field Team & Escalation. Upload it with the button above, on its own or together with the master data file."
       />
       <Card className="overflow-hidden">
-        {q.error && !list ? (
-          <ErrorState error={q.error} onRetry={q.reload} />
+        {error && !list ? (
+          <ErrorState error={error} onRetry={onRetry} />
         ) : !list ? (
           <div className="p-5">
             <KpiSkeleton />
@@ -334,7 +389,7 @@ function EscalationImports({ tick, onFinished }: { tick: number; onFinished: () 
                     </td>
                     <td className="px-4 py-2.5">{x.startedAt ? formatDateTime(x.startedAt) : "—"}</td>
                     <td className="px-4 py-2.5">
-                      <StatusBadge tone={STATUS_TONE[x.status]}>{STATUS_LABEL[x.status]}</StatusBadge>
+                      <RunStatus status={x.status} />
                     </td>
                     <td className="tabular px-4 py-2.5 text-right">{formatCount(x.rows)}</td>
                     <td className="tabular px-4 py-2.5 text-right">{formatCount(x.rejected)}</td>

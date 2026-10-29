@@ -121,7 +121,7 @@ export function AmcPlanSummaryView() {
           tone="var(--good)"
           label="(MTD) Achievement"
           tag={mtdTag}
-          info="GPs whose Ach Date falls between the 1st of the month and the latest data date, against the GPs due by that date. Letter = their “Letter Status” in the file (Submitted / Pending). Click the card to see these GPs."
+          info="GPs whose Ach Date falls between the 1st of the month and the latest data date, against the GPs due by that date. Letter = their “Letter Status” in the file (Submitted / Pending). Approval = their “Approval Status”: IE accepted = Approved By IE or By BSNL, BSNL accepted = Approved By BSNL, IE pending = Pending by IE. Click the card to see these GPs."
           value={t?.mtdAchieved}
           unit={t ? `of ${formatCount(t.mtdTarget)} due` : undefined}
           pct={t?.mtdAchievedPct ?? null}
@@ -134,7 +134,8 @@ export function AmcPlanSummaryView() {
               </>
             ) : undefined
           }
-          letters={t ? { submitted: t.mtdLetterSubmitted, pending: t.mtdLetterPending, notRecorded: t.mtdLetterNotRecorded, note: "BSNL confirmation awaited" } : undefined}
+          letters={t ? { submitted: t.mtdLetterSubmitted, pending: t.mtdLetterPending, notRecorded: t.mtdLetterNotRecorded, note: r?.hasApproval ? undefined : "BSNL confirmation awaited" } : undefined}
+          approval={t && r?.hasApproval ? { ie: t.mtdIeAccepted ?? 0, bsnl: t.mtdBsnlAccepted ?? 0, rejected: t.mtdIeRejected ?? 0, pending: t.mtdIePending ?? 0 } : undefined}
           states={byState((x) => x.mtdAchieved)}
           href={listHref("amc-achieved-mtd")}
           linkLabel="View achieved GPs"
@@ -145,13 +146,14 @@ export function AmcPlanSummaryView() {
           tone="var(--series-3)"
           label="Achieved this week"
           tag={weekTag}
-          info="GPs whose Ach Date falls in the reporting week, up to the latest data date. Letter = their “Letter Status” in the file (Submitted / Pending). Click the card to see these GPs."
+          info="GPs whose Ach Date falls in the reporting week, up to the latest data date. Letter = their “Letter Status” in the file (Submitted / Pending). Approval = their “Approval Status”: IE accepted = Approved By IE or By BSNL, BSNL accepted = Approved By BSNL, IE pending = Pending by IE. Click the card to see these GPs."
           value={t?.weekAchieved}
           unit={t ? `of ${formatCount(t.weekTarget)} planned` : undefined}
           pct={t?.weekAchievedPct ?? null}
           pctLabel="of the week target"
           detail={t ? <>{formatCount(Math.max(0, t.weekTarget - t.weekAchieved))} still open{weekStatus ? ` · ${weekStatus}` : ""}</> : undefined}
           letters={t ? { submitted: t.weekLetterSubmitted, pending: t.weekLetterPending, notRecorded: t.weekLetterNotRecorded } : undefined}
+          approval={t && r?.hasApproval ? { ie: t.weekIeAccepted ?? 0, bsnl: t.weekBsnlAccepted ?? 0, rejected: t.weekIeRejected ?? 0, pending: t.weekIePending ?? 0 } : undefined}
           states={byState((x) => x.weekAchieved)}
           href={listHref("amc-achieved-week")}
           linkLabel="View achieved GPs"
@@ -191,6 +193,7 @@ function PlanCard({
   pctLabel,
   detail,
   letters,
+  approval,
   states,
   href,
   linkLabel,
@@ -208,6 +211,8 @@ function PlanCard({
   pctLabel?: string;
   detail?: React.ReactNode;
   letters?: { submitted: number; pending: number; notRecorded: number; note?: string };
+  /** "Approval Status" of the achieved GPs: IE accepted (incl. BSNL), BSNL accepted, rejected by IE */
+  approval?: { ie: number; bsnl: number; rejected: number; pending: number };
   states: StateValue[];
   href: string;
   linkLabel: string;
@@ -216,7 +221,8 @@ function PlanCard({
   const done = Math.min(100, Math.max(0, pct ?? 0));
   if (loading) {
     return (
-      <div className="rounded-lg border border-border bg-card p-5 shadow-xs" role="status" aria-label={`Loading ${label}`}>
+      <div className="relative overflow-hidden rounded-lg border border-border bg-card p-5 shadow-xs" role="status" aria-label={`Loading ${label}`}>
+        <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
         <Skeleton className="h-3.5 w-36" />
         <Skeleton className="mt-4 h-8 w-28" />
         {progress && <Skeleton className="mt-3 h-2 w-full" />}
@@ -225,7 +231,8 @@ function PlanCard({
     );
   }
   return (
-    <div className="group relative flex flex-col rounded-lg border border-border bg-card px-4 py-3 shadow-xs transition-[box-shadow,border-color] duration-200 hover:border-primary/30 hover:shadow-md">
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card px-4 py-3 shadow-xs transition-[box-shadow,border-color] duration-200 hover:border-primary/30 hover:shadow-md">
+      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
       {/* header: icon + label, period on the right */}
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
         <div className="flex min-w-0 items-center gap-2">
@@ -261,8 +268,8 @@ function PlanCard({
       {detail && <p className="mt-2 text-xs text-muted-foreground">{detail}</p>}
 
       {letters && (
-        <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span className="text-muted-foreground">Letter:</span>
+        <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] font-medium text-foreground">
+          <span className="font-semibold text-foreground/80">Letter:</span>
           <span className="inline-flex items-center gap-1.5">
             <span className="size-2 rounded-full bg-good" aria-hidden />
             <b className="tabular text-good-text">{formatCount(letters.submitted)}</b> submitted
@@ -273,6 +280,28 @@ function PlanCard({
           </span>
           {letters.notRecorded > 0 && <span className="text-muted-foreground">· {formatCount(letters.notRecorded)} without status</span>}
           {letters.note && <span className="italic text-subtle-foreground">· {letters.note}</span>}
+        </p>
+      )}
+
+      {approval && (
+        <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] font-medium text-foreground">
+          <span className="font-semibold text-foreground/80">Approval:</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-primary" aria-hidden />
+            <b className="tabular text-primary">{formatCount(approval.ie)}</b> IE accepted
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-good" aria-hidden />
+            <b className="tabular text-good-text">{formatCount(approval.bsnl)}</b> BSNL accepted
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-critical" aria-hidden />
+            <b className="tabular text-critical-text">{formatCount(approval.rejected)}</b> IE rejected
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-warning" aria-hidden />
+            <b className="tabular text-warning-text">{formatCount(approval.pending)}</b> IE pending
+          </span>
         </p>
       )}
 

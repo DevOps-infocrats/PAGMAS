@@ -276,6 +276,8 @@ class GpAmcPlan(Base):
     current_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     letter_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     letter_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # "Approval Status" of the letter: Letter to be submit / Pending by IE / Rejected BY IE / Approved By IE / Approved By BSNL
+    approval_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
 class GpAvailability(Base):

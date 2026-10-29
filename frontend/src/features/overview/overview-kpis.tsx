@@ -24,7 +24,7 @@ const C = {
   brand: "var(--primary)",
 };
 
-/** The 10 headline KPIs of the Circle Overview, grouped in three rows. Cards with a link open the list behind the number. */
+/** Circle Overview headline KPIs in three rows (Scope & Handover, GPs & AMC, Uptime & Non-AMC). Cards with a link open the list behind the number. */
 export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?: States; asOf?: string; loading: boolean }) {
   const L = loading || !s;
   const { hrefTo } = useFilters();
@@ -40,7 +40,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
 
   return (
     <div className="space-y-6">
-      <KpiRow title="Network scope">
+      <KpiRow title="Scope & Handover">
         <StatCard
           compact
           dense
@@ -63,10 +63,43 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           label="Total Blocks"
           info="Distinct block codes across all three states."
           value={formatCount(s?.blocks)}
-          caption={byState((d) => d.blocks)}
+          caption={<span className="block truncate" title={byState((d) => d.blocks)}>{byState((d) => d.blocks)}</span>}
           href={listHref("all-blocks")}
           linkLabel={KPI_LISTS["all-blocks"].linkLabel}
         />
+        <StatCard
+          compact
+          dense
+          loading={L}
+          className="md:col-span-3"
+          icon={CircleCheckBig}
+          tone={C.green}
+          label="HOTO Done Blocks"
+          info="Blocks with at least one GP whose HOTO date is on or before the reporting week end."
+          value={formatCount(s?.hotoDoneBlocks)}
+          unit={`of ${formatCount(s?.blocks)}`}
+          caption={s ? `${formatCount(s.hotoPendingBlocks)} blocks pending` : undefined}
+          href={hotoHref("hotoBlocks")}
+          linkLabel="View done & pending"
+        />
+        <StatCard
+          compact
+          dense
+          loading={L}
+          className="md:col-span-3"
+          icon={ShieldCheck}
+          tone={C.aqua}
+          label="HOTO Done GPs"
+          info="GPs with a HOTO date on or before the reporting week end. Pending = revised existing GPs without HOTO."
+          value={formatCount(s?.hotoDoneGps)}
+          unit={`of ${formatCount(s?.revisedExisting)}`}
+          caption={s ? `${formatCount(s.hotoPendingGps)} GPs pending` : undefined}
+          href={hotoHref("hotoGps")}
+          linkLabel="View done & pending"
+        />
+      </KpiRow>
+
+      <KpiRow title="GPs & AMC">
         <StatCard
           compact
           dense
@@ -97,39 +130,9 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
             { label: "Revised existing GPs", value: s?.revisedExisting ?? null, color: C.violet },
           ]}
         />
-      </KpiRow>
-
-      <KpiRow title="Handover & AMC">
         <StatCard
           compact
-          loading={L}
-          className="md:col-span-3"
-          icon={CircleCheckBig}
-          tone={C.green}
-          label="HOTO Done Blocks"
-          info="Blocks with at least one GP whose HOTO date is on or before the reporting week end."
-          value={formatCount(s?.hotoDoneBlocks)}
-          unit={`of ${formatCount(s?.blocks)}`}
-          caption={s ? `${formatCount(s.hotoPendingBlocks)} blocks pending` : undefined}
-          href={hotoHref("hotoBlocks")}
-          linkLabel="View done & pending"
-        />
-        <StatCard
-          compact
-          loading={L}
-          className="md:col-span-3"
-          icon={ShieldCheck}
-          tone={C.aqua}
-          label="HOTO Done GPs"
-          info="GPs with a HOTO date on or before the reporting week end. Pending = revised existing GPs without HOTO."
-          value={formatCount(s?.hotoDoneGps)}
-          unit={`of ${formatCount(s?.revisedExisting)}`}
-          caption={s ? `${formatCount(s.hotoPendingGps)} GPs pending` : undefined}
-          href={hotoHref("hotoGps")}
-          linkLabel="View done & pending"
-        />
-        <StatCard
-          compact
+          dense
           loading={L}
           className="md:col-span-6"
           layout="split"
@@ -165,6 +168,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
       <KpiRow title="Uptime (MTD) & Non-AMC">
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={Activity}
@@ -179,6 +183,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={AlertOctagon}
@@ -193,6 +198,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={Gauge}
@@ -207,6 +213,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
         <StatCard
           compact
+          dense
           loading={L}
           className="md:col-span-3"
           icon={CircleDashed}
@@ -226,8 +233,12 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
 
 function KpiRow({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section aria-label={title} className="space-y-2.5">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-subtle-foreground">{title}</h2>
+    <section aria-label={title} className="space-y-3">
+      <h2 className="flex items-center gap-2.5 text-[13px] font-extrabold uppercase tracking-[0.08em] text-subheading">
+        <span className="brand-gradient h-4 w-1 rounded-full" aria-hidden />
+        {title}
+        <span className="h-px flex-1 bg-border" aria-hidden />
+      </h2>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-6 xl:grid-cols-12">{children}</div>
     </section>
   );

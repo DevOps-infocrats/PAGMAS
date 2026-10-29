@@ -68,6 +68,7 @@ GP_COLUMNS: dict[str, tuple[str, ...]] = {
     "plan_status": ("Current Status",),
     "plan_letter_status": ("Letter Status",),
     "plan_letter_date": ("Letter submission Date",),
+    "plan_approval_status": ("Approval Status",),  # IE / BSNL approval of the incremental letter
 }
 GP_REQUIRED: tuple[str, ...] = ("circle", "district", "block_name", "block_code", "gp_name", "gp_code", "total_rkm", "hoto_date", "amc_date")
 GP_HEADER_ANCHORS: tuple[str, ...] = ("circle", "gp_code", "total_rkm")  # a row with these three is the header row

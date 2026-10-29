@@ -368,6 +368,7 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
                     "current_status": status.upper() if status and status != "0" else None,
                     "letter_status": _text(cell(row, "plan_letter_status")),
                     "letter_date": plan_dates["plan_letter_date"],
+                    "approval_status": _text(cell(row, "plan_approval_status")),
                 }
             )
 

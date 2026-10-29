@@ -5,7 +5,7 @@ import {
   Boxes,
   Cable,
   CircleCheckBig,
-  Layers,
+  MapPin,
   Router,
   Wrench,
 } from "lucide-react";
@@ -45,7 +45,8 @@ function Tile({
   caption?: React.ReactNode;
 }) {
   return (
-    <div className="relative flex flex-col rounded-lg border border-border bg-card px-4 py-3 shadow-xs">
+    <div className="relative flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card px-4 py-2.5 shadow-xs">
+      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
       <div className="flex items-center gap-2">
         <span
           className="flex size-7 shrink-0 items-center justify-center rounded-lg"
@@ -64,27 +65,26 @@ function Tile({
       </div>
       <p
         className={cn(
-          "mt-1.5 text-xl font-bold leading-tight tracking-tight",
+          "mt-1 text-lg font-bold leading-tight tracking-tight",
           valueClass,
         )}
       >
         {value}
       </p>
       {caption && (
-        <p className="mt-1.5 text-xs text-muted-foreground">{caption}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{caption}</p>
       )}
     </div>
   );
 }
 
-const NotRecorded = () => (
-  <span className="text-muted-foreground">Not recorded</span>
-);
+const NotAvailable = () => <span className="text-muted-foreground">Not Available</span>;
 
 /**
- * Seven KPIs of one GP:
- *  row 1 – fibre route (BSNL / BBNL split) and availability (month to date, with week / month / block context)
- *  row 2 – HOTO status, AMC / incremental, OLT location, phase, LOT
+ * KPIs of one GP:
+ *  row 1 – Gram Panchayat details (GP + block), block HOTO status, GP HOTO status
+ *  row 2 – AMC category (AMC original / Incremental / Non-AMC), OLT location
+ *  row 3 – fibre route and availability (unchanged)
  */
 export function GpKpis({ d }: { d: GpDetailResponse }) {
   const gp = d.gp;
@@ -124,6 +124,15 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
             cls: "text-muted-foreground",
             caption: "GP converted / closed / deducted",
           };
+  // Block-level HOTO (from the backend: at least one GP of the block handed over by the week end).
+  const bh = d.blockHoto;
+  const blockHoto = !bh
+    ? { value: "Not Available", cls: "text-muted-foreground", caption: "Block HOTO status not provided" }
+    : bh.done
+      ? { value: "Completed", cls: "text-good-text", caption: `${bh.hotoDoneGps} of ${bh.totalGps} GPs of ${gp.blockName} handed over` }
+      : { value: "Pending", cls: "text-warning-text", caption: `No GP of ${gp.blockName} handed over yet (${bh.totalGps} GPs)` };
+  const gpHoto = { ...hoto, value: hoto.value === "Done" ? "Completed" : hoto.value };
+
   const amcCat = !amc
     ? {
         value: "Non-AMC",
@@ -145,10 +154,67 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
         };
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div className="space-y-3">
+      {/* Row 1: GP identification and HOTO status (block-level and GP-level kept apart) */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Tile
+          icon={MapPin}
+          tone="var(--series-1)"
+          label="Gram Panchayat Details"
+          info="Gram Panchayat and the block it belongs to (GP Wise Data)."
+          value={<span className="block truncate" title={gp.name}>{gp.name}</span>}
+          caption={
+            <>
+              Block: <b className="font-semibold text-foreground">{gp.blockName}</b> · {gp.districtName}, {gp.circleName} · GP code {gp.id}
+            </>
+          }
+        />
+        <Tile
+          icon={Boxes}
+          tone="var(--series-3)"
+          label="Block HOTO Status"
+          info="Block level: the block's HOTO is completed when at least one of its GPs has a HOTO date on or before the reporting week end (same rule as HOTO Done Blocks)."
+          value={blockHoto.value}
+          valueClass={blockHoto.cls}
+          caption={blockHoto.caption}
+        />
+        <Tile
+          icon={CircleCheckBig}
+          tone="var(--good)"
+          label="GP HOTO Status"
+          info="GP level: this GP's HOTO is completed when its HOTO date is on or before the reporting week end."
+          value={gpHoto.value}
+          valueClass={gpHoto.cls}
+          caption={gpHoto.caption}
+        />
+      </div>
+
+      {/* Row 2: AMC classification and OLT location */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Tile
+          icon={Wrench}
+          tone="var(--series-2)"
+          label="AMC Category"
+          info="AMC (original) = GP from the original AMC list; Incremental = added by the incremental AMC letter; Non-AMC = not yet under AMC on the week end."
+          value={amcCat.value}
+          valueClass={amcCat.cls}
+          caption={amcCat.caption}
+        />
+        <Tile
+          icon={Router}
+          tone="var(--series-7)"
+          label="OLT Location"
+          info="OLT location recorded for this GP in GP Wise Data."
+          value={gp.oltLocation ?? <NotAvailable />}
+          caption={gp.oltLocation ? `${gp.blockName} block` : "Blank in the source"}
+        />
+      </div>
+
+      {/* Row 3: fibre route and availability (unchanged) */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <StatCard
           compact
+          dense
           layout="split"
           icon={Cable}
           tone="var(--series-1)"
@@ -187,6 +253,7 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
         />
         <StatCard
           compact
+          dense
           layout="split"
           icon={Activity}
           tone={tone ?? "var(--na)"}
@@ -249,53 +316,6 @@ export function GpKpis({ d }: { d: GpDetailResponse }) {
                 ]
               : undefined
           }
-        />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <Tile
-          icon={CircleCheckBig}
-          tone="var(--good)"
-          label="HOTO status"
-          info="Hand Over / Take Over: done when the HOTO date is on or before the reporting week end."
-          value={hoto.value}
-          valueClass={hoto.cls}
-          caption={hoto.caption}
-        />
-        <Tile
-          icon={Wrench}
-          tone="var(--series-2)"
-          label="AMC / Incremental"
-          info="AMC (original) = GP from the original AMC list; Incremental = added by the incremental AMC letter; Non-AMC = not yet under AMC on the week end."
-          value={amcCat.value}
-          valueClass={amcCat.cls}
-          caption={amcCat.caption}
-        />
-        <Tile
-          icon={Router}
-          tone="var(--series-7)"
-          label="OLT location"
-          info="OLT location recorded for this GP in GP Wise Data."
-          value={gp.oltLocation ?? <NotRecorded />}
-          caption={
-            gp.oltLocation ? `${gp.blockName} block` : "Blank in the source"
-          }
-        />
-        <Tile
-          icon={Layers}
-          tone="var(--series-1)"
-          label="Phase"
-          info="BharatNet phase of the GP (GP Wise Data)."
-          value={gp.phase ?? <NotRecorded />}
-          caption={gp.phase ? "Project phase" : "Blank in the source"}
-        />
-        <Tile
-          icon={Boxes}
-          tone="var(--series-3)"
-          label="LOT"
-          info="Contract LOT of the GP (GP Wise Data)."
-          value={gp.lot ?? <NotRecorded />}
-          caption={gp.lot ? "Contract lot" : "Blank in the source"}
         />
       </div>
     </div>

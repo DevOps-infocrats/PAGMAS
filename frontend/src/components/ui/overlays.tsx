@@ -146,13 +146,13 @@ export function Select({
       <S.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-9 items-center justify-between gap-2 rounded-md border border-input bg-card px-3 text-sm shadow-xs transition-colors hover:border-subtle-foreground/50 data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:opacity-50 data-[placeholder]:text-subtle-foreground",
+          "inline-flex h-9 items-center justify-between gap-2 rounded-md border border-subtle-foreground/40 bg-card px-3 text-sm font-semibold text-foreground shadow-xs transition-colors hover:border-subtle-foreground/70 hover:bg-accent/40 data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25 disabled:opacity-50 data-[placeholder]:font-normal data-[placeholder]:text-muted-foreground",
           className,
         )}
       >
         <S.Value placeholder={placeholder} />
         <S.Icon>
-          <ChevronDown className="size-4 text-muted-foreground" />
+          <ChevronDown className="size-4 text-foreground/70" strokeWidth={2.25} />
         </S.Icon>
       </S.Trigger>
       <S.Portal>
@@ -166,7 +166,7 @@ export function Select({
               <S.Item
                 key={o.value}
                 value={o.value}
-                className="relative flex cursor-pointer select-none items-center rounded-md py-2 pl-8 pr-3 text-sm outline-none data-[highlighted]:bg-accent"
+                className="relative flex cursor-pointer select-none items-center rounded-md py-2 pl-8 pr-3 text-sm font-medium text-foreground outline-none data-[highlighted]:bg-accent data-[state=checked]:font-semibold data-[state=checked]:text-primary"
               >
                 <S.ItemIndicator className="absolute left-2.5">
                   <Check className="size-4 text-primary" />

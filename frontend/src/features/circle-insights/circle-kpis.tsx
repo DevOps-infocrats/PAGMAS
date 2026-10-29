@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertOctagon, Boxes, Cable, CircleCheckBig, CircleDashed, Gauge, Map, ShieldCheck, Users, Wrench } from "lucide-react";
+import { Activity, AlertOctagon, Boxes, Cable, CircleCheckBig, CircleDashed, Gauge, ShieldCheck, Users, Wrench } from "lucide-react";
 import { StatCard } from "@/components/kpi/stat-card";
 import { useFilters } from "@/hooks/use-filters";
 import type { CircleInsightsResponse, KpiListKind } from "@/lib/api";
@@ -15,11 +15,10 @@ const rkm = (v: number | null | undefined) => (v == null ? "NA" : v.toLocaleStri
 const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toFixed(1)}%` : "NA");
 
 /**
- * Eleven headline KPIs of a state, in three rows:
- *  1. simple counts – districts, blocks, HOTO GPs, HOTO blocks
- *  2. composite cards with a breakdown – GPs, fibre route, AMC
+ * Ten headline KPIs of a state, in three rows:
+ *  1. Total Blocks, HOTO Done Blocks, HOTO Done (GPs), Non-AMC GPs
+ *  2. Total GPs, AMC GPs, Total Fibre Route (RKM)
  *  3. uptime (MTD) – GPs above 98%, GPs at 0%, penalty-prone blocks (same rules as the O&M sheet and the Circle Overview)
- *     and Non-AMC GPs
  * Total Blocks opens this page's Block-wise GP Count view; the other linked cards open the list behind the number.
  */
 export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summary; loading: boolean; stateName?: string; asOf?: string; circleId?: string }) {
@@ -33,20 +32,12 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
   const blocksBase = hrefTo(CIRCLE_PATH);
   const blocksHref = `${blocksBase}${blocksBase.includes("?") ? "&" : "?"}view=blocks`;
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="space-y-3">
+      {/* Row 1: Total Blocks, HOTO Done Blocks, HOTO Done (GPs), Non-AMC GPs */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           compact
-          loading={L}
-          icon={Map}
-          tone="var(--series-7)"
-          label="Total Districts"
-          info={`Districts of ${stateName ?? "the state"} with at least one GP in the master data.`}
-          value={formatCount(s?.districts)}
-          caption={stateName}
-        />
-        <StatCard
-          compact
+          dense
           loading={L}
           icon={Boxes}
           tone="var(--series-1)"
@@ -59,6 +50,20 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
         />
         <StatCard
           compact
+          dense
+          loading={L}
+          icon={CircleCheckBig}
+          tone="var(--series-3)"
+          label="HOTO Done Blocks"
+          info="Blocks with at least one GP whose HOTO date is on or before the reporting week end."
+          value={formatCount(s?.hotoDoneBlocks)}
+          unit={s ? `of ${formatCount(s.blocks)}` : undefined}
+          caption={s ? `${pct(s.hotoDoneBlocks, s.blocks)} complete · ${formatCount(s.hotoPendingBlocks)} pending` : undefined}
+          {...list("hoto-blocks")}
+        />
+        <StatCard
+          compact
+          dense
           loading={L}
           icon={ShieldCheck}
           tone="var(--good)"
@@ -71,21 +76,24 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
         />
         <StatCard
           compact
+          dense
           loading={L}
-          icon={CircleCheckBig}
-          tone="var(--series-3)"
-          label="HOTO Done Blocks"
-          info="Blocks with at least one GP whose HOTO date is on or before the reporting week end."
-          value={formatCount(s?.hotoDoneBlocks)}
-          unit={s ? `of ${formatCount(s.blocks)}` : undefined}
-          caption={s ? `${pct(s.hotoDoneBlocks, s.blocks)} complete · ${formatCount(s.hotoPendingBlocks)} pending` : undefined}
-          {...list("hoto-blocks")}
+          icon={CircleDashed}
+          tone="var(--na)"
+          label="Non-AMC GPs"
+          info={`Revised existing GPs of ${stateName ?? "the state"} (not converted to NP / closed / deducted) that are not under AMC on the reporting week end. Same figure as the Non-AMC part of the AMC GPs card.`}
+          value={formatCount(s?.nonAmcGps)}
+          unit="GPs"
+          caption={s ? `${pct(s.nonAmcGps, s.revisedExisting)} of revised existing GPs not yet under AMC` : undefined}
+          {...list("non-amc-gps")}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {/* Row 2: Total GPs, AMC GPs, Total Fibre Route (RKM) */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <StatCard
           compact
+          dense
           loading={L}
           icon={Users}
           tone="var(--series-1)"
@@ -112,6 +120,29 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
         />
         <StatCard
           compact
+          dense
+          loading={L}
+          icon={Wrench}
+          tone="var(--series-2)"
+          label="AMC GPs"
+          info="GPs whose AMC date is on or before the week end. AMC = original list, Incremental = added by incremental letter, Non-AMC = revised existing GPs not yet under AMC."
+          value={formatCount(s?.amcGps)}
+          unit={s?.amcPct != null ? `GPs · ${s.amcPct.toFixed(1)}%` : "GPs"}
+          total={s?.revisedExisting}
+          bar={[
+            { label: "AMC", value: s?.amcOriginalGps ?? 0, color: "var(--series-2)" },
+            { label: "Incremental", value: s?.incrementalGps ?? 0, color: "var(--series-4)" },
+            { label: "Non-AMC", value: s?.nonAmcGps ?? 0, color: "var(--na)" },
+          ]}
+          breakdown={[
+            { label: "AMC (original)", value: s?.amcOriginalGps ?? null, color: "var(--series-2)", showShare: true },
+            { label: "Incremental", value: s?.incrementalGps ?? null, color: "var(--series-4)", showShare: true },
+            { label: "Non-AMC", value: s?.nonAmcGps ?? null, color: "var(--na)", showShare: true },
+          ]}
+        />
+        <StatCard
+          compact
+          dense
           loading={L}
           icon={Cable}
           tone="var(--series-1)"
@@ -134,32 +165,13 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
             { label: "BBNL RKM", value: s?.bbnlRkm ?? null, display: rkm(s?.bbnlRkm), color: "var(--series-3)" },
           ]}
         />
-        <StatCard
-          compact
-          loading={L}
-          icon={Wrench}
-          tone="var(--series-2)"
-          label="AMC GPs"
-          info="GPs whose AMC date is on or before the week end. AMC = original list, Incremental = added by incremental letter, Non-AMC = revised existing GPs not yet under AMC."
-          value={formatCount(s?.amcGps)}
-          unit={s?.amcPct != null ? `GPs · ${s.amcPct.toFixed(1)}%` : "GPs"}
-          total={s?.revisedExisting}
-          bar={[
-            { label: "AMC", value: s?.amcOriginalGps ?? 0, color: "var(--series-2)" },
-            { label: "Incremental", value: s?.incrementalGps ?? 0, color: "var(--series-4)" },
-            { label: "Non-AMC", value: s?.nonAmcGps ?? 0, color: "var(--na)" },
-          ]}
-          breakdown={[
-            { label: "AMC (original)", value: s?.amcOriginalGps ?? null, color: "var(--series-2)", showShare: true },
-            { label: "Incremental", value: s?.incrementalGps ?? null, color: "var(--series-4)", showShare: true },
-            { label: "Non-AMC", value: s?.nonAmcGps ?? null, color: "var(--na)", showShare: true },
-          ]}
-        />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {/* Row 3: uptime (MTD) */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <StatCard
           compact
+          dense
           loading={L}
           icon={Activity}
           tone="var(--good)"
@@ -172,6 +184,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
         />
         <StatCard
           compact
+          dense
           loading={L}
           icon={AlertOctagon}
           tone="var(--critical)"
@@ -184,6 +197,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
         />
         <StatCard
           compact
+          dense
           loading={L}
           icon={Gauge}
           tone="var(--serious)"
@@ -193,18 +207,6 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
           unit="Blocks"
           caption={s ? `${mtd} · of ${formatCount(s.blocks)} blocks` : mtd}
           {...list("penalty-blocks")}
-        />
-        <StatCard
-          compact
-          loading={L}
-          icon={CircleDashed}
-          tone="var(--na)"
-          label="Non-AMC GPs"
-          info={`Revised existing GPs of ${stateName ?? "the state"} (not converted to NP / closed / deducted) that are not under AMC on the reporting week end. Same figure as the Non-AMC part of the AMC GPs card.`}
-          value={formatCount(s?.nonAmcGps)}
-          unit="GPs"
-          caption={s ? `${pct(s.nonAmcGps, s.revisedExisting)} of revised existing GPs not yet under AMC` : undefined}
-          {...list("non-amc-gps")}
         />
       </div>
     </div>

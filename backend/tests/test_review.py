@@ -680,3 +680,43 @@ def test_key_highlights_weeks_count_ach_date(imported, monkeypatch):
     assert ht["total"]["weeklyConversions"] == [dash.get(lb, 0) or 0 for lb in labels]
     rows = {r["code"]: r["weeklyConversions"] for r in ht["rows"]}
     assert rows["RJ"][labels.index("WK-41")] == 2 and rows["RJ"][labels.index("WK-40")] == 1 and rows["HR"][labels.index("WK-41")] == 1
+
+
+def test_amc_plan_approval_counts(imported, monkeypatch):
+    """'Approval Status' of the achieved GPs: BSNL approved counts as IE accepted too; case / spacing are ignored;
+    blank, pending and 'Letter to be submit' count nowhere. Missing column (older imports) = zeros, nothing breaks."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_summary
+
+    store = imported
+    rj = store.gps.index[store.gps["circle"] == "RAJASTHAN"][:7]
+    d = dt.date
+    plan = pd.DataFrame(
+        {
+            "planned_date": [d(2026, 10, 3)] * 7,
+            "ach_date": [d(2026, 10, 3)] * 6 + [None],  # last one not achieved: its approval must not count
+            "category": "Incremental",
+            "current_status": None,
+            "letter_status": "Submitted",
+            "letter_date": None,
+            "approval_status": ["Approved By BSNL", "approved  by bsnl", "Approved By IE", "Rejected BY IE", "Pending by IE", None, "Approved By BSNL"],
+        },
+        index=rj,
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    row = next(x for x in amc_plan_summary(store, "W-41")["rows"] if x["id"] == "rajasthan")
+    assert row["mtdAchieved"] == 6
+    assert (row["mtdIeAccepted"], row["mtdBsnlAccepted"], row["mtdIeRejected"]) == (3, 2, 1)
+    assert (row["weekIeAccepted"], row["weekBsnlAccepted"], row["weekIeRejected"]) == (3, 2, 1)  # 3 Oct is in W-41
+    assert (row["mtdIePending"], row["weekIePending"]) == (1, 1)  # "Pending by IE"; not-achieved rows never count
+    total = amc_plan_summary(store, "W-41")["total"]
+    assert (total["mtdIeAccepted"], total["mtdBsnlAccepted"], total["mtdIeRejected"]) == (3, 2, 1)
+    assert amc_plan_summary(store, "W-41")["hasApproval"] is True
+
+    monkeypatch.setattr(store, "amc_plan", plan.drop(columns=["approval_status"]))
+    row = next(x for x in amc_plan_summary(store, "W-41")["rows"] if x["id"] == "rajasthan")
+    assert (row["mtdIeAccepted"], row["mtdBsnlAccepted"], row["mtdIeRejected"], row["mtdAchieved"]) == (0, 0, 0, 6)
+    assert amc_plan_summary(store, "W-41")["hasApproval"] is False

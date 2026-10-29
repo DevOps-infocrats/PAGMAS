@@ -247,6 +247,8 @@ export interface GpDetailResponse {
   olt: Olt | null;
   addedWeek: ReportingWeek | null;
   revisedExisting: boolean;
+  /** HOTO status of the GP's block (done = at least one GP of the block handed over by the week end); live backend only */
+  blockHoto?: { done: boolean; hotoDoneGps: number; totalGps: number };
   issues: DataQualityIssue[];
   dataAsOf?: string;
   /** Availability per period column next to the GP's block value (live backend only) */
@@ -861,6 +863,7 @@ export interface KpiListItem {
   achDate?: string | null;
   planStatus?: string | null;
   letterStatus?: string | null;
+  approvalStatus?: string | null;
   /** new-GP list (block-wise, Master Block sheet) */
   existingGps?: number | null;
   newGps?: number;
@@ -971,6 +974,15 @@ export interface AmcPlanCounts {
   weekLetterSubmitted: number;
   weekLetterPending: number;
   weekLetterNotRecorded: number;
+  /** "Approval Status" of the achieved GPs (MTD / week). IE accepted includes BSNL accepted (BSNL approves after IE). */
+  mtdIeAccepted?: number;
+  mtdBsnlAccepted?: number;
+  mtdIeRejected?: number;
+  mtdIePending?: number;
+  weekIeAccepted?: number;
+  weekBsnlAccepted?: number;
+  weekIeRejected?: number;
+  weekIePending?: number;
   mtdAchievedPct: number | null;
   monthAchievedPct: number | null;
   weekAchievedPct: number | null;
@@ -978,6 +990,8 @@ export interface AmcPlanCounts {
 
 export interface AmcPlanSummary {
   hasPlan: boolean;
+  /** the file has an "Approval Status" column with values (false for imports made before it was read) */
+  hasApproval?: boolean;
   /** week cutoff: the selected week's end, capped at the last date with data */
   asOf: string;
   /** month KPIs (month target, MTD, overdue) are counted up to this date: the latest data date */
@@ -1335,8 +1349,9 @@ export interface UploadReport {
 }
 
 export interface AdminApi {
-  /** Master data workbook or Escalation Matrix – the backend tells them apart by content (`kind`). */
-  uploadWorkbook(file: File): Promise<{ id: string; status: string; fileName: string; kind?: "master" | "escalation" }>;
+  /** Master data workbook or Escalation Matrix – the backend tells them apart by content (`kind`).
+   *  `onProgress` gets the share of the file sent so far (0–1). */
+  uploadWorkbook(file: File, onProgress?: (fraction: number) => void): Promise<{ id: string; status: string; fileName: string; kind?: "master" | "escalation" }>;
   getEscalationImports(): Promise<EscalationImportRun[]>;
   getRunIssues(runId: string, params?: { severity?: string; code?: string; page?: number }): Promise<RunIssuesResponse>;
   /** What changed compared with the previous upload */

@@ -1,12 +1,13 @@
 "use client";
 
 import { BarChart, LineChart, PieChart } from "echarts/charts";
-import { AriaComponent, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
+import { AriaComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
+import { LegacyGridContainLabel } from "echarts/features";
 import { SVGRenderer } from "echarts/renderers";
 import { useEffect, useRef } from "react";
 
-echarts.use([BarChart, LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, AriaComponent, SVGRenderer]);
+echarts.use([BarChart, LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, MarkAreaComponent, AriaComponent, SVGRenderer, LegacyGridContainLabel]); // grid.containLabel (axis labels kept inside the chart) needs this in ECharts 6
 
 export type EChartsOption = echarts.EChartsCoreOption;
 export interface EChartClickParams {

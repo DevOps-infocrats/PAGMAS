@@ -17,6 +17,9 @@ function csrfToken(): string | undefined {
     ?.slice(CSRF_COOKIE.length + 1);
 }
 
+const fallbackMessage = (status: number) => (status === 503 ? "The data service is not ready yet." : `Request failed (${status})`);
+const UNREACHABLE = "Cannot reach the data service. Is the backend running?";
+
 async function errorMessage(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { detail?: unknown };
@@ -24,7 +27,14 @@ async function errorMessage(res: Response): Promise<string> {
   } catch {
     /* not JSON */
   }
-  return res.status === 503 ? "The data service is not ready yet." : `Request failed (${res.status})`;
+  return fallbackMessage(res.status);
+}
+
+/** Session expired or revoked: go back to the login page, keeping the current location. */
+function toLogin(status: number, path: string) {
+  if (status !== 401 || typeof window === "undefined" || path.startsWith("/auth/")) return;
+  const next = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.replace(`${window.location.origin}/login?next=${next}&expired=1`);
 }
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -39,15 +49,47 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, method, headers, credentials: "same-origin", cache: "no-store" });
   } catch {
-    throw new ApiError(0, "Cannot reach the data service. Is the backend running?");
+    throw new ApiError(0, UNREACHABLE);
   }
-  if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/")) {
-    // Session expired or revoked: go back to the login page, keeping the current location.
-    const next = encodeURIComponent(window.location.pathname + window.location.search);
-    window.location.replace(`${window.location.origin}/login?next=${next}&expired=1`);
-  }
+  toLogin(res.status, path);
   if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
   return res.json() as Promise<T>;
+}
+
+/**
+ * POST a form with upload progress (fetch cannot report it). Same rules as `request`: same-origin cookie,
+ * CSRF header, login redirect on 401 and the backend's `detail` as the error message.
+ */
+function upload<T>(path: string, body: FormData, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}${path}`);
+    const token = csrfToken();
+    if (token) xhr.setRequestHeader("X-CSRF-Token", token);
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) onProgress(Math.min(1, e.loaded / e.total));
+      };
+    }
+    xhr.onerror = () => reject(new ApiError(0, UNREACHABLE));
+    xhr.onabort = () => reject(new ApiError(0, "Upload cancelled."));
+    xhr.onload = () => {
+      let data: unknown = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        /* not JSON */
+      }
+      toLogin(xhr.status, path);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const detail = (data as { detail?: unknown } | null)?.detail;
+        reject(new ApiError(xhr.status, typeof detail === "string" ? detail : fallbackMessage(xhr.status)));
+        return;
+      }
+      resolve(data as T);
+    };
+    xhr.send(body);
+  });
 }
 
 const qs = (params: Record<string, string | number | undefined>) => {
@@ -94,10 +136,10 @@ export const httpApi: DashboardApi = {
 };
 
 export const httpAdminApi: AdminApi = {
-  uploadWorkbook: (file) => {
+  uploadWorkbook: (file, onProgress) => {
     const body = new FormData();
     body.append("file", file);
-    return request("/ingestion/upload", { method: "POST", body });
+    return upload("/ingestion/upload", body, onProgress);
   },
   getRunIssues: (id, p = {}) => request(`/ingestion/runs/${encodeURIComponent(id)}/issues${qs({ severity: p.severity, code: p.code, page: p.page })}`),
   getRunReport: (id) => request(`/ingestion/runs/${encodeURIComponent(id)}/report`),

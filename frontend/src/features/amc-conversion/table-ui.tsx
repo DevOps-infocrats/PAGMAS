@@ -66,6 +66,18 @@ export function RowHead({ children, total, className }: { children: React.ReactN
 }
 
 export const HEAD_ROW = "border-b border-border bg-muted";
+
+/** Bordered grid for the AMC Plan vs Execution tables (opt-in): outer frame, a rule around every cell, bold header with a
+ *  heavier bottom rule, slightly shorter rows. Scoped to the table it is put on – other tables keep their look. */
+export const GRID_WRAP = "overflow-x-auto rounded-lg border border-subtle-foreground/30 bg-card shadow-xs";
+export const GRID_TABLE = cn(
+  "border-collapse",
+  "[&_td]:border [&_th]:border [&_td]:border-border/80 [&_th]:border-border",
+  "[&_td]:py-2 [&_th]:py-2",
+  "[&_thead_th]:font-bold [&_thead_th]:text-subheading",
+  "[&_thead_tr:last-child_th]:border-b-2 [&_thead_tr:last-child_th]:border-b-subtle-foreground/30",
+  "[&_tr>*:first-child]:border-l-0 [&_tr>*:last-child]:border-r-0 [&_thead_tr:first-child>*]:border-t-0",
+);
 export const BODY_ROW = "border-b border-border/70 last:border-0 transition-colors hover:bg-accent/60";
 export const TOTAL_ROW = "border-t border-border bg-muted/50 font-semibold";
 
