@@ -46,7 +46,7 @@ function Tile({
 }) {
   return (
     <div className="relative flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card px-4 py-2.5 shadow-xs">
-      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
+      <span className="absolute inset-x-0 top-0 h-[0.1875rem]" style={{ background: tone }} aria-hidden />
       <div className="flex items-center gap-2">
         <span
           className="flex size-7 shrink-0 items-center justify-center rounded-lg"
@@ -58,7 +58,7 @@ function Tile({
         >
           <Icon className="size-3.5" />
         </span>
-        <span className="whitespace-nowrap text-[13px] font-bold text-subheading">
+        <span className="whitespace-nowrap text-[0.8125rem] font-bold text-subheading">
           {label}
         </span>
         <InfoTip label={label} content={info} />

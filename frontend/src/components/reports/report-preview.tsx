@@ -11,10 +11,10 @@ export function ReportPreview({ report }: { report: WeeklyReportResponse }) {
   const amcRow = report.comparison.find((c) => c.key === "amcPct");
   const availRow = report.comparison.find((c) => c.key === "availability");
   return (
-    <article id="report-print-area" className="relative mx-auto w-full max-w-[860px] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+    <article id="report-print-area" className="relative mx-auto w-full max-w-[53.75rem] overflow-hidden rounded-lg border border-border bg-card shadow-sm">
       {report.isDemo && (
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden">
-          <span className="-rotate-[30deg] select-none whitespace-nowrap text-[64px] font-black tracking-widest text-foreground/[0.04] sm:text-[88px]">
+          <span className="-rotate-[30deg] select-none whitespace-nowrap text-[4rem] font-black tracking-widest text-foreground/[0.04] sm:text-[5.5rem]">
             DEMO · NOT VERIFIED
           </span>
         </div>
@@ -49,7 +49,7 @@ export function ReportPreview({ report }: { report: WeeklyReportResponse }) {
 
         <ReportSection title="2. KPI comparison">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-[13px]">
+            <table className="w-full min-w-[35rem] text-[0.8125rem]">
               <thead>
                 <tr className="border-b border-border text-left text-muted-foreground">
                   <th scope="col" className="py-2 pr-2 font-medium">Metric</th>
@@ -130,7 +130,8 @@ export function ReportPreview({ report }: { report: WeeklyReportResponse }) {
         </div>
 
         <ReportSection title="6. Fibre route & incremental GPs">
-          <table className="w-full text-[13px]">
+          <div className="overflow-x-auto">
+          <table className="w-full text-[0.8125rem]">
             <tbody className="tabular">
               {report.fibreChanges.map((f) => (
                 <tr key={f.label} className="border-b border-border/60">
@@ -142,6 +143,7 @@ export function ReportPreview({ report }: { report: WeeklyReportResponse }) {
               ))}
             </tbody>
           </table>
+          </div>
         </ReportSection>
 
         <div className="grid gap-8 md:grid-cols-2">

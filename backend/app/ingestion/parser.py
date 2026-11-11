@@ -181,9 +181,19 @@ def _locate_periods(grid: Grid, hdr: int) -> dict[str, Any]:
     while c < len(header) and (d := as_date(header[c])):
         daily.append((c, d))
         c += 1
+    # The whole block of dates written twice (raw values + a derived % block): only the first (raw) block is read.
+    # A single repeated day is an error in the file (reported below), not a second block.
+    half = len(daily) // 2
+    whole_repeat = len(daily) % 2 == 0 and half > 1 and [d for _, d in daily[:half]] == [d for _, d in daily[half:]]
+    if whole_repeat:
+        daily = daily[:half]
     if not daily:
         raise WorkbookError("No daily availability columns found after the weekly columns")
-    if (stray := next((cc for cc in range(c, len(header)) if as_date(header[cc])), None)) is not None:
+    later = [(cc, as_date(header[cc])) for cc in range(c, len(header)) if as_date(header[cc])]
+    repeated = whole_repeat or (len(later) == len(daily) and [d for _, d in later] == [d for _, d in daily])
+    if repeated:  # the same block again further right (after other columns): ignored as well
+        later = []
+    if (stray := next((cc for cc, _ in later), None)) is not None:
         raise WorkbookError(
             f"Daily date columns must be contiguous: column {_col(c)} ('{_text(header[c]) or ''}') interrupts them and date column {_col(stray)} ({as_date(header[stray])}) follows"
         )
@@ -192,7 +202,7 @@ def _locate_periods(grid: Grid, hdr: int) -> dict[str, Any]:
         if dup:
             where = "; ".join(f"{p} (columns {', '.join(_col(cc) for cc, q in cols if q == p)})" for p in dup)
             raise WorkbookError(f"Duplicate {kind} availability columns: {where} - each period may appear only once")
-    return {"weekly": weekly, "amc_monthly": amc_monthly, "monthly": monthly, "daily": daily, "above": above}
+    return {"weekly": weekly, "amc_monthly": amc_monthly, "monthly": monthly, "daily": daily, "above": above, "repeated_days": repeated}
 
 
 def _col(c: int) -> str:
@@ -214,6 +224,8 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
     header = grid[hdr]
     cols = _locate_columns(header, out.issues, cmap, sheet)
     periods = _locate_periods(grid, hdr)
+    if periods.get("repeated_days"):
+        out.issues.append(Issue(sheet, "warning", "DAILY_REPEATED", "The daily date columns appear twice – only the first block (right after the W-nn columns) is read; the repeated block is ignored"))
     # Record the file's layout for the upload report: every non-period header, and the ones no field uses.
     period_cols = {c for c, _ in periods["weekly"]} | {c for c, _ in periods["amc_monthly"]} | {c for c, _ in periods["monthly"]} | {c for c, _ in periods["daily"]}
     used = set(cols.values())
@@ -235,7 +247,7 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
             raise WorkbookError(f"Week W-{number}: date range label '{periods['above'][c]}' could not be parsed as a 7-day range")
         out.weeks.append({"code": f"W-{number}", "number": number, "start_date": rng[0], "end_date": rng[1]})
 
-    seen: set[str] = set()
+    seen: dict[str, int] = {}  # code key -> Excel row of its first occurrence
     last_day_with_data: dt.date | None = None
     col_label = {v: k for k, v in cols.items()}
 
@@ -259,9 +271,9 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
             continue
         if code_key(gp_code) in seen:
             out.rows_rejected += 1
-            out.issues.append(Issue(sheet, "critical", "DUPLICATE_GP", f"Duplicate GP code {gp_code}; later row ignored", excel_row, "GP Code", gp_code))
+            out.issues.append(Issue(sheet, "critical", "DUPLICATE_GP", f"Duplicate GP code {gp_code} – first on row {seen[code_key(gp_code)]}; this later row {excel_row} is rejected", excel_row, "GP Code", gp_code))
             continue
-        seen.add(code_key(gp_code))
+        seen[code_key(gp_code)] = excel_row
 
         def warn(code: str, msg: str, column: str | None = None, severity: str = "warning") -> None:
             out.issues.append(Issue(sheet, severity, code, msg, excel_row, column, gp_code))
@@ -280,7 +292,7 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
                 val = None
             nums[key] = val
         if nums["total_rkm"] is None:
-            warn("RKM_MISSING", "TOTAL RKM missing - counted as 0 RKM", "TOTAL RKM")
+            warn("RKM_MISSING", "TOTAL RKM missing - kept blank (not reported), not counted as 0", "TOTAL RKM")
         if None not in (nums["bbnl_km"], nums["bsnl_km"], nums["total_rkm"]) and abs(nums["bbnl_km"] + nums["bsnl_km"] - nums["total_rkm"]) > 0.01:  # type: ignore[operator]
             warn("RKM_MISMATCH", f"BBNL ({nums['bbnl_km']}) + BSNL ({nums['bsnl_km']}) ≠ TOTAL RKM ({nums['total_rkm']}); TOTAL RKM used", "TOTAL RKM")
 
@@ -338,7 +350,7 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
                 "olt_location": olt.upper() if olt else None,
                 "bbnl_km": nums["bbnl_km"],
                 "bsnl_km": nums["bsnl_km"],
-                "total_rkm": nums["total_rkm"] or 0.0,
+                "total_rkm": nums["total_rkm"],  # blank = not reported (sums skip it); never invented as 0
                 "hoto_date": dates["hoto_date"],
                 "lms_amc_date": dates["lms_amc_date"],
                 "letter_date": dates["letter_date"],
@@ -401,12 +413,157 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
         col = next(c for c, d in daily if d == last_day_with_data)
         raise WorkbookError(f"'{sheet}' column {_col(col)}: daily date {last_day_with_data} is in the future - check the date headers")
     out.data_as_of = last_day_with_data
+    _normalize_weeks(out, sheet)
     _derive_missing_weeks(out, sheet)
+
+
+# ---------------------------------------------------------------- week calendar (the sheet's own week days)
+
+DEFAULT_WEEK_START = 4  # Friday (Monday = 0) – only when the file's week labels give no start day
+DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _week_start(weeks: list[dict[str, Any]]) -> int:
+    """Start day of the file's weeks: the weekday most of its W-nn labels start on (a tie -> the latest week's), so the
+    dashboard's weeks are the sheet's weeks (e.g. "Sat 31 Oct – Fri 06 Nov")."""
+    from collections import Counter
+
+    days = [w["start_date"].weekday() for w in weeks if w.get("start_date")]
+    if not days:
+        return DEFAULT_WEEK_START
+    counts = Counter(days)
+    top = max(counts.values())
+    latest = max((w for w in weeks if w.get("start_date")), key=lambda w: w["start_date"])["start_date"].weekday()
+    return latest if counts[latest] == top else next(d for d, n in counts.most_common() if n == top)
+TOLERANCE = 0.01  # percentage points: a file value and the recomputed one closer than this are equal
+
+
+def _pct(v: float | None) -> str:
+    return "blank" if v is None else f"{v:.2f}%"
+
+
+def _weekly_from_daily(out: ParsedWorkbook, start: dt.date, end: dt.date, amc: dict[str, dt.date | None], daily: dict[str, dict[dt.date, float]]) -> dict[str, float]:
+    """The file's own rule for a week column: per GP under AMC by the week's end, the mean of its daily values from the
+    later of the week start and its AMC date up to the week end or the data date. GPs without a daily value stay NA."""
+    upto = min(end, out.data_as_of)
+    res: dict[str, float] = {}
+    for gp, days in daily.items():
+        a = amc.get(gp)
+        if a is None or a > end:
+            continue
+        sel = [v for d, v in days.items() if max(start, a) <= d <= upto]
+        if sel:
+            res[gp] = sum(sel) / len(sel)
+    return res
+
+
+def _normalize_weeks(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
+    """Make the file's weeks a clean 7-day calendar on the sheet's own week days – every day in exactly one week – and
+    check every week's availability against the daily data.
+
+    The start day is the one the file's week labels use (_week_start: Sat 31 Oct – Fri 06 Nov -> Saturday – Friday).
+    Each week keeps its W-nn number; a label off that rhythm moves to the nearest week on it. A week the file skipped is added. Where the daily data covers
+    a week, its availability is recomputed by the file's own rule (_weekly_from_daily) and compared with the file's
+    week column: equal -> the file's values stay; different (wrong dates or a wrong formula in the sheet) -> the
+    recomputed values are used and a warning names the week. Weeks before the first daily column keep the file's
+    values (they cannot be checked; noted as info)."""
+    if not out.weeks or out.data_as_of is None:
+        return
+    amc = {g["gp_code"]: g["amc_date"] for g in out.gps}
+    daily: dict[str, dict[dt.date, float]] = {}
+    file_weekly: dict[str, dict[str, float]] = {}
+    for gp, kind, period, val in out.availability:
+        if kind == "D":
+            daily.setdefault(gp, {})[dt.date.fromisoformat(period)] = val
+        elif kind == "W":
+            file_weekly.setdefault(period, {})[gp] = val
+    first_day = min((d for days in daily.values() for d in days), default=None)
+
+    # 1. Dates on the sheet's week days for every file week (nearest start day to the label's start); a second week on
+    #    the same dates is dropped.
+    first = _week_start(out.weeks)
+    span = f"{DAY_NAMES[first]} – {DAY_NAMES[(first + 6) % 7]}"
+    weeks: list[dict[str, Any]] = []
+    seen: dict[dt.date, str] = {}
+    for w in sorted(out.weeks, key=lambda x: x["start_date"]):
+        s0, e0 = w["start_date"], w["end_date"]
+        start = s0 + dt.timedelta(days=(first - s0.weekday() + 3) % 7 - 3)
+        end = start + dt.timedelta(days=6)
+        if start in seen:
+            out.issues.append(Issue(sheet, "warning", "WEEK_DUPLICATE", f"{w['code']} ({s0:%d %b} – {e0:%d %b}) falls on the same {span} week as {seen[start]} – it was left out"))
+            continue
+        seen[start] = w["code"]
+        weeks.append({**w, "start_date": start, "end_date": end, "file_start": s0, "file_end": e0})
+
+    # 2. Weeks the file skipped (a gap of 7+ days between two weeks) are added, numbered on from the week before.
+    filled: list[dict[str, Any]] = []
+    codes = {w["code"] for w in weeks}
+    for w in weeks:
+        if filled:
+            prev = filled[-1]
+            start = prev["end_date"] + dt.timedelta(days=1)
+            number = prev["number"]
+            while start + dt.timedelta(days=6) < w["start_date"]:
+                end = start + dt.timedelta(days=6)
+                number = 1 if end.year > (start - dt.timedelta(days=1)).year and number >= 52 else number + 1
+                code = f"W-{number}"
+                if code in codes:
+                    break
+                codes.add(code)
+                filled.append({"code": code, "number": number, "start_date": start, "end_date": end, "file_start": None, "file_end": None})
+                start = end + dt.timedelta(days=1)
+        filled.append(w)
+
+    # 3. Dates and availability of every week, checked against the daily data.
+    kept = [a for a in out.availability if a[1] != "W"]
+    new_weekly: list[tuple[str, str, str, float]] = []
+    out.weeks = []
+    for w in filled:
+        code, start, end, fs, fe = w["code"], w["start_date"], w["end_date"], w["file_start"], w["file_end"]
+        out.weeks.append({"code": code, "number": w["number"], "start_date": start, "end_date": end})
+        given = file_weekly.get(code, {})
+        dates_moved = fs is not None and (fs, fe) != (start, end)
+        label = f"{code} ({start:%a %d %b} – {end:%a %d %b})"
+        if fs is None:
+            note = f"{label} is missing in the file: added"
+        elif dates_moved:
+            note = f"{code}: the file says {fs:%a %d %b} – {fe:%a %d %b}; the dashboard uses {start:%a %d %b} – {end:%a %d %b} (the file's weeks run {span})"
+        else:
+            note = None
+        if first_day is None or start < first_day:
+            # cannot be checked: keep what the file has
+            new_weekly += [(gp, "W", code, v) for gp, v in given.items()]
+            if note:
+                out.issues.append(Issue(sheet, "warning", "WEEK_RANGE", note + " – there is no daily data for the whole week, so the file's weekly availability was kept unchecked"))
+            continue
+        calc = _weekly_from_daily(out, start, end, amc, daily)
+        under_amc = {gp for gp, a in amc.items() if a is not None and a <= end}
+        diff = [gp for gp in under_amc if (gp in calc) != (gp in given) or (gp in calc and abs(calc[gp] - given[gp]) > TOLERANCE)]
+        if not diff and fs is not None:
+            new_weekly += [(gp, "W", code, v) for gp, v in given.items()]  # the file's values are right
+            if note:
+                out.issues.append(Issue(sheet, "warning", "WEEK_RANGE", note + " – the file's weekly availability already matches these dates"))
+            continue
+        new_weekly += [(gp, "W", code, v) for gp, v in calc.items()]
+        upto = min(end, out.data_as_of)
+        why = f"{len(diff):,} of {len(under_amc):,} AMC GPs differ from the file's {code} column" if fs is not None else "no column in the file"
+        out.issues.append(
+            Issue(
+                sheet,
+                "warning",
+                "WEEK_RECOMPUTED",
+                (note + ". " if note else f"{label}: ")
+                + f"Weekly availability recomputed from the daily values {start:%d %b} – {upto:%d %b} ({why}; example: "
+                + ", ".join(f"GP {gp} file {_pct(given.get(gp))} vs {_pct(calc.get(gp))}" for gp in diff[:3])
+                + ")",
+            )
+        )
+    out.availability = kept + new_weekly
 
 
 def _derive_missing_weeks(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
     """Daily data beyond the file's last W-nn week (e.g. data till 18 Oct, last week column W-42 = 9-15 Oct): add the
-    next Fri–Thu weeks so the dashboard reaches the data date. Their weekly availability follows the file's own rule
+    next weeks (same week days) so the dashboard reaches the data date. Their weekly availability follows the file's own rule
     for its week columns (verified exact on W-39…W-41, and on the in-progress W-42 up to its data date): per GP under
     AMC by the week's end, the mean of its daily values from the later of the week start and its AMC date up to the
     week end or the data date. GPs without any daily value in that range stay NA."""

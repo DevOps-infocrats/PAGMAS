@@ -1,17 +1,20 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ErrorState } from "@/components/feedback/states";
 import { CircleFilter } from "@/components/filters/filter-bar";
 import { SearchableSelect } from "@/components/filters/searchable-select";
+import { BackLink } from "@/components/layout/back-link";
 import { RelatedViews, TitleBar, ViewHint } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useDefaultSelection } from "@/hooks/use-default-selection";
+import { useNavigationProgress } from "@/components/layout/navigation-progress";
 import { useFilters } from "@/hooks/use-filters";
 import { api, type CircleInsightsResponse } from "@/lib/api";
 import { CIRCLE_PATH, CIRCLE_VIEWS, circleViewFrom, type CircleViewId } from "@/lib/circle-views";
+import { useInsightsNav } from "@/lib/insights-back";
 import { formatDate } from "@/lib/utils/format";
 import type { BlockSummary } from "@/types";
 import { BlockGpCount, HotoAmcStatus, UptimeSection } from "./circle-charts";
@@ -25,7 +28,9 @@ import { CircleKpis } from "./circle-kpis";
 export function CircleInsightsView() {
   const meta = useMeta();
   const params = useSearchParams();
-  const { filters, period, navigate, hrefTo } = useFilters();
+  const router = useRouter();
+  const { start } = useNavigationProgress();
+  const { filters, period, hrefTo } = useFilters();
   useDefaultSelection("circle");
   const circleId = filters.circle;
   const q = useApiQuery(circleId && period ? `circle:${circleId}:${period.weekId}:${period.compareWeekId}` : null, () =>
@@ -34,8 +39,11 @@ export function CircleInsightsView() {
   const data = q.data;
   const loading = q.loading || !period || !circleId;
   const circleName = data?.circle.name ?? meta?.circles.find((c) => c.id === circleId)?.name;
-  const openBlock = (b: Pick<BlockSummary, "id" | "districtId">) =>
-    navigate("/dashboard/block-insights", { circle: circleId, district: b.districtId, block: b.id, gp: undefined });
+  // Opens Block Insights; the way back (?from=) lets the block's Summary show "Back to <state>" (to this view).
+  const openBlock = (b: Pick<BlockSummary, "id" | "districtId">) => {
+    start();
+    router.push(withFrom(hrefTo("/dashboard/block-insights", { circle: circleId, district: b.districtId, block: b.id, gp: undefined })));
+  };
 
   const viewId = circleViewFrom(params.get("view"));
   const view = CIRCLE_VIEWS.find((v) => v.id === viewId)!;
@@ -43,6 +51,8 @@ export function CircleInsightsView() {
     const base = hrefTo(CIRCLE_PATH);
     return `${base}${base.includes("?") ? "&" : "?"}view=${id}`;
   };
+  // Summary: "Back to Circle Overview" when opened from there; a sub-view: "Back to Summary (KPIs)" when opened from its links.
+  const { back, withFrom } = useInsightsNav("circle", viewId);
 
   return (
     <div className="space-y-5">
@@ -53,6 +63,7 @@ export function CircleInsightsView() {
         view={view.title}
         period={period ? `${period.week.label} · ${formatDate(period.week.startDate)} – ${formatDate(period.week.endDate)}` : "Loading period…"}
         note={data?.asOf ? `Figures as of ${formatDate(data.asOf)}` : undefined}
+        aside={back ? <BackLink back={back} /> : undefined}
       >
         {/* Changes the state on this page (keeps the view) */}
         <CircleFilter required label="State" className="sm:w-full" />
@@ -83,7 +94,7 @@ export function CircleInsightsView() {
             <RelatedViews
               label="More in Circle Insights"
               title="More for this state"
-              items={CIRCLE_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: viewHref(v.id), title: v.title }))}
+              items={CIRCLE_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: withFrom(viewHref(v.id)), title: v.title }))}
             />
           )}
         </section>

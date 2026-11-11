@@ -80,7 +80,7 @@
   --series-7: #4a3aa7;
   --series-8: #e34948;
 
-  --radius: 8px;
+  --radius: 0.5rem;
 
   /* Loading placeholders: visible base + moving highlight */
   --skeleton: #e6e9ee;
@@ -225,6 +225,19 @@
   }
 }
 
+/*
+ * Visual density: at 100 % Chrome zoom the dashboard looks like it did at 90 % (the agreed appearance). Every size is
+ * in rem (Tailwind's scale and the arbitrary [..rem] values), so a 90 % root font size shrinks text, spacing, widths
+ * and chart heights together – real layout sizes, no CSS zoom / transform (those make the measured positions of
+ * dropdowns, tooltips and chart hover disagree with the mouse). Desktop widths only; phones and tablets keep 100 %.
+ * Media queries are unaffected (they use the browser's default font size).
+ */
+@media (min-width: 1024px) {
+  html {
+    font-size: 90%;
+  }
+}
+
 @utility brand-gradient {
   background-image: linear-gradient(90deg, var(--brand-green), var(--brand-blue));
 }
@@ -288,6 +301,19 @@ table tbody tr {
 }
 table tbody tr:hover {
   background-color: var(--row-hover);
+}
+
+/*
+ * The page itself never scrolls sideways: a wide table scrolls inside its own card. A grid / flex column holding a
+ * scroll box may shrink below the table's width (min-width: auto would stretch the card – and the page – instead).
+ * Only on <body>, never <html>: then it goes to the viewport, and the scroll lock of an open dropdown / dialog
+ * (body overflow: hidden) does not turn <body> into a scroll box that carries the sticky sidebar away.
+ */
+body {
+  overflow-x: clip;
+}
+:is(main, [role="dialog"]) :is(.grid, .flex, .inline-flex) > :has(.overflow-x-auto, .overflow-x-scroll, .overflow-auto) {
+  min-width: 0;
 }
 
 @utility tabular {

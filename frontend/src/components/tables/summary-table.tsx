@@ -31,7 +31,7 @@ export function SummaryTable<T>({
 }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[560px] text-sm">
+      <table className="w-full min-w-[35rem] text-sm">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
           <tr className="border-b border-border bg-table-head">
@@ -39,7 +39,7 @@ export function SummaryTable<T>({
               <th
                 key={c.key}
                 scope="col"
-                className={cn("whitespace-nowrap px-4 py-2.5 text-[12.5px] font-semibold text-heading", c.numeric ? "text-right" : "text-left")}
+                className={cn("whitespace-nowrap px-4 py-2.5 text-[0.78125rem] font-semibold text-heading", c.numeric ? "text-right" : "text-left")}
               >
                 {c.header}
               </th>

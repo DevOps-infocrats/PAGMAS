@@ -12,6 +12,8 @@ export interface SessionUser {
   email: string;
   name: string;
   role: Role;
+  /** Data access: "all" = every state; "areas" = only the listed areas (assigned in User Management). */
+  access?: { scope: "all" | "areas"; areas: string[] };
 }
 
 export const SESSION_COOKIE_NAME = IS_LIVE ? "pratap_session" : "pratap_demo_session";
@@ -32,7 +34,8 @@ export async function signIn(email: string, password: string, remember: boolean)
 export async function fetchCurrentUser(): Promise<SessionUser | null> {
   if (!IS_LIVE) return readSessionCookie();
   try {
-    return (await request<{ user: SessionUser }>("/auth/me")).user;
+    const res = await request<{ user: SessionUser; access?: SessionUser["access"] }>("/auth/me");
+    return { ...res.user, access: res.access };
   } catch {
     return null;
   }

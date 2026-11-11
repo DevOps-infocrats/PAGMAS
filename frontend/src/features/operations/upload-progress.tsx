@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, CheckCircle2, Loader2, X, XCircle } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Columns3, Loader2, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { EscalationImportRun } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
@@ -22,6 +22,8 @@ export interface UploadJob {
   error?: string;
   /** Client time (ms) when the server accepted the file and processing began */
   processingSince?: number;
+  /** The picked file (kept in the browser so its columns can be checked after a refusal) */
+  file?: File;
 }
 
 type Tone = "good" | "warning" | "critical";
@@ -93,6 +95,7 @@ export function UploadPanel({
   now,
   onClear,
   onShowRun,
+  onCheckColumns,
 }: {
   jobs: UploadJob[];
   runs: IngestionRun[] | undefined;
@@ -100,6 +103,8 @@ export function UploadPanel({
   now: number;
   onClear: () => void;
   onShowRun: (runId: string) => void;
+  /** Open the column check for a job's file (offered when it was refused / failed / imported with missing columns) */
+  onCheckColumns?: (job: UploadJob) => void;
 }) {
   if (!jobs.length) return null;
   const outcomes = jobs.map((j) => jobOutcome(j, runs, escalation));
@@ -119,14 +124,14 @@ export function UploadPanel({
       </div>
       <ul className="divide-y divide-border" aria-live="polite">
         {jobs.map((job, i) => (
-          <JobRow key={job.key} job={job} outcome={outcomes[i]} now={now} onShowRun={onShowRun} />
+          <JobRow key={job.key} job={job} outcome={outcomes[i]} now={now} onShowRun={onShowRun} onCheckColumns={onCheckColumns} />
         ))}
       </ul>
     </section>
   );
 }
 
-function JobRow({ job, outcome, now, onShowRun }: { job: UploadJob; outcome: JobOutcome; now: number; onShowRun: (runId: string) => void }) {
+function JobRow({ job, outcome, now, onShowRun, onCheckColumns }: { job: UploadJob; outcome: JobOutcome; now: number; onShowRun: (runId: string) => void; onCheckColumns?: (job: UploadJob) => void }) {
   const failedAt = outcome.state === "done" && job.phase === "rejected" ? (job.progress < 1 && job.error?.startsWith("Cannot reach") ? 0 : 1) : null;
   const current = { uploading: 0, checking: 1, processing: 2, done: 4 }[outcome.state];
   const kindLabel = job.kind === "escalation" ? "Escalation Matrix" : job.kind === "master" ? "Master data" : null;
@@ -166,7 +171,7 @@ function JobRow({ job, outcome, now, onShowRun }: { job: UploadJob; outcome: Job
                   style={{ width: failed || done ? "100%" : active ? (s === 0 ? `${Math.max(4, Math.round(job.progress * 100))}%` : "100%") : "0%" }}
                 />
               </div>
-              <p className={cn("mt-1 flex items-center gap-1 truncate text-[11.5px]", active ? "font-semibold text-foreground" : failed ? "text-critical-text" : "text-muted-foreground")}>
+              <p className={cn("mt-1 flex items-center gap-1 truncate text-[0.71875rem]", active ? "font-semibold text-foreground" : failed ? "text-critical-text" : "text-muted-foreground")}>
                 {done && <Check className="size-3 shrink-0 text-good" aria-hidden />}
                 {failed && <XCircle className="size-3 shrink-0" aria-hidden />}
                 {active && <Loader2 className="size-3 shrink-0 animate-spin text-primary" aria-hidden />}
@@ -177,20 +182,27 @@ function JobRow({ job, outcome, now, onShowRun }: { job: UploadJob; outcome: Job
         })}
       </ol>
 
-      {outcome.state === "done" && <ResultBox outcome={outcome} onShowRun={onShowRun} />}
+      {outcome.state === "done" && (
+        <ResultBox outcome={outcome} onShowRun={onShowRun} onCheckColumns={job.file && onCheckColumns && outcome.tone !== "good" ? () => onCheckColumns(job) : undefined} />
+      )}
     </li>
   );
 }
 
-function ResultBox({ outcome, onShowRun }: { outcome: Extract<JobOutcome, { state: "done" }>; onShowRun: (runId: string) => void }) {
+function ResultBox({ outcome, onShowRun, onCheckColumns }: { outcome: Extract<JobOutcome, { state: "done" }>; onShowRun: (runId: string) => void; onCheckColumns?: () => void }) {
   const Icon = TONE_ICON[outcome.tone];
   return (
     <div role={outcome.tone === "critical" ? "alert" : "status"} className={cn("flex flex-wrap items-start gap-3 rounded-lg border px-4 py-3 text-sm", TONE_BOX[outcome.tone])}>
       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
       <div className="min-w-0 flex-1">
         <p className="font-semibold">{outcome.title}</p>
-        <p className="mt-0.5 break-words text-[13px] opacity-90">{outcome.detail}</p>
+        <p className="mt-0.5 break-words text-[0.8125rem] opacity-90">{outcome.detail}</p>
       </div>
+      {onCheckColumns && (
+        <Button size="sm" variant="outline" onClick={onCheckColumns}>
+          <Columns3 /> Check columns
+        </Button>
+      )}
       {outcome.runId && (
         <Button size="sm" variant="outline" onClick={() => onShowRun(outcome.runId!)}>
           {outcome.tone === "good" ? "View changes" : "View details"}

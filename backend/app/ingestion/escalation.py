@@ -22,6 +22,7 @@ from typing import Any, Literal
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import SessionLocal, is_postgres
 from ..models import Dataset, EscalationContact, EscalationImport, Gp
 from .column_map import ESCALATION_REQUIRED, load_column_map, locate, resolve_sheet
@@ -36,7 +37,7 @@ ESC_LOCK = threading.Lock()
 REQUIRED = ESCALATION_REQUIRED
 TEXT_FIELDS = ("ba", "district", "block_name", "gp_name", "frt_code", "splicer_name", "fe_name", "am_name", "shq_name", "coh_name", "cbh_name")
 PHONE_FIELDS = ("splicer_phone", "fe_phone", "am_phone", "shq_phone", "coh_phone", "cbh_phone")
-EMAIL_FIELDS = ("am_email", "shq_email", "coh_email", "cbh_email")
+EMAIL_FIELDS = ("fe_email", "am_email", "shq_email", "coh_email", "cbh_email")
 EMAIL_RE = re.compile(r"[^@\s,;/]+@[^@\s,;/]+\.[^@\s,;/]+")
 
 
@@ -52,6 +53,8 @@ class ParsedEscalation:
     rows_rejected: int = 0
     rejected: list[str] = field(default_factory=list)  # "row 12: no GP code"
     missing: list[str] = field(default_factory=list)  # optional fields whose column was not found
+    # every finding with its Excel row: {"row", "severity" critical|warning|info, "code", "column", "gpCode", "message"}
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self, limit: int = 20) -> str | None:
         """Rejected rows and columns not found, for the import message (escalation imports have no issue table)."""
@@ -153,6 +156,8 @@ def parse_escalation(path: Path) -> ParsedEscalation:
         if reason:
             out.rows_rejected += 1
             out.rejected.append(f"row {i}: {reason}")
+            code = "ROW_REJECTED" if not gp or not circle else "DUPLICATE_GP"
+            out.issues.append({"row": i, "severity": "critical", "code": code, "column": "GP Code" if code == "DUPLICATE_GP" or not gp else "Circle", "gpCode": gp, "message": f"Row rejected: {reason}"})
             continue
         seen[code_key(gp)] = i
         rec: dict[str, Any] = {"gp_code": gp, "circle": circle.upper(), "block_code": _code(cell("block_code"))}
@@ -162,7 +167,12 @@ def parse_escalation(path: Path) -> ParsedEscalation:
         for k in PHONE_FIELDS:
             rec[k] = phone(cell(k))
         for k in EMAIL_FIELDS:
+            raw = _text(cell(k))
             rec[k] = email(cell(k))
+            if raw and raw != "0" and rec[k] is None:  # kept blank, never guessed – reported so the file can be fixed
+                out.issues.append({"row": i, "severity": "warning", "code": "INVALID_EMAIL", "column": k, "gpCode": gp, "message": f"'{raw}' is not an e-mail address – left empty"})
+        if not rec.get("am_name"):
+            out.issues.append({"row": i, "severity": "info", "code": "AM_MISSING", "column": "AM Name", "gpCode": gp, "message": "No AM Name – this GP's FE / AM do not appear in Area Manager / FE lists (Generate Ticket, AM-wise targets)"})
         out.rows.append(rec)
     if not out.rows:
         raise WorkbookError(f"'{name}': no GP rows found below the header")
@@ -177,8 +187,9 @@ def create_import(db: Session, path: Path, file_name: str, sha: str, user_id: in
     return imp
 
 
-def run_escalation_import(import_id: int) -> None:
-    """Parse + load an Escalation Matrix (background thread, own session; one at a time)."""
+def run_escalation_import(import_id: int, restore: tuple[str, str | None] | None = None) -> None:
+    """Parse + load an Escalation Matrix (background thread, own session; one at a time). With `restore` (a re-process
+    of a finished import): on failure the import gets that (status, message) back and keeps its contacts."""
     with ESC_LOCK:
         started = time.perf_counter()
         with SessionLocal() as db:
@@ -209,11 +220,12 @@ def run_escalation_import(import_id: int) -> None:
                     imp.message = "; ".join(filter(None, [f"Imported but not activated: the newer import #{newer} stays active", imp.message]))
                 db.commit()
         except WorkbookError as exc:
-            _fail(import_id, str(exc))
+            _restore(import_id, restore, str(exc)) if restore else _fail(import_id, str(exc))
             return
         except Exception:
             log.exception("Escalation import %s failed", import_id)
-            _fail(import_id, "Unexpected error while processing the file. See server logs.")
+            msg = "Unexpected error while processing the file. See server logs."
+            _restore(import_id, restore, msg) if restore else _fail(import_id, msg)
             return
         with SessionLocal() as db:
             _prune(db)
@@ -222,6 +234,16 @@ def run_escalation_import(import_id: int) -> None:
 
             invalidate_escalation()
         log.info("Escalation matrix %s imported in %.1fs", import_id, time.perf_counter() - started)
+
+
+def _restore(import_id: int, previous: tuple[str, str | None], error: str) -> None:
+    with SessionLocal() as db:
+        imp = db.get(EscalationImport, import_id)
+        if imp is None:
+            return
+        imp.status = previous[0]
+        imp.message = f"Re-process failed: {error} – the import was kept as it was."[:2000]
+        db.commit()
 
 
 def _fail(import_id: int, message: str) -> None:
@@ -247,7 +269,7 @@ def _prune(db: Session) -> None:
 
     rows = db.execute(select(EscalationImport.id, EscalationImport.status, EscalationImport.is_active, EscalationImport.stored_path).order_by(EscalationImport.id.desc())).all()
     ok = [r for r in rows if r.status == "SUCCESS"]
-    keep = {r.id for r in ok[:KEEP_IMPORTS]} | {r.id for r in rows if r.is_active}
+    keep = {r.id for r in ok[: get_settings().keep_datasets]} | {r.id for r in rows if r.is_active}
     old = [r.id for r in ok if r.id not in keep]
     if old:
         db.execute(delete(EscalationContact).where(EscalationContact.import_id.in_(old)))

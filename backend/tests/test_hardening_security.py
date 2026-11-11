@@ -173,6 +173,14 @@ def test_upload_path_keeps_the_large_limit(client):
     assert r.status_code == 415
 
 
+@pytest.mark.parametrize("form", ["verification", "justification", "revisit"])
+def test_non_doable_forms_accept_photos_larger_than_64_kb(client, form):
+    csrf = login(client)
+    photo = b"\xff\xd8\xff" + os.urandom(300 * 1024)  # a site photograph: far above the 64 KB JSON limit
+    r = client.post(f"/api/v1/nondoable/cases/999999/{form}", headers={"x-csrf-token": csrf}, data={"payload": "{}", "kind": "VISIT"}, files={"photos": ("site.jpg", photo, "image/jpeg")})
+    assert r.status_code != 413, r.text  # reaches the endpoint (unknown case), not the body size limit
+
+
 # ---------------------------------------------------------------- 5. health / readiness
 
 

@@ -9,6 +9,7 @@ export const FIELD_VIEWS = [
   { id: "workload", title: "Team Workload", short: "Team Workload", hint: "GPs per FRT team, splicer, FE and AM, with the month-to-date availability of their AMC GPs" },
   { id: "down", title: "Down GPs – Who to Call", short: "Down GPs – Who to Call", hint: "AMC GPs at 0% (or below 90%) month-to-date, with their field team" },
   { id: "gaps", title: "Data Gaps", short: "Data Gaps", hint: "Missing or invalid contacts to be corrected in the Escalation Matrix" },
+  { id: "sheet", title: "Escalation Sheet", short: "Escalation Sheet", hint: "The whole Escalation Matrix as a sheet – search, export to Excel, and (admins) correct contacts in place; saved changes are used everywhere" },
 ] as const;
 
 export type FieldViewId = (typeof FIELD_VIEWS)[number]["id"];

@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertOctagon, Boxes, Cable, CircleCheckBig, CircleDashed, Gauge, ShieldCheck, Users, Wrench } from "lucide-react";
+import { Activity, AlertOctagon, Boxes, Cable, CircleCheckBig, CircleDashed, Gauge, ShieldCheck, TrendingDown, Users, Wrench } from "lucide-react";
 import { StatCard } from "@/components/kpi/stat-card";
 import { useFilters } from "@/hooks/use-filters";
 import type { CircleInsightsResponse, KpiListKind } from "@/lib/api";
@@ -18,7 +18,7 @@ const pct = (a: number, b: number) => (b ? `${((a / b) * 100).toFixed(1)}%` : "N
  * Ten headline KPIs of a state, in three rows:
  *  1. Total Blocks, HOTO Done Blocks, HOTO Done (GPs), Non-AMC GPs
  *  2. Total GPs, AMC GPs, Total Fibre Route (RKM)
- *  3. uptime (MTD) – GPs above 98%, GPs at 0%, penalty-prone blocks (same rules as the O&M sheet and the Circle Overview)
+ *  3. uptime (MTD) – GPs above 98%, GPs at 0%, GPs below 90%, penalty-prone blocks (same rules as the O&M sheet and the Circle Overview)
  * Total Blocks opens this page's Block-wise GP Count view; the other linked cards open the list behind the number.
  */
 export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summary; loading: boolean; stateName?: string; asOf?: string; circleId?: string }) {
@@ -168,7 +168,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
       </div>
 
       {/* Row 3: uptime (MTD) */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           compact
           dense
@@ -194,6 +194,19 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
           unit="GPs"
           caption={s ? `${mtd} · ${formatCount(s.naGps)} not reported (NA)` : mtd}
           {...list("gps-at-zero")}
+        />
+        <StatCard
+          compact
+          dense
+          loading={L}
+          icon={TrendingDown}
+          tone="var(--serious)"
+          label={`GPs Below ${THRESHOLDS.penalty}% (MTD)`}
+          info={`AMC GPs of ${stateName ?? "the state"} with month-to-date availability below ${THRESHOLDS.penalty}% (0% included; NA not counted). The MTD value is rounded to 2 decimals first, as in the O&M sheet's "GP Uptime Performance (AMC GPs)" table.`}
+          value={formatCount(s?.gpsBelowPenalty)}
+          unit="GPs"
+          caption={s ? `${mtd} · ${pct(s.gpsBelowPenalty, s.reportingGps)} of ${formatCount(s.reportingGps)} reporting GPs` : mtd}
+          {...list("gps-below-90")}
         />
         <StatCard
           compact

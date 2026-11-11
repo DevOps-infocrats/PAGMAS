@@ -14,8 +14,8 @@ export function TableCard({ title, description, actions, children }: { title: st
     <Card className="flex min-w-0 flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 px-5 py-3.5 sm:flex-nowrap">
         <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-bold text-subheading">{title}</h3>
-          {description && <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{description}</p>}
+          <h3 className="text-[0.9375rem] font-bold text-subheading">{title}</h3>
+          {description && <p className="mt-0.5 text-[0.8125rem] leading-relaxed text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>
@@ -38,7 +38,7 @@ export function Th({
     <th
       scope="col"
       className={cn(
-        "whitespace-nowrap px-2.5 py-2.5 text-[12.5px] font-semibold text-foreground",
+        "whitespace-nowrap px-2.5 py-2.5 text-[0.78125rem] font-semibold text-foreground",
         first ? "sticky left-0 z-10 bg-muted px-3 text-left" : center ? "text-center" : "text-right",
         group && "border-l border-border/70",
         current && "text-primary",

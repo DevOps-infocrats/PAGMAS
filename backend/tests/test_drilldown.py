@@ -11,7 +11,7 @@ from .conftest import login
 def test_list_totals_equal_the_cards(imported, client):
     login(client)
     s = summarize(imported, None, "W-41")
-    for kind, key in (("gps-above-98", "gpsAbove98"), ("gps-at-zero", "gpsAtZero"), ("penalty-blocks", "penaltyBlocks"), ("hoto-gps", "hotoDoneGps"), ("hoto-blocks", "hotoDoneBlocks")):
+    for kind, key in (("gps-above-98", "gpsAbove98"), ("gps-at-zero", "gpsAtZero"), ("penalty-blocks", "penaltyBlocks"), ("hoto-gps", "hotoDoneGps"), ("hoto-blocks", "hotoDoneBlocks"), ("gps-below-90", "gpsBelowPenalty")):
         r = client.get(f"/api/v1/kpi-lists/{kind}", params={"week": "W-41"})
         assert r.status_code == 200, r.text
         body = r.json()
@@ -26,6 +26,9 @@ def test_rules_and_sorting(imported, client):
     assert all(v > 98 for v in vals) and vals == sorted(vals, reverse=True)  # strictly above 98, best first
     zero = client.get("/api/v1/kpi-lists/gps-at-zero", params={"week": "W-41", "page_size": 200}).json()
     assert all(i["availability"] == 0 for i in zero["items"])  # exactly 0 – NA never listed
+    below = client.get("/api/v1/kpi-lists/gps-below-90", params={"week": "W-41", "page_size": 200}).json()
+    bv = [i["availability"] for i in below["items"]]
+    assert all(v < 90 for v in bv) and bv == sorted(bv)  # below 90 (0% included), worst first
     blocks = client.get("/api/v1/kpi-lists/penalty-blocks", params={"week": "W-41", "page_size": 200}).json()
     assert blocks["unit"] == "block" and all(i["availability"] < 90 for i in blocks["items"])
     assert [i["availability"] for i in blocks["items"]] == sorted(i["availability"] for i in blocks["items"])  # worst first
@@ -147,7 +150,7 @@ def test_state_comparison_figures(imported, client):
     mtd = wf["mtd"].where(wf["amc"])
     block_mean = mtd.groupby(g["block_id"]).mean()
     s = o["summary"]
-    assert s["gpsBelowPenalty"] == int((mtd < 90).sum())  # 0% GPs included, NA never counted
+    assert s["gpsBelowPenalty"] == int((mtd.round(2) < 90).sum())  # 0% GPs included, NA never counted, rounded like the sheet
     assert s["reportingGps"] == int(mtd.notna().sum())
     assert s["blocksAbove98"] == int((block_mean > 98).sum())  # block mean, not "any GP above 98%"
     assert s["reportingBlocks"] == int(block_mean.notna().sum())

@@ -83,7 +83,7 @@ export function ManagementReviewView() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[min(1080px,100%)] space-y-4 lg:w-[max(900px,85%)]">
+    <div className="mx-auto w-full max-w-[min(67.5rem,100%)] space-y-4 lg:w-[max(56.25rem,85%)]">
       {/* 85% of the content area (never under 900px, never over 1080px), so the report reads as a page on a laptop too */}
       {/* ---------------- Compact report header: title + actions, then the period pickers ---------------- */}
       <Card className="overflow-hidden p-0">
@@ -93,9 +93,9 @@ export function ManagementReviewView() {
               <Logo variant="full" width={40} eager />
             </span>
             <div className="min-w-0">
-              <h1 className="text-brand w-fit text-[21px] font-extrabold leading-tight tracking-tight">Management Review</h1>
+              <h1 className="text-brand w-fit text-[1.3125rem] font-extrabold leading-tight tracking-tight">Management Review</h1>
               <p
-                className="truncate text-[13px] text-muted-foreground"
+                className="truncate text-[0.8125rem] text-muted-foreground"
                 title="The default week is the latest completed week in the file. All figures are recalculated from the active workbook whenever a new file is uploaded."
               >
                 {period ? (
@@ -214,13 +214,13 @@ function PageHead({ id, number, total, title, hint }: { id?: string; number: num
       <div className="flex min-w-0 items-center gap-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-semibold text-primary-foreground">{number}</span>
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-primary">
             Page {number} of {total}
           </p>
           <h2 id={id ? `sec-${id}-title` : undefined} className="truncate text-base font-bold text-subheading sm:text-lg">
             {title}
           </h2>
-          {hint && <p className="truncate text-[13px] text-muted-foreground">{hint}</p>}
+          {hint && <p className="truncate text-[0.8125rem] text-muted-foreground">{hint}</p>}
         </div>
       </div>
       <Logo variant="wordmark" width={84} className="shrink-0" />
@@ -230,7 +230,7 @@ function PageHead({ id, number, total, title, hint }: { id?: string; number: num
 
 function PageFoot({ number, total, weekLabel }: { number: number; total: number; weekLabel: string }) {
   return (
-    <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-2 text-[11px] text-muted-foreground">
+    <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-2 text-[0.6875rem] text-muted-foreground">
       <span className="truncate">Pratap · Management Governance Review · {weekLabel}</span>
       <span className="shrink-0 font-medium">
         {number} / {total}

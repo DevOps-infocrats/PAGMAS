@@ -8,7 +8,7 @@ recipient's area:
   Due so far        Planned Date from the 1st up to the data date
   Achieved (MTD)    Ach Date from the 1st up to the data date            MTD % = achieved / due so far
   Overdue           Planned on or before the data date, not achieved by then
-  Week target       Planned Date in the latest Fri–Thu week
+  Week target       Planned Date in the latest week (as in the master data sheet)
   Week achieved     Ach Date in that week, up to the data date           Week % = achieved / week target
 
 The heavy part (masks over the whole plan) is computed once per run in ReportContext; each recipient only selects rows.

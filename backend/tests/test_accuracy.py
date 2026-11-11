@@ -79,15 +79,32 @@ def test_upload_and_activate_new_dataset(imported, client):
     """A valid workbook upload is stored under a random name, imported in the background and activated."""
     from .conftest import REAL_FILE
 
+    current = REAL_FILE.with_name("Master Data V8.2 Daily track 04-11-26.xlsb")  # the upload has to match the current PAGMAS template (the fixture file is older)
+    if not current.exists():
+        pytest.skip("current-template workbook not available")
     csrf = login(client)
-    with REAL_FILE.open("rb") as fh:
+    with current.open("rb") as fh:
         r = client.post("/api/v1/ingestion/upload", headers={"x-csrf-token": csrf}, files={"file": ("../../evil name.xlsb", fh, "application/octet-stream")})
     assert r.status_code == 202, r.text
     assert r.json()["fileName"] == "evil name.xlsb"  # path components stripped
     runs = client.get("/api/v1/ingestion/runs").json()
     newest = runs[0]
-    assert newest["status"] == "SUCCESS" and newest["isActive"] and newest["accepted"] == 16323
-    assert sum(1 for x in runs if x["isActive"]) == 1
+    try:
+        assert newest["status"] == "SUCCESS" and newest["isActive"] and newest["accepted"] == 16323
+        assert sum(1 for x in runs if x["isActive"]) == 1
+    finally:  # the other tests check the figures of the fixture workbook: make it the active data again
+        from sqlalchemy import func, select, update
+
+        from app.analytics.store import reload_store
+        from app.db import SessionLocal
+        from app.models import Dataset
+
+        with SessionLocal() as db:
+            first = db.scalar(select(func.min(Dataset.id)))
+            db.execute(update(Dataset).values(is_active=False))
+            db.execute(update(Dataset).where(Dataset.id == first).values(is_active=True))
+            db.commit()
+        reload_store()
 
 
 def test_overview_summary_matches_workbook(imported, client):

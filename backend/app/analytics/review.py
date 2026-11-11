@@ -71,14 +71,16 @@ def _source_circle_kpis(store: Store) -> dict[str, dict[str, dict[str, float]]]:
     import (table circle_sheet_values): {CIRCLE: {metricKey: {periodKey: value}}}. Empty when the file had no
     such sheets. The workbook itself is never opened here."""
     with _sheet_lock:
-        if store.dataset_id in _sheet_cache:
-            return _sheet_cache[store.dataset_id]
-    out: dict[str, dict[str, dict[str, float]]] = {}
-    with SessionLocal() as db:
-        for r in db.scalars(select(CircleSheetValue).where(CircleSheetValue.dataset_id == store.dataset_id)):
-            out.setdefault(r.circle, {}).setdefault(r.metric, {})[r.period] = r.value
-    with _sheet_lock:
-        _sheet_cache[store.dataset_id] = out
+        out = _sheet_cache.get(store.dataset_id)
+    if out is None:
+        out = {}
+        with SessionLocal() as db:
+            for r in db.scalars(select(CircleSheetValue).where(CircleSheetValue.dataset_id == store.dataset_id)):
+                out.setdefault(r.circle, {}).setdefault(r.metric, {})[r.period] = r.value
+        with _sheet_lock:
+            _sheet_cache[store.dataset_id] = out
+    if store.full_circles is not None:  # data access: state-level values only for circles given in full
+        return {c: v for c, v in out.items() if str(c).upper() in store.full_circles}
     return out
 
 
@@ -128,7 +130,7 @@ class _Frame:
             "availability": r2(vals.mean()) if vals.notna().any() else None,
             "gpsAbove98": int((vals > s.healthy_threshold).sum()),
             "gpsAtZero": int((vals == 0).sum()),
-            "gpsBelowPenalty": int((vals < s.penalty_threshold).sum()),
+            "gpsBelowPenalty": int((vals.round(2) < s.penalty_threshold).sum()),  # same rule as metrics.summarize
             "gpsReported": int(vals.notna().sum()),
             "naGps": int((amc & vals.isna().to_numpy()).sum()),
             "blocksAbove98": int((blocks > s.healthy_threshold).sum()),
@@ -482,7 +484,7 @@ def management_review(store: Store, week_code: str, compare_code: str, data_qual
                 f"GPs > {s.healthy_threshold:g}%: AMC GPs with availability strictly above {s.healthy_threshold:g}% (exactly {s.healthy_threshold:g}% falls in 95–98%).",
                 f"Penalty-prone block: block whose mean AMC GP availability is below {s.penalty_threshold:g}% (O&M rule).",
                 "NA: AMC GP with no availability value in the source – excluded from averages, never counted as 0%.",
-                "Months use the workbook's monthly AMC columns; TD = month to date from daily data; weeks use the source's W-nn columns (Fri–Thu).",
+                "Months use the workbook's monthly AMC columns; TD = month to date from daily data; weeks use the source's W-nn columns (as in the master data sheet).",
                 "A GP is counted in a column only when it is under AMC by the column's end date.",
                 "One-Time-Up figures come from the circle sheets (external report) and cannot be derived from GP data.",
             ],

@@ -449,6 +449,21 @@ export const mockApi: DashboardApi = {
   async getFieldGaps() {
     throw new ApiError(501, "Field Team & Escalation needs the live backend (NEXT_PUBLIC_API_MODE=live).");
   },
+  async getEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async saveEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async replaceInEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async getEscalationSheetEdits() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  escalationSheetExportUrl() {
+    return "#";
+  },
 
   async getAmcPlanTimeline() {
     throw new ApiError(501, "AMC conversion plan vs execution needs the live backend (NEXT_PUBLIC_API_MODE=live).");

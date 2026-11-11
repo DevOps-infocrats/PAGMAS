@@ -654,3 +654,68 @@ def test_default_templates_are_seeded_once():
         service.ensure_default_templates(db)
         keys = list(db.scalars(select(MailTemplate.key).where(MailTemplate.key.is_not(None))))
     assert sorted(keys) == ["action", "detailed", "summary"]
+
+
+# ---------------------------------------------------------------- extra recipients (typed in on a schedule)
+
+
+def test_extra_recipients_get_their_own_areas(imported, matrix):
+    """Extra recipients: chosen areas (or every circle), within the schedule filters; bad entries are skipped, never
+    widened; an address that is also a matrix person gets one e-mail."""
+    extras = [
+        {"email": "Officer.One@Gov.in", "name": "Officer One", "areas": [{"level": "block", "id": M.block_b}]},
+        {"email": "all@gov.in", "name": None, "areas": []},
+        {"email": "not-an-address", "name": "Broken", "areas": []},
+        {"email": "gone@gov.in", "name": "Gone", "areas": [{"level": "block", "id": "zz-0"}]},
+        {"email": "alpha@am.in", "name": "Alpha again", "areas": [{"level": "block", "id": M.block_b}]},
+    ]
+    with SessionLocal() as db:
+        people, skipped = recipients(db, imported, cfg(audiences=["am"], filter_circles=[M.c1], extra_recipients=extras))
+    by = {p.email: p for p in people}
+    one = by["officer.one@gov.in"]
+    assert one.name == "Officer One" and one.roles == ["extra"] and set(one.gps) == set(M.gps_b)
+    every = by["all@gov.in"]  # no area = every circle, cut to the filter (c1)
+    assert every.name == "all@gov.in" and set(every.gps) == set(imported.gps.index[imported.gps["circle_id"] == M.c1])
+    assert set(by["alpha@am.in"].roles) == {"am", "extra"} and set(by["alpha@am.in"].gps) == set(M.gps_a) | set(M.gps_b)
+    reasons = {s.name: s.reason for s in skipped}
+    assert reasons["Broken"] == "no valid e-mail address" and reasons["Gone"] == "none of the chosen areas is in the current data"
+    assert "gone@gov.in" not in by
+    assert [p.roles for p in people][-1] in (["extra"], ["am", "extra"])  # extra recipients listed after the audiences
+
+
+def test_schedule_with_only_extra_recipients(client, imported, matrix, clean_mail):
+    login(client)
+    body = {"name": "Officers", "audiences": [], "frequency": "daily", "startDate": "2026-01-01", "sendTime": "09:00",
+            "extraRecipients": [{"email": " Head@Gov.in ", "name": " Circle  Head ", "areas": [{"level": "circle", "id": M.c2}]}]}
+    r = client.post("/api/v1/mail/configs", json=body, headers=csrf(client))
+    assert r.status_code == 201, r.text
+    c = r.json()
+    assert c["extraRecipients"] == [{"email": "head@gov.in", "name": "Circle Head", "areas": [{"level": "circle", "id": M.c2}]}]
+    pv = client.get(f"/api/v1/mail/configs/{c['id']}/recipients").json()
+    assert [(x["name"], x["roles"], x["gps"]) for x in pv["recipients"]] == [("Circle Head", "Extra recipient", len(M.gps_c2))]
+    assert client.get("/api/v1/mail/options").json()["locations"]
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        [{"email": "not-an-address"}],
+        [{"email": "a@gov.in"}, {"email": "A@gov.in"}],
+        [{"email": "a@gov.in", "areas": [{"level": "block", "id": "zz-0"}]}],
+        [{"email": "a@gov.in", "areas": [{"level": "state", "id": "x"}]}],
+    ],
+)
+def test_invalid_extra_recipients_are_refused(client, imported, matrix, clean_mail, extras):
+    login(client)
+    body = {"name": "xyz", "audiences": [], "frequency": "daily", "startDate": "2026-01-01", "sendTime": "09:00", "extraRecipients": extras}
+    assert client.post("/api/v1/mail/configs", json=body, headers=csrf(client)).status_code == 422
+
+
+def test_scheduler_sends_extra_recipient_their_own_email(imported, matrix, smtp, reports_on, clean_mail):
+    with SessionLocal() as db:
+        _due(db, SLOT, audiences=[], extra_recipients=[{"email": "officer@gov.in", "name": "Officer", "areas": [{"level": "block", "id": M.block_a}]}])
+    service.run_due(now=SLOT + dt.timedelta(minutes=1))
+    got = sent_to()
+    assert set(got) == {"officer@gov.in"}
+    text = got["officer@gov.in"].get_body(("plain",)).get_content()
+    assert "Dear Officer" in text

@@ -423,3 +423,30 @@ def test_store_reloads_when_another_process_activates_a_dataset(imported, monkey
     store_mod.get_store()
     assert not calls  # within the back-off window: not even the check query runs
     assert np.isfinite(store_mod._failed_at)
+
+
+def test_amc_summary_month_follows_the_selected_week(imported):
+    """AMC Conversion summary: the month cards show the month of the selected week (its last day with data), counted
+    up to that day; the other AMC views keep the month of the data date. The lists behind the cards use the same period."""
+    from app.analytics.amc_plan import amc_plan_summary, masks, plan_data_date, windows
+    from app.analytics.drilldown import kpi_list
+
+    last = plan_data_date(imported)
+    for w in imported.weeks:
+        cut = min(w.end, last)
+        win = windows(imported, w.code, month_of_week=True)
+        assert (win.month_start, win.month_as_of, win.as_of) == (cut.replace(day=1), cut, cut)
+        assert windows(imported, w.code).month_start == last.replace(day=1)  # default unchanged
+        r = amc_plan_summary(imported, w.code)
+        assert r["month"]["id"] == f"{cut:%Y-%m}"
+        # Monthly / Weekly Plan page: the month-wise table's current month and the area-manager table use the same month
+        from app.analytics.amc_plan import amc_plan_area_managers, amc_plan_timeline
+
+        t = amc_plan_timeline(imported, w.code)
+        assert [m["id"] for m in t["monthly"]["months"] if m["current"]] == [f"{cut:%Y-%m}"]
+        cid = imported.gps["circle_id"].iloc[0]
+        assert amc_plan_area_managers(imported, w.code, cid)["month"]["id"] == f"{cut:%Y-%m}"
+        if not imported.amc_plan.empty:
+            m = masks(imported, win)
+            for kind, key in (("amc-plan-month", "month-target"), ("amc-achieved-mtd", "mtd-achieved"), ("amc-overdue", "overdue")):
+                assert kpi_list(imported, kind, w.code, None, None, None, None, None, 1, 1)["total"] == int(m[key].sum())

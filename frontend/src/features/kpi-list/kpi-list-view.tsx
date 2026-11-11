@@ -61,6 +61,8 @@ const AMC_PLAN_COLS: Col[] = [
   { key: "category", header: "Plan type", render: (r) => <span className="whitespace-nowrap">{r.category ?? "—"}</span> },
   { key: "plannedDate", header: "Planned date", render: (r) => <span className="whitespace-nowrap">{date(r.plannedDate)}</span> },
   { key: "achDate", header: "Ach date", render: (r) => <span className={cn("whitespace-nowrap", r.achDate && "font-medium text-good-text")}>{date(r.achDate)}</span> },
+  { key: "letterDate", header: "Letter date", render: (r) => <span className="whitespace-nowrap">{date(r.letterDate ?? null)}</span> },
+  { key: "amcDate", header: "AMC date", render: (r) => <span className={cn("whitespace-nowrap", r.amcDate && "font-medium text-good-text")}>{date(r.amcDate ?? null)}</span> },
   { key: "planStatus", header: "Current status", render: (r) => r.planStatus ?? "—" },
   { key: "letterStatus", header: "Letter status", render: (r) => r.letterStatus ?? "—" },
   { key: "approvalStatus", header: "Approval status", render: (r) => r.approvalStatus ?? "—" },
@@ -76,6 +78,12 @@ const ACHIEVED_SORTS: { value: KpiListSort; label: string }[] = [
   { value: "name", label: "Name A–Z" },
 ];
 
+const CONVERTED_SORTS: { value: KpiListSort; label: string }[] = [
+  { value: "value-desc", label: "Latest AMC date first" },
+  { value: "value-asc", label: "Earliest AMC date first" },
+  { value: "name", label: "Name A–Z" },
+];
+
 /** Columns and sort wording of each list (the backend sorts on the list's own measure). */
 const LIST_UI: Record<KpiListKind, { cols: Col[]; sorts: { value: KpiListSort; label: string }[] }> = {
   "amc-plan-month": { cols: AMC_PLAN_COLS, sorts: PLANNED_SORTS },
@@ -84,6 +92,8 @@ const LIST_UI: Record<KpiListKind, { cols: Col[]; sorts: { value: KpiListSort; l
   "amc-plan-week": { cols: AMC_PLAN_COLS, sorts: PLANNED_SORTS },
   "amc-achieved-week": { cols: AMC_PLAN_COLS, sorts: ACHIEVED_SORTS },
   "amc-overdue": { cols: AMC_PLAN_COLS, sorts: PLANNED_SORTS },
+  "amc-converted-mtd": { cols: AMC_PLAN_COLS, sorts: CONVERTED_SORTS },
+  "amc-converted-week": { cols: AMC_PLAN_COLS, sorts: CONVERTED_SORTS },
   "gps-above-98": {
     cols: [...GP_COLS, AMC_DATE, MTD],
     sorts: [
@@ -93,6 +103,14 @@ const LIST_UI: Record<KpiListKind, { cols: Col[]; sorts: { value: KpiListSort; l
     ],
   },
   "gps-at-zero": { cols: [...GP_COLS, AMC_DATE, MTD], sorts: [{ value: "name", label: "Name A–Z" }] },
+  "gps-below-90": {
+    cols: [...GP_COLS, AMC_DATE, MTD],
+    sorts: [
+      { value: "value-asc", label: "Lowest availability first" },
+      { value: "value-desc", label: "Highest availability first" },
+      { value: "name", label: "Name A–Z" },
+    ],
+  },
   "penalty-blocks": {
     cols: [
       ...BLOCK_COLS,
@@ -255,7 +273,7 @@ function KpiTile({ t }: { t: KpiTileData }) {
   const Icon = t.icon;
   const body = (
     <>
-      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: t.color }} aria-hidden />
+      <span className="absolute inset-x-0 top-0 h-[0.1875rem]" style={{ background: t.color }} aria-hidden />
       <span
         className="flex size-7 shrink-0 items-center justify-center rounded-md"
         style={{ background: `color-mix(in srgb, ${t.color} 14%, transparent)`, color: t.color }}
@@ -264,10 +282,10 @@ function KpiTile({ t }: { t: KpiTileData }) {
         <Icon className="size-4" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">{t.label}</p>
-        <p className="tabular text-[18px] font-bold leading-tight text-heading">{formatCount(t.value)}</p>
+        <p className="truncate text-[0.65625rem] font-semibold uppercase tracking-wide text-muted-foreground">{t.label}</p>
+        <p className="tabular text-[1.125rem] font-bold leading-tight text-heading">{formatCount(t.value)}</p>
         {t.parts && (
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11.5px]">
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[0.71875rem]">
             {t.parts.map((p) => (
               <span key={p.label} className="inline-flex items-center gap-1 whitespace-nowrap">
                 <span className="size-2 rounded-full" style={{ background: p.color }} aria-hidden />
@@ -614,7 +632,7 @@ function KpiList({ kind, fromCircle, fromAmc, fromBlockParam, group }: { kind: K
                   href={tabHref(t.kind)}
                   aria-current={t.kind === kind ? "page" : undefined}
                   className={cn(
-                    "rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+                    "rounded-md px-3 py-1.5 text-[0.8125rem] font-medium transition-colors",
                     t.kind === kind ? "bg-primary-soft text-primary ring-1 ring-inset ring-primary/25" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   )}
                 >
@@ -685,10 +703,10 @@ function KpiList({ kind, fromCircle, fromAmc, fromBlockParam, group }: { kind: K
             <EmptyState icon={ListX} title={`No ${noun} in this list`} description={filtered ? "Nothing matches the chosen state / district / block or search." : "No item meets this KPI's rule for the selected week."} />
           ) : (
             <div className={cn("overflow-x-auto", q.loading && "opacity-60 transition-opacity")}>
-              <table className="w-full text-[13px]">
+              <table className="w-full text-[0.8125rem]">
                 <caption className="sr-only">{d.title}</caption>
                 <thead>
-                  <tr className="border-b border-border bg-muted/60 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <tr className="border-b border-border bg-muted/60 text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
                     <th scope="col" className="px-3 py-2 text-right">
                       #
                     </th>
@@ -747,7 +765,7 @@ function KpiList({ kind, fromCircle, fromAmc, fromBlockParam, group }: { kind: K
                               <div className="overflow-x-auto">
                                 <table className="w-full text-xs">
                                   <thead>
-                                    <tr className="text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                    <tr className="text-left text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">
                                       <th className="px-2 py-1">GP</th>
                                       <th className="px-2 py-1">GP code</th>
                                       <th className="px-2 py-1">HOTO Done Date</th>

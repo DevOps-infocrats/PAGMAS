@@ -115,13 +115,13 @@ function CompactTable<T>({
   caption?: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border">
-      <table className="w-full table-auto text-[12.5px]">
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full table-auto text-[0.78125rem]">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
           <tr className="border-b border-border bg-table-head">
             {columns.map((c) => (
-              <th key={c.key} scope="col" className={cn("px-2.5 py-1.5 text-[11.5px] font-semibold leading-tight text-heading", c.numeric ? "text-right" : "text-left")}>
+              <th key={c.key} scope="col" className={cn("px-2.5 py-1.5 text-[0.71875rem] font-semibold leading-tight text-heading", c.numeric ? "text-right" : "text-left")}>
                 {c.header}
               </th>
             ))}
@@ -181,7 +181,7 @@ function MiniKpi({
 }) {
   return (
     <div title={info} className="relative flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-xs">
-      <span className="absolute inset-x-0 top-0 h-[2px]" style={{ background: color }} aria-hidden />
+      <span className="absolute inset-x-0 top-0 h-[0.125rem]" style={{ background: color }} aria-hidden />
       <span
         className="flex size-6 shrink-0 items-center justify-center rounded-md"
         style={{ background: `color-mix(in srgb, ${color} 14%, transparent)`, color }}
@@ -190,9 +190,9 @@ function MiniKpi({
         <Icon className="size-3.5" />
       </span>
       <div className="min-w-0">
-        <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="tabular text-[16px] font-bold leading-tight text-heading">{loading ? "…" : value}</p>
-        {caption && !loading && <p className="truncate text-[10.5px] text-muted-foreground">{caption}</p>}
+        <p className="truncate text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="tabular text-[1rem] font-bold leading-tight text-heading">{loading ? "…" : value}</p>
+        {caption && !loading && <p className="truncate text-[0.65625rem] text-muted-foreground">{caption}</p>}
       </div>
     </div>
   );
@@ -503,9 +503,9 @@ export function StateComparison({ data, loading }: { data: OverviewResponse | un
           height={260}
         >
           {hotoPendingTotal === 0 ? (
-            <p className="flex h-[190px] items-center justify-center text-sm font-medium text-good-text">HOTO is done in every block – no pending blocks.</p>
+            <p className="flex h-[11.875rem] items-center justify-center text-sm font-medium text-good-text">HOTO is done in every block – no pending blocks.</p>
           ) : (
-            <div className="relative mx-auto max-w-[340px]">
+            <div className="relative mx-auto max-w-[21.25rem]">
               <EChart
                 option={hotoOption}
                 height={190}
@@ -514,13 +514,13 @@ export function StateComparison({ data, loading }: { data: OverviewResponse | un
               />
               {/* Total in the donut hole */}
               <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 text-center" aria-hidden>
-                <p className="tabular text-[20px] font-bold leading-none text-heading">{formatCount(hotoPendingTotal)}</p>
-                <p className="mt-0.5 text-[10.5px] text-muted-foreground">pending</p>
+                <p className="tabular text-[1.25rem] font-bold leading-none text-heading">{formatCount(hotoPendingTotal)}</p>
+                <p className="mt-0.5 text-[0.65625rem] text-muted-foreground">pending</p>
               </div>
             </div>
           )}
           {/* Plain summary instead of a table: one line per state */}
-          <ul className="mt-3 divide-y divide-border/70 rounded-lg border border-border text-[13px]">
+          <ul className="mt-3 divide-y divide-border/70 rounded-lg border border-border text-[0.8125rem]">
             {rows.map((r, i) => (
               <li key={r.id}>
                 <button
@@ -559,7 +559,7 @@ export function StateComparison({ data, loading }: { data: OverviewResponse | un
         empty={empty}
         height={260}
       >
-        <div className="grid grid-cols-1 items-center gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 items-center gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
           <EChart option={avOption} height={260} ariaLabel={`GPs and blocks above ${H}% by state`} onClick={onBar((id) => openGroup(id, "health", "gps-above-98"))} />
           <CompactTable
             columns={tables.av}

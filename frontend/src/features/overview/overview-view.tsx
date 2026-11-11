@@ -3,14 +3,17 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { ErrorState } from "@/components/feedback/states";
 import { SearchableSelect } from "@/components/filters/searchable-select";
+import { BackLink } from "@/components/layout/back-link";
 import { RelatedViews, TitleBar, ViewHint } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
+import { useNavigationProgress } from "@/components/layout/navigation-progress";
 import { useFilters } from "@/hooks/use-filters";
 import { api, type KpiListKind } from "@/lib/api";
 import { KPI_LIST_PATH, stateDetailHref, type KpiListGroup } from "@/lib/kpi-lists";
 import { OVERVIEW_PATH, OVERVIEW_VIEWS, overviewViewFrom, type OverviewViewId } from "@/lib/overview-views";
+import { useInsightsNav } from "@/lib/insights-back";
 import { formatDate } from "@/lib/utils/format";
 import { ConvertedGps, HotoProgress, NetworkHealth } from "./overview-charts";
 import { OverviewKpis } from "./overview-kpis";
@@ -25,12 +28,17 @@ export function OverviewView() {
   const meta = useMeta();
   const params = useSearchParams();
   const router = useRouter();
-  const { period, navigate, hrefTo } = useFilters();
+  const { period, hrefTo } = useFilters();
+  const { start } = useNavigationProgress();
   const q = useApiQuery(period ? `overview:${period.weekId}:${period.compareWeekId}` : null, () =>
     api.getOverview({ weekId: period!.weekId, compareWeekId: period!.compareWeekId }),
   );
   const data = q.data;
-  const openCircle = (circleId: string) => navigate("/dashboard/circle-insights", { circle: circleId, district: undefined, block: undefined, gp: undefined });
+  // Opens the state's Circle Insights; the way back (?from=) lets its Summary show "Back to Circle Overview".
+  const openCircle = (circleId: string) => {
+    start();
+    router.push(withFrom(hrefTo("/dashboard/circle-insights", { circle: circleId, district: undefined, block: undefined, gp: undefined })));
+  };
   // Table rows of the States & Network Health and Handover & Scope views open the state's own page (lists as tabs, same week).
   const openState = (circleId: string, group: KpiListGroup, kind?: KpiListKind) =>
     router.push(stateDetailHref(hrefTo(KPI_LIST_PATH, { circle: circleId, district: undefined, block: undefined, gp: undefined }), group, kind));
@@ -44,6 +52,8 @@ export function OverviewView() {
     const base = hrefTo(OVERVIEW_PATH);
     return `${base}${base.includes("?") ? "&" : "?"}view=${id}`;
   };
+  // Back to Summary only on a view opened from the Summary's "More in this overview" links (none from the sidebar).
+  const { back, withFrom } = useInsightsNav("overview", viewId);
 
   return (
     <div className="space-y-5">
@@ -54,15 +64,18 @@ export function OverviewView() {
         period={period ? `${period.week.label} · ${formatDate(period.week.startDate)} – ${formatDate(period.week.endDate)}` : "Loading period…"}
         note={`All states${data?.asOf ? ` · figures as of ${formatDate(data.asOf)}` : ""}`}
         aside={
-          <SearchableSelect
-            label="Open state details"
-            hideLabel
-            className="w-full sm:w-60"
-            value={undefined}
-            placeholder="Open state details →"
-            options={(meta?.circles ?? []).map((c) => ({ value: c.id, label: c.name, hint: c.code }))}
-            onChange={(v) => v && openCircle(v)}
-          />
+          <>
+            <BackLink back={back} />
+            <SearchableSelect
+              label="Open state details"
+              hideLabel
+              className="w-full sm:w-60"
+              value={undefined}
+              placeholder="Open state details →"
+              options={(meta?.circles ?? []).map((c) => ({ value: c.id, label: c.name, hint: c.code }))}
+              onChange={(v) => v && openCircle(v)}
+            />
+          </>
         }
       />
 
@@ -78,7 +91,7 @@ export function OverviewView() {
             <RelatedViews
               label="More in Circle Overview"
               title="More in this overview"
-              items={OVERVIEW_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: viewHref(v.id), title: v.title }))}
+              items={OVERVIEW_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: withFrom(viewHref(v.id)), title: v.title }))}
             />
           )}
         </section>

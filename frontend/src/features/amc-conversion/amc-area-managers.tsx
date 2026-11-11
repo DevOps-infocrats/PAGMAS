@@ -81,6 +81,8 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
   const target = (x: AmcAreaManagerRow) => (monthly ? x.monthTarget : x.weekTarget);
   const achieved = (x: AmcAreaManagerRow) => (monthly ? x.monthAchieved : x.weekAchieved);
   const pct = (x: AmcAreaManagerRow) => (monthly ? x.monthAchievedPct : x.weekAchievedPct);
+  // GP Achieved = AMC Date of the plan GPs (letter accepted) – a separate measure, never the Ach Date
+  const converted = (x: AmcAreaManagerRow) => (monthly ? x.monthConverted : x.weekConverted);
   const named = r.rows.filter((x) => x.assigned).length;
   // Highest achievement % among real area managers (not "Not assigned" / "Vacant"); nothing is highlighted at 0%.
   const best = Math.max(0, ...r.rows.filter((x) => x.assigned && pct(x) != null).map((x) => pct(x) as number));
@@ -106,7 +108,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
       description={
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>
-            {formatCount(named)} area manager{named === 1 ? "" : "s"} ({source}) · Target = Planned Date · Achieved = Ach Date {achievedRange}
+            {formatCount(named)} area manager{named === 1 ? "" : "s"} ({source}) · Target = Planned Date · GP Ready = Ach Date · GP Achieved = AMC Date ({achievedRange})
           </span>
           <span className="inline-flex items-center gap-1.5 text-xs">
             <span className="size-3 rounded-sm bg-good-soft ring-1 ring-good/40" aria-hidden /> ≥ {GOOD_PCT}% achieved
@@ -121,13 +123,13 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
         <table className={cn("w-full text-sm", GRID_TABLE)}>
           <caption className="sr-only">Area manager-wise AMC conversion of {r.circle.name}</caption>
           <thead>
-            <tr className="bg-muted text-[12.5px] font-semibold text-foreground">
+            <tr className="bg-muted text-[0.78125rem] font-semibold text-foreground">
               <th scope="colgroup" colSpan={2} className="sticky left-0 bg-muted px-3 pt-2.5" />
               <th scope="colgroup" className="bg-muted px-2.5 pt-2.5" />
               <th scope="colgroup" colSpan={4} className="border-l border-border/70 px-2.5 pt-2.5 text-center">
                 GPs
               </th>
-              <th scope="colgroup" colSpan={3} className="border-l border-border/70 px-2.5 pt-2.5 text-center text-primary">
+              <th scope="colgroup" colSpan={4} className="border-l border-border/70 px-2.5 pt-2.5 text-center text-primary">
                 {monthly ? `${r.month.label} – target vs achieved` : `${r.week.label} – target vs achieved`}
               </th>
               {showEmail && <th scope="colgroup" className="border-l border-border/70 bg-muted px-2.5 pt-2.5" />}
@@ -143,8 +145,9 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               <Th group current>
                 Target
               </Th>
-              <Th current>Achieved</Th>
-              <Th current>Achieved %</Th>
+              <Th current>GP Ready</Th>
+              <Th current>Ready %</Th>
+              <Th current>GP Achieved (AMC)</Th>
               {showEmail && (
                 <Th group className="text-left">
                   Email ID
@@ -168,7 +171,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
                 {/* Business area: narrow column, at most two lines; the full list is in the tooltip. */}
                 <Td className="w-44 min-w-[8rem] max-w-[11rem] whitespace-normal py-2 text-left font-normal">
                   {x.businessAreas.length ? (
-                    <span className="line-clamp-2 break-words text-[12.5px] leading-snug" title={x.businessAreas.join(", ")}>
+                    <span className="line-clamp-2 break-words text-[0.78125rem] leading-snug" title={x.businessAreas.join(", ")}>
                       {x.businessAreas.join(", ")}
                     </span>
                   ) : (
@@ -188,12 +191,15 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
                 <Td current={!isGood(x)}>
                   {/* best = solid green pill; ≥ 50% = light green pill; others = green text */}
                   {isTop(x) ? (
-                    <span className="inline-block rounded-md bg-good px-2 py-0.5 text-[14px] font-extrabold text-white">{formatPercent(pct(x), 1)}</span>
+                    <span className="inline-block rounded-md bg-good px-2 py-0.5 text-[0.875rem] font-extrabold text-white">{formatPercent(pct(x), 1)}</span>
                   ) : isGood(x) ? (
                     <span className="inline-block rounded-md bg-good-soft px-2 py-0.5 font-bold text-good-text ring-1 ring-good/40">{formatPercent(pct(x), 1)}</span>
                   ) : (
                     <GreenPct pct={pct(x)} />
                   )}
+                </Td>
+                <Td current={!isGood(x)} className="font-semibold">
+                  {converted(x) == null ? <Dash /> : formatCount(converted(x)!)}
                 </Td>
                 {showEmail && (
                   <Td group className="text-left font-normal">
@@ -231,6 +237,7 @@ export function AreaManagerTable({ view, circleId }: { view: "monthly" | "weekly
               <Td current>
                 <GreenPct pct={pct(r.total)} />
               </Td>
+              <Td current>{converted(r.total) == null ? "—" : formatCount(converted(r.total)!)}</Td>
               {showEmail && <Td group> </Td>}
             </tr>
           </tfoot>

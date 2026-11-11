@@ -20,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analytics.store import NoDataError
 from .analytics.views import NotFound
-from .api import admin, analytics, auth, escalation, mail
+from .api import admin, analytics, auth, escalation, mail, nondoable, tickets
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
 from .models import Dataset, EscalationImport, User
@@ -29,7 +29,7 @@ from .security.middleware import BodySizeLimitMiddleware, OriginCheckMiddleware,
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("pratap")
-WORKBOOK_SUFFIXES = {".xlsb", ".xlsx", ".xlsm"}
+WORKBOOK_SUFFIXES = {".xlsb", ".xlsx"}
 
 
 def _ensure_env_admin(db) -> None:
@@ -208,3 +208,5 @@ app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(escalation.router, prefix="/api/v1")
 app.include_router(mail.router, prefix="/api/v1")
+app.include_router(tickets.router, prefix="/api/v1")
+app.include_router(nondoable.router, prefix="/api/v1")

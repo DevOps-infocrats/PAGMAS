@@ -95,6 +95,8 @@ def reconcile(store: Store) -> dict[str, Any]:
                 )
             elif not match and kind == "external":
                 note = "O&M figure comes from the external one-time-up report; dashboard counts GPs with September availability > 0%"
+            elif not match and metric == "hotoDoneBlocks":
+                note = _hoto_blocks_note(store, mask, computed)
             rows.append(
                 {
                     "state": state.title(),
@@ -112,6 +114,22 @@ def reconcile(store: Store) -> dict[str, Any]:
         "penaltyThreshold": get_settings().penalty_threshold,
         "rows": rows,
     }
+
+
+def _hoto_blocks_note(store: Store, mask: np.ndarray, computed: Any) -> str | None:
+    """Explained only when the workbook's own "Block HOTO Status" column agrees with the dashboard count: the O&M
+    figure is then a typed value that was not updated, not a calculation difference."""
+    g = store.gps[mask]
+    if "block_hoto_status" not in g.columns:
+        return None
+    status = g["block_hoto_status"].astype(str).str.strip().str.lower()
+    done = int(g.loc[status == "done", "block_id"].nunique())
+    if done != computed:
+        return None
+    return (
+        f"GP Wise Data: all {computed} blocks have at least one GP with a HOTO date and the workbook's own "
+        f"'Block HOTO Status' column marks {done} blocks 'Done'. The O&M figure is typed in the sheet and was not updated."
+    )
 
 
 def _mtd_metrics(store: Store, mask: np.ndarray, end: dt.date) -> dict[str, Any]:

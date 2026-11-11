@@ -27,7 +27,7 @@ export function FlipButton({ showGraph, onToggle }: { showGraph: boolean; onTogg
       onClick={onToggle}
       aria-pressed={showGraph}
       aria-label={showGraph ? "Show table" : "Show graph"}
-      className="group inline-flex h-8 items-center gap-2 rounded-full border border-border bg-card pl-3 pr-1 text-[13px] font-medium text-foreground shadow-xs transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+      className="group inline-flex h-8 items-center gap-2 rounded-full border border-border bg-card pl-3 pr-1 text-[0.8125rem] font-medium text-foreground shadow-xs transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
     >
       {showGraph ? "Table" : "Graph"}
       <span className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform group-hover:translate-x-0.5">
@@ -42,7 +42,7 @@ function HeadCell({ children, first, className, compact, dense }: { children: Re
     <th
       scope="col"
       className={cn(
-        "whitespace-nowrap text-[11.5px] font-bold uppercase text-subheading",
+        "whitespace-nowrap text-[0.71875rem] font-bold uppercase text-subheading",
         dense ? "px-2.5 py-2 tracking-wide" : compact ? "px-1.5 py-2.5 tracking-normal" : "px-2.5 py-2.5 tracking-wider",
         first ? "sticky left-0 z-10 bg-muted text-left" : "text-right",
         className,
@@ -81,7 +81,7 @@ export function PeriodGrid({
   const divider = dense ? "border-l border-border/60" : "";
   return (
     <div className={cn("overflow-x-auto rounded-lg border border-border", dense && "max-w-6xl shadow-xs")}>
-      <table className={cn("w-full", compact ? "text-[12px]" : dense ? "text-[12.5px]" : "text-[13px]")}>
+      <table className={cn("w-full", compact ? "text-[0.75rem]" : dense ? "text-[0.78125rem]" : "text-[0.8125rem]")}>
         <caption className="sr-only">{caption}</caption>
         <thead>
           <tr className={cn("border-b border-border bg-muted", dense && "border-b-2")}>
@@ -91,7 +91,7 @@ export function PeriodGrid({
             {periods.map((p, i) => (
               <HeadCell key={p.key} compact={compact} dense={dense} className={cn(divider, i === highlight && "text-primary")}>
                 {p.label}
-                {p.sub && <span className="block text-[10px] font-normal normal-case tracking-normal text-subtle-foreground">{p.sub}</span>}
+                {p.sub && <span className="block text-[0.625rem] font-normal normal-case tracking-normal text-subtle-foreground">{p.sub}</span>}
               </HeadCell>
             ))}
           </tr>
@@ -166,7 +166,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
       empty={!loading && all.length === 0}
       actions={
         <div className="flex items-center gap-2">
-          <span className="text-[13px] text-muted-foreground">Show</span>
+          <span className="text-[0.8125rem] text-muted-foreground">Show</span>
           <Select
             ariaLabel="Number of blocks"
             className="h-9 w-40"
@@ -187,7 +187,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
           <caption className="sr-only">Block-wise GP count with AMC status</caption>
           <thead>
             {/* group row: what each block of numbers means */}
-            <tr className="bg-muted text-[12.5px] font-semibold text-foreground">
+            <tr className="bg-muted text-[0.78125rem] font-semibold text-foreground">
               <th scope="colgroup" colSpan={3} className="px-3 pt-2.5 text-left" />
               <th scope="colgroup" colSpan={3} className="border-l border-border px-3 pt-2.5 text-center">
                 GPs
@@ -202,7 +202,7 @@ export function BlockGpCount({ data, loading, onOpen }: { data: Data; loading: b
                   key={c.label}
                   scope="col"
                   className={cn(
-                    "whitespace-nowrap px-3 py-2 text-[12.5px] font-semibold text-foreground",
+                    "whitespace-nowrap px-3 py-2 text-[0.78125rem] font-semibold text-foreground",
                     i >= 3 ? "text-right" : "text-left",
                     i === 0 && "w-10",
                     (i === 3 || i === 6) && "border-l border-border",
@@ -286,12 +286,12 @@ const HOTO_METRICS: Record<HotoMetric, { label: string; unit: string }> = {
 function Reading({ color, label, value, note, dashed }: { color: string; label: string; value: string; note?: React.ReactNode; dashed?: boolean }) {
   return (
     <div className="min-w-0 rounded-lg border border-border bg-card px-3 py-2">
-      <p className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
+      <p className="flex items-center gap-1.5 text-[0.71875rem] font-medium text-muted-foreground">
         <span className={cn("inline-block w-3.5 shrink-0", dashed ? "border-t-2 border-dashed" : "h-1 rounded-full")} style={dashed ? { borderColor: color } : { background: color }} aria-hidden />
         <span className="truncate">{label}</span>
       </p>
-      <p className="tabular mt-0.5 text-[17px] font-bold leading-tight text-heading">{value}</p>
-      {note && <p className="mt-0.5 text-[11.5px] text-muted-foreground">{note}</p>}
+      <p className="tabular mt-0.5 text-[1.0625rem] font-bold leading-tight text-heading">{value}</p>
+      {note && <p className="mt-0.5 text-[0.71875rem] text-muted-foreground">{note}</p>}
     </div>
   );
 }
@@ -532,7 +532,7 @@ export function HotoAmcStatus({ data, loading, stateName }: { data: Data; loadin
         <div key="graph" className="flip-in space-y-3">
           {/* Context + metric selector */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="min-w-0 text-[13px] text-muted-foreground">
+            <p className="min-w-0 text-[0.8125rem] text-muted-foreground">
               <b className="font-semibold text-heading">{stateName}</b> · {meta.label}
               {points.length ? (
                 <>
@@ -591,7 +591,7 @@ export function HotoAmcStatus({ data, loading, stateName }: { data: Data; loadin
           )}
 
           <EChart option={option} height={340} ariaLabel={`${meta.label} in ${stateName}`} />
-          <p className="text-[11.5px] text-muted-foreground">
+          <p className="text-[0.71875rem] text-muted-foreground">
             Same values as the table. Shaded area = weeks of the current month; earlier points are month-end positions. Dashed line = target / reference, not an actual value.
           </p>
         </div>
@@ -874,9 +874,9 @@ export function UptimeSection({ kind, data, loading, stateName }: { kind: "gp" |
         <div key="graph" className="flip-in rounded-lg border border-border bg-gradient-to-b from-muted/40 to-transparent p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h4 className="flex flex-wrap items-center gap-2 text-[15px] font-bold text-subheading">
+              <h4 className="flex flex-wrap items-center gap-2 text-[0.9375rem] font-bold text-subheading">
                 {chartTitle}
-                <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", riseIsGood ? "bg-good-soft text-good-text" : "bg-critical-soft text-critical-text")}>
+                <span className={cn("rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold", riseIsGood ? "bg-good-soft text-good-text" : "bg-critical-soft text-critical-text")}>
                   {riseIsGood ? "Higher is better" : "Lower is better"}
                 </span>
               </h4>
@@ -921,7 +921,7 @@ export function UptimeSection({ kind, data, loading, stateName }: { kind: "gp" |
             </div>
           </div>
           <EChart option={option} height={300} ariaLabel={chartTitle} />
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-[0.6875rem] text-muted-foreground">
             Same values as the table ({gView === "day" ? `days of ${weekLabel}` : gView === "week" ? "weekly columns" : "monthly columns, incl. month to date"}).{" "}
             {isPct ? `Mean availability of the ${unit} with a value; the axis starts at ${pctMin}% to show the change.` : `Count of ${unit}; NA (no value) is not included.`} Dashed line = average of the
             points shown. Hover a point for details.

@@ -51,7 +51,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <aside
         className={cn(
           "sticky top-0 z-40 hidden h-dvh shrink-0 border-r border-sidebar-border bg-sidebar transition-[width] duration-200 lg:block",
-          collapsed ? "w-[68px]" : "w-[248px]",
+          collapsed ? "w-[4.25rem]" : "w-[15.5rem]",
         )}
       >
         <SidebarContent collapsed={collapsed} onToggle={toggle} />
@@ -67,7 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Header onOpenMobileNav={() => setMobileOpen(true)} onOpenSearch={() => setSearchOpen(true)} />
-        <main id="main" className="mx-auto w-full max-w-[1560px] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+        <main id="main" className="mx-auto w-full max-w-[97.5rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
           <AccessDeniedNotice />
           {metaError ? <ErrorState error={metaError} /> : children}
         </main>

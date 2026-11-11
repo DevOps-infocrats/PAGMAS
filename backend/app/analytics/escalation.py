@@ -66,11 +66,14 @@ class NoEscalationData(Exception):
 
 _cache: dict[str, Any] = {}
 _lock = threading.Lock()
+_version = 0  # bumped on every invalidation; part of the joined frame's memo key
 
 
 def invalidate_escalation() -> None:
+    global _version
     with _lock:
         _cache.clear()
+        _version += 1
 
 
 def _active() -> tuple[dict[str, Any], pd.DataFrame] | None:
@@ -111,10 +114,14 @@ def _frame(store: Store) -> tuple[dict[str, Any], pd.DataFrame]:
     if act is None:
         raise NoEscalationData("No Escalation Matrix has been uploaded yet – upload it on Data Operations.")
     meta, esc = act
-    key = ("joined", meta["id"], store.dataset_id)
-    with _lock:
-        if _cache.get("joined_key") == key:
-            return meta, _cache["joined"]
+    # Memoised on the snapshot (a viewer's scoped snapshot has its own memo, so scopes never mix); a new upload
+    # has a new import id, and every invalidation a new version.
+    return meta, store.memo(("esc-joined", meta["id"], _version), lambda: _join(store, esc))
+
+
+def _join(store: Store, esc: pd.DataFrame) -> pd.DataFrame:
+    if store.scope_key is not None:  # data access: only the viewer's GPs (rows not in the master list are left out)
+        esc = esc[esc.index.isin(store.gps.index)]
     g = store.gps.reindex(esc.index)
     df = esc.copy()
     df["in_master"] = g["circle"].notna().to_numpy()
@@ -137,9 +144,7 @@ def _frame(store: Store) -> tuple[dict[str, Any], pd.DataFrame]:
     df["am_vacant"] = df["am_name"].map(is_vacant).to_numpy()
     df["field_complete"] = df["has_frt"] & df["has_splicer"] & df["phone_ok_splicer"] & df["has_fe"] & df["phone_ok_fe"]
     df["escalation_complete"] = df["has_am"] & df["has_shq"] & df["has_coh"] & df["has_cbh"]
-    with _lock:
-        _cache.update(joined_key=key, joined=df)
-    return meta, df
+    return df
 
 
 def _mtd(store: Store, week: str) -> pd.Series:

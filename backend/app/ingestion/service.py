@@ -23,7 +23,7 @@ from .parser import ParsedWorkbook, parse_workbook
 from .workbook import WorkbookError
 
 log = logging.getLogger(__name__)
-KEEP_DATASETS = 3
+KEEP_DATASETS = 3  # default; the value used is Settings.keep_datasets (env KEEP_DATASETS)
 # Every per-dataset table (data rows are deleted on retry and when an old dataset is pruned).
 DATA_TABLES = (GpAmcPlan, GpAvailabilityPack, GpAvailability, Gp, DatasetWeek, ReportedNumber, MasterBlock, CircleSheetValue, ValidationIssue)
 
@@ -110,7 +110,25 @@ def run_ingestion(dataset_id: int) -> None:
         _run_ingestion(dataset_id)
 
 
-def _run_ingestion(dataset_id: int) -> None:
+def reprocess(dataset_id: int, previous: tuple[str, str | None]) -> None:
+    """Import a finished run's stored file again (e.g. after column names were added on Data Operations). If it fails,
+    the run gets its previous status and message back – its rows were never touched (they are replaced only in the
+    same transaction as the new ones), so the dashboard keeps the data it had."""
+    with INGEST_LOCK:
+        _run_ingestion(dataset_id, restore=previous)
+
+
+def _restore(ds_id: int, previous: tuple[str, str | None], error: str) -> None:
+    with SessionLocal() as db:
+        ds = db.get(Dataset, ds_id)
+        if ds is None:
+            return
+        ds.status = previous[0]
+        ds.message = f"Re-process failed: {error} – the import was kept as it was."[:2000]
+        db.commit()
+
+
+def _run_ingestion(dataset_id: int, restore: tuple[str, str | None] | None = None) -> None:
     started = time.perf_counter()
     with SessionLocal() as db:
         ds = db.get(Dataset, dataset_id)
@@ -150,11 +168,12 @@ def _run_ingestion(dataset_id: int) -> None:
                 ds.message = f"Imported but not activated: run #{best.id} has newer data (as of {best.data_as_of}) and stays active."
             db.commit()
     except WorkbookError as exc:
-        _fail(dataset_id, str(exc))
+        _restore(dataset_id, restore, str(exc)) if restore else _fail(dataset_id, str(exc))
         return
     except Exception:  # unexpected – never leak internals to the UI
         log.exception("Ingestion %s failed", dataset_id)
-        _fail(dataset_id, "Unexpected error while processing the file. See server logs.")
+        msg = "Unexpected error while processing the file. See server logs."
+        _restore(dataset_id, restore, msg) if restore else _fail(dataset_id, msg)
         return
     log.info("Dataset %s imported in %.1fs (%s)", dataset_id, time.perf_counter() - started, "active" if activated else "not activated")
     if activated:
@@ -209,7 +228,7 @@ def unlink_upload(path: str | Path) -> None:
 def prune_files(rows: Sequence[Any], keep_ids: set[int]) -> None:
     """Delete the upload files of pruned imports and of failed ones beyond the newest KEEP_DATASETS (rows: id, status,
     is_active, stored_path – newest first). Files still referenced by a kept import or the active one stay."""
-    failed = [r.id for r in rows if r.status == "FAILED"][KEEP_DATASETS:]
+    failed = [r.id for r in rows if r.status == "FAILED"][get_settings().keep_datasets :]
     drop = {r.id for r in rows if r.status in OK_STATUSES and r.id not in keep_ids} | set(failed)
     keep_paths = {r.stored_path for r in rows if r.id not in drop or r.is_active}
     for r in rows:
@@ -221,7 +240,7 @@ def _prune(db: Session) -> None:
     """Keep the rows of the newest successful datasets and of the active one; delete upload files nobody needs."""
     rows = db.execute(select(Dataset.id, Dataset.status, Dataset.is_active, Dataset.stored_path).order_by(Dataset.id.desc())).all()
     ok = [r for r in rows if r.status in OK_STATUSES]
-    keep = {r.id for r in ok[:KEEP_DATASETS]} | {r.id for r in rows if r.is_active}
+    keep = {r.id for r in ok[: get_settings().keep_datasets]} | {r.id for r in rows if r.is_active}
     old = [r.id for r in ok if r.id not in keep]
     if old:
         if is_postgres():

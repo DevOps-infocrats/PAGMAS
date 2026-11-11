@@ -91,7 +91,7 @@ export function DemoBadge({ className }: { className?: string }) {
       <Tooltip content={meta?.datasetFileName ? `Source: ${meta.datasetFileName}` : "Live data from the backend"}>
         <span
           className={cn(
-            "inline-flex cursor-help items-center gap-1.5 rounded-full border border-good/40 bg-good-soft px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-good-text",
+            "inline-flex cursor-help items-center gap-1.5 rounded-full border border-good/40 bg-good-soft px-2.5 py-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-good-text",
             className,
           )}
         >
@@ -105,7 +105,7 @@ export function DemoBadge({ className }: { className?: string }) {
     <Tooltip content="All figures are generated demo data (NEXT_PUBLIC_API_MODE=mock). No company data is shown.">
       <span
         className={cn(
-          "inline-flex cursor-help items-center gap-1.5 rounded-full border border-warning/50 bg-warning-soft px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-warning-text",
+          "inline-flex cursor-help items-center gap-1.5 rounded-full border border-warning/50 bg-warning-soft px-2.5 py-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-warning-text",
           className,
         )}
       >

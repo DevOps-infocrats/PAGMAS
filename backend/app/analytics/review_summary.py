@@ -196,7 +196,7 @@ def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], car
     plan, _, _ = effective_plan(store)  # file Planned Dates where present, else review_plan.json
     month_plan = (plan.monthlyPlan.get(want) if plan else None) or {}
     # Weekly columns = GPs achieved in the week by Ach Date (GP-wise plan block of the master data file), counted
-    # exactly like AMC Conversion → week achieved: Ach Date in the Fri–Thu week, up to the plan cutoff
+    # exactly like AMC Conversion → week achieved: Ach Date in the week (as in the master data sheet), up to the plan cutoff
     # (amc_plan.windows). None when the file has no GP-wise plan.
     from .amc_plan import windows
 

@@ -132,7 +132,7 @@ export function LoginForm() {
           Remember me for 7 days
         </label>
 
-        <Button type="submit" variant="primary" size="lg" className="group h-11 w-full rounded-lg text-[15px] shadow-[0_10px_24px_-10px_rgb(10_143_196/0.7)]" disabled={isSubmitting}>
+        <Button type="submit" variant="primary" size="lg" className="group h-11 w-full rounded-lg text-[0.9375rem] shadow-[0_10px_24px_-10px_rgb(10_143_196/0.7)]" disabled={isSubmitting}>
           {isSubmitting && <Loader2 className="animate-spin" />}
           {isSubmitting ? "Signing in…" : "Sign in"}
           {!isSubmitting && <ArrowRight className="transition-transform group-hover:translate-x-0.5" />}

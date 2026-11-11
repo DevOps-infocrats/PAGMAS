@@ -7,6 +7,9 @@ Audiences
   (CBH is not an audience: CBH names and e-mails are stored from the matrix as a backup only and never mailed.)
   users  Dashboard users (User Management) – admins: every GP; viewers: only their assigned circles / districts /
          blocks; a viewer without a valid area gets nothing (access is never widened)
+  extra  Extra recipients typed in on the schedule (people outside the matrix and without an account) – each one
+         their chosen circles / districts / blocks, or every circle when none is chosen; areas no longer in the data
+         are ignored and a recipient left with none gets nothing (never widened to every circle)
 
 A person of the matrix is one name within one circle, ignoring case / spaces / punctuation (same rule as Field Team &
 Escalation). "Vacant…" / "Vacent-1" entries are open posts and receive nothing. The e-mail is read from the same rows.
@@ -37,7 +40,8 @@ MATRIX_ROLES: dict[str, tuple[str, str, str]] = {  # audience -> (name column, e
     "coh": ("coh_name", "coh_email", "COH"),
 }
 AUDIENCES = (*MATRIX_ROLES, "users")
-AUDIENCE_LABELS = {**{k: v[2] for k, v in MATRIX_ROLES.items()}, "users": "Dashboard user"}
+AUDIENCE_LABELS = {**{k: v[2] for k, v in MATRIX_ROLES.items()}, "users": "Dashboard user", "extra": "Extra recipient"}
+ROLE_ORDER = (*AUDIENCES, "extra")  # order of recipients in the preview / run (extra recipients last)
 LEVELS = ("circle", "district", "block")
 
 
@@ -325,6 +329,7 @@ def recipients(db: Session, store: Store, cfg: MailConfig) -> tuple[list[Recipie
             area = f"{p.circle}" + (f" – BA {', '.join(p.business_areas)}" if p.role == "am" and p.business_areas else "")
             add(p.emails[0], p.emails, p.name, p.role, p.id, gps, area)
 
+    locs: dict[str, dict[str, str]] | None = None
     if "users" in audiences:
         ids = [int(i) for i in _json_list(cfg.user_ids) if isinstance(i, int)]
         q = select(User).where(User.is_active.is_(True)).order_by(User.id)
@@ -332,7 +337,7 @@ def recipients(db: Session, store: Store, cfg: MailConfig) -> tuple[list[Recipie
             q = q.where(User.id.in_(ids))
         users = list(db.scalars(q))
         scopes = assignments_of(db, [u.id for u in users])
-        locs = locations(store)
+        locs = locs or locations(store)
         for u in users:
             addr = valid_address(u.email)
             if not addr:
@@ -348,5 +353,28 @@ def recipients(db: Session, store: Store, cfg: MailConfig) -> tuple[list[Recipie
                 continue
             add(addr, [addr], u.name, "users", f"user:{u.id}", gps, "; ".join(labels))
 
-    out = sorted(by_email.values(), key=lambda r: (min(AUDIENCES.index(x) for x in r.roles), r.name.lower()))
+    for x in _json_list(getattr(cfg, "extra_recipients", None)):
+        if not isinstance(x, dict):
+            continue
+        addr = valid_address(x.get("email"))
+        name = " ".join(str(x.get("name") or "").split()) or addr or str(x.get("email") or "Extra recipient")
+        if not addr:
+            skipped.append(Skipped(name, AUDIENCE_LABELS["extra"], "no valid e-mail address"))
+            continue
+        items = [Assignment(str(a.get("level")), str(a.get("id"))) for a in x.get("areas") or [] if isinstance(a, dict)]
+        if items:
+            locs = locs or locations(store)
+            gps, labels = user_gps(store, "viewer", items, locs)
+            if gps.empty:
+                skipped.append(Skipped(name, AUDIENCE_LABELS["extra"], "none of the chosen areas is in the current data"))
+                continue
+        else:
+            gps, labels = store.gps.index, ["All circles"]
+        gps = gps.intersection(allowed)
+        if gps.empty:
+            skipped.append(Skipped(name, AUDIENCE_LABELS["extra"], "no GP within the selected filters"))
+            continue
+        add(addr, [addr], name, "extra", f"extra:{addr}", gps, "; ".join(labels))
+
+    out = sorted(by_email.values(), key=lambda r: (min(ROLE_ORDER.index(x) for x in r.roles), r.name.lower()))
     return out, skipped

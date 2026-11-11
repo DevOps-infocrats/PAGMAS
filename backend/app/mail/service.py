@@ -29,6 +29,7 @@ from .audience import Recipient, recipients
 from .report import ReportContext
 from .schedule import MISSED_GRACE, Schedule, next_run
 from .smtp import MailError, SmtpSession, build_message
+from .layout import attach_logo
 
 log = logging.getLogger(__name__)
 TICK_SECONDS = 60
@@ -171,7 +172,7 @@ def deliver(db: Session, cfg: MailConfig) -> tuple[str, int, int, int, str | Non
             for p in people:
                 r = compose(ctx, t.subject, t.body, p)
                 try:
-                    smtp.send(build_message(p.emails, r.subject, r.text, r.html))
+                    smtp.send(attach_logo(build_message(p.emails, r.subject, r.text, r.html)))
                     sent += 1
                 except MailError as exc:
                     errors[str(exc)] += 1

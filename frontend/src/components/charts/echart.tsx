@@ -58,5 +58,5 @@ export function EChart({
     chart.current?.setOption({ aria: { enabled: true }, ...option }, { notMerge: true });
   }, [option]);
 
-  return <div ref={ref} role="img" aria-label={ariaLabel} style={{ height, width: "100%", cursor: onClick ? "pointer" : undefined }} />;
+  return <div ref={ref} role="img" aria-label={ariaLabel} style={{ height: `${height / 16}rem`, width: "100%", cursor: onClick ? "pointer" : undefined }} />;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Pencil, Plus, UserPlus, X } from "lucide-react";
+import { Loader2, Pencil, Plus, Upload, UserPlus, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
@@ -15,6 +15,7 @@ import { useSession } from "@/hooks/use-session";
 import { IS_LIVE, adminApi, type AppUser, type ScopeLevel, type UserLocations } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatDateTime } from "@/lib/utils/format";
+import { ImportUsersDialog } from "./import-users-dialog";
 
 const LEVELS: { value: ScopeLevel; label: string }[] = [
   { value: "circle", label: "Circle" },
@@ -54,6 +55,7 @@ function UsersContent() {
   const options = useMemo(() => scopeOptions(locations.data), [locations.data]);
   const [editing, setEditing] = useState<Editing>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const toggle = async (u: AppUser) => {
     setMsg(null);
@@ -71,19 +73,24 @@ function UsersContent() {
       <PageHeader
         breadcrumbs={[{ label: "Administration" }, { label: "User Management" }]}
         title="User Management"
-        description="Dashboard accounts, roles and the circles / districts / blocks each viewer receives in the AMC Conversion e-mails."
+        description="Dashboard accounts, roles and the circles / districts / blocks each viewer may see – on the dashboard and in the AMC Conversion e-mails."
         actions={
-          <Button variant="primary" onClick={() => setEditing({ mode: "create" })} disabled={!IS_LIVE}>
-            <UserPlus /> Add user
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setImporting(true)} disabled={!IS_LIVE}>
+              <Upload /> Import users
+            </Button>
+            <Button variant="primary" onClick={() => setEditing({ mode: "create" })} disabled={!IS_LIVE}>
+              <UserPlus /> Add user
+            </Button>
+          </div>
         }
       />
 
       <Card className="p-5">
-        <p className="mb-4 text-[13px] text-muted-foreground">
-          <b>Admin</b> – manages data, users and mail; e-mails cover every circle. <b>Viewer</b> – reads dashboards; e-mails cover only the areas
-          assigned below. A viewer without an area receives no e-mail. Area Managers, SME, COH and CBH are taken from the Escalation Matrix and do
-          not need an account.
+        <p className="mb-4 text-[0.8125rem] text-muted-foreground">
+          <b>Admin</b> – manages data, users and mail; sees and receives every circle. <b>Viewer</b> – reads dashboards. A viewer with areas sees
+          only those areas on every page, list and download, and receives the AMC Conversion e-mail for them. A viewer without an area sees every
+          state but receives no e-mail. Area Managers, SME, COH and CBH are taken from the Escalation Matrix and do not need an account.
         </p>
         {!IS_LIVE ? (
           <p className="text-sm text-muted-foreground">User management needs the live backend.</p>
@@ -93,10 +100,10 @@ function UsersContent() {
           <TableSkeleton rows={5} />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[780px] text-sm">
+            <table className="w-full min-w-[48.75rem] text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  {["Name", "Email", "Role", "Areas (e-mail scope)", "Last sign-in", "Status", ""].map((c) => (
+                  {["Name", "Email", "Role", "Areas (data access & e-mail)", "Last sign-in", "Status", ""].map((c) => (
                     <th key={c} scope="col" className="py-2 pr-3 font-medium">
                       {c}
                     </th>
@@ -109,7 +116,7 @@ function UsersContent() {
                     <td className="py-2.5 pr-3 font-medium">{u.name}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{u.email}</td>
                     <td className="py-2.5 pr-3 capitalize">{u.role}</td>
-                    <td className="max-w-[320px] py-2.5 pr-3">
+                    <td className="max-w-[20rem] py-2.5 pr-3">
                       {u.role === "admin" ? (
                         <span className="text-muted-foreground">All circles</span>
                       ) : u.scopes.length ? (
@@ -125,7 +132,7 @@ function UsersContent() {
                           ))}
                         </div>
                       ) : (
-                        <span className="text-warning-text">None – no e-mail</span>
+                        <span className="text-warning-text">None – sees all states, no e-mail</span>
                       )}
                     </td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : "Never"}</td>
@@ -161,6 +168,18 @@ function UsersContent() {
             hasData={locations.data?.hasData ?? false}
             onDone={(text) => {
               setEditing(null);
+              setMsg({ ok: true, text });
+              setTick((n) => n + 1);
+            }}
+          />
+        )}
+      </Dialog>
+
+      <Dialog open={importing} onOpenChange={setImporting}>
+        {importing && (
+          <ImportUsersDialog
+            onDone={(text) => {
+              setImporting(false);
               setMsg({ ok: true, text });
               setTick((n) => n + 1);
             }}
@@ -240,7 +259,7 @@ function UserDialog({
       >
         <div>
           <DialogTitle className="text-base font-bold">{user ? `Edit ${user.name}` : "Add user"}</DialogTitle>
-          <DialogDescription className="text-[13px] text-muted-foreground">
+          <DialogDescription className="text-[0.8125rem] text-muted-foreground">
             {user ? "Changing the e-mail, role or password signs the user out." : "The user signs in with this e-mail and password."}
           </DialogDescription>
         </div>
@@ -266,9 +285,9 @@ function UserDialog({
         {self && <p className="text-xs text-muted-foreground">You cannot change your own role or e-mail address.</p>}
 
         <fieldset className="space-y-2 rounded-lg border border-border p-3">
-          <legend className="px-1 text-sm font-semibold">Areas for the AMC Conversion e-mail</legend>
+          <legend className="px-1 text-sm font-semibold">Areas – data access & AMC Conversion e-mail</legend>
           {role === "admin" ? (
-            <p className="text-sm text-muted-foreground">Admins receive every circle – no areas needed.</p>
+            <p className="text-sm text-muted-foreground">Admins see and receive every circle – no areas needed.</p>
           ) : !hasData ? (
             <p className="text-sm text-warning-text">Upload the master data first – areas come from the active data.</p>
           ) : (
@@ -304,7 +323,7 @@ function UserDialog({
                   ))}
                 </ul>
               ) : (
-                <p className="text-xs text-warning-text">No area: this viewer will not receive the AMC Conversion e-mail.</p>
+                <p className="text-xs text-warning-text">No area: this viewer sees every state and will not receive the AMC Conversion e-mail.</p>
               )}
             </>
           )}

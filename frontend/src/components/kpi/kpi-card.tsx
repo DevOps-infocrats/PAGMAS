@@ -50,7 +50,7 @@ function KpiValueText({ kpi, size }: { kpi: KpiValue; size: "hero" | "compact" }
   const { num, unit } = splitValue(kpi.value, def.unit);
   const suffix = unit || def.suffix;
   return (
-    <p className={cn("flex items-baseline gap-1 font-bold tracking-tight text-heading", size === "hero" ? "text-[24px] leading-8" : "text-lg")}>
+    <p className={cn("flex items-baseline gap-1 font-bold tracking-tight text-heading", size === "hero" ? "text-[1.5rem] leading-8" : "text-lg")}>
       <span className={cn(kpi.value == null && "text-muted-foreground")}>{num}</span>
       {kpi.value != null && suffix && (
         <span className={cn("font-medium text-muted-foreground", size === "hero" ? "text-sm" : "text-xs")}>{suffix}</span>
@@ -93,7 +93,7 @@ export function KpiBody({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-bold text-subheading">{def.label}</span>
+        <span className="truncate text-[0.8125rem] font-bold text-subheading">{def.label}</span>
         <InfoTip
           label={def.label}
           content={
@@ -119,7 +119,7 @@ export function CompactMetric({ kpi, compareLabel }: { kpi: KpiValue; compareLab
   return (
     <div className="flex flex-col gap-1 px-4 py-3">
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-semibold text-subheading">{def.label}</span>
+        <span className="truncate text-[0.8125rem] font-semibold text-subheading">{def.label}</span>
         <InfoTip label={def.label} content={def.description} />
       </div>
       <KpiValueText kpi={kpi} size="compact" />

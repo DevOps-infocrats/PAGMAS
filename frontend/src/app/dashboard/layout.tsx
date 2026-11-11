@@ -10,7 +10,7 @@ import { SessionProvider } from "@/components/providers/session-provider";
 export const instant = false;
 
 const shellFallback = (
-  <div className="mx-auto max-w-[1600px] px-4 py-8 lg:px-8">
+  <div className="mx-auto max-w-[100rem] px-4 py-8 lg:px-8">
     <PageSkeleton />
   </div>
 );

@@ -103,6 +103,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     user.locked_until = None
     user.last_login_at = now
     db.commit()
+    _link_tickets(db, user.id, user.email)
     # A successful sign-in does not count: give back the IP / account hits and forget this pair's failures.
     login_limiter.refund(ip_key)
     login_limiter.refund(acct_key)
@@ -127,8 +128,23 @@ def logout(request: Request, response: Response, user: CurrentUser = Depends(get
 
 
 @router.get("/me")
-def me(user: CurrentUser = Depends(get_current_user)) -> dict:
-    return {"user": user_json(user)}
+def me(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """The signed-in user and what part of the data they see (data access)."""
+    from ..security.access import access_summary
+
+    _link_tickets(db, user.id, user.email)
+    return {"user": user_json(user), "access": access_summary(db, user)}
+
+
+def _link_tickets(db: Session, user_id: int, email: str) -> None:
+    """Tickets sent to this e-mail before the account existed (SME / COH chosen in a review step) join the account."""
+    from ..tickets.service import link_recipients
+
+    try:
+        link_recipients(db, user_id, email)
+    except Exception:  # noqa: BLE001 - signing in must never fail because of tickets
+        db.rollback()
+        log.exception("Linking ticket recipients failed")
 
 
 @router.post("/change-password")

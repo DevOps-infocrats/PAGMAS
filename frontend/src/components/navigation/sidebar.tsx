@@ -66,7 +66,7 @@ export function SidebarContent({
           {collapsed ? <Logo variant="mark" width={28} eager /> : <Logo variant="wordmark" width={92} eager />}
         </Link>
         {!collapsed && (
-          <span className="mt-1 border-l border-sidebar-border pl-2.5 text-[11px] font-semibold uppercase leading-tight tracking-[0.08em] text-sidebar-muted">
+          <span className="mt-1 border-l border-sidebar-border pl-2.5 text-[0.6875rem] font-semibold uppercase leading-tight tracking-[0.08em] text-sidebar-muted">
             Network
             <br />
             Analytics
@@ -79,7 +79,7 @@ export function SidebarContent({
           type="button"
           onClick={onToggle}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="absolute -right-3 top-[17px] z-10 hidden size-6 items-center justify-center rounded-full border border-sidebar-border bg-card text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-primary lg:flex"
+          className="absolute -right-3 top-[1.0625rem] z-10 hidden size-6 items-center justify-center rounded-full border border-sidebar-border bg-card text-muted-foreground shadow-sm transition-colors hover:border-primary/40 hover:text-primary lg:flex"
         >
           <ChevronLeft className={cn("size-3.5 transition-transform", collapsed && "rotate-180")} />
         </button>
@@ -92,7 +92,7 @@ export function SidebarContent({
           return (
             <div key={group.label} className={cn(gi > 0 && "mt-5")}>
               {!collapsed ? (
-                <p className="mb-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">{group.label}</p>
+                <p className="mb-1.5 px-2.5 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-sidebar-muted">{group.label}</p>
               ) : (
                 gi > 0 && <div className="mx-auto mb-3 h-px w-6 bg-sidebar-border" aria-hidden />
               )}
@@ -112,13 +112,13 @@ export function SidebarContent({
                       aria-current={active ? "page" : undefined}
                       aria-label={collapsed || item.shortLabel ? item.label : undefined}
                       className={cn(
-                        "group relative flex h-9 items-center gap-3 rounded-md text-[13.5px] transition-colors",
+                        "group relative flex h-9 items-center gap-3 rounded-md text-[0.84375rem] transition-colors",
                         collapsed ? "justify-center" : "px-2.5",
                         menu?.open && !collapsed && "pr-8",
                         active ? "brand-gradient font-semibold text-white shadow-[0_6px_16px_-6px_rgb(10_143_196/0.75)]" : "font-medium text-sidebar-foreground hover:bg-sidebar-hover hover:text-sidebar-strong",
                       )}
                     >
-                      <item.icon className={cn("size-[18px] shrink-0 transition-colors", active ? "text-white" : "text-sidebar-muted group-hover:text-sidebar-strong")} />
+                      <item.icon className={cn("size-[1.125rem] shrink-0 transition-colors", active ? "text-white" : "text-sidebar-muted group-hover:text-sidebar-strong")} />
                       {!collapsed && <span className="truncate">{text}</span>}
                     </Link>
                   );
@@ -134,7 +134,7 @@ export function SidebarContent({
                         link
                       )}
                       {menu && showSub && (
-                        <ul aria-label={menu.label} className={cn("mt-0.5 space-y-0.5", collapsed ? "pb-1" : "relative mb-1.5 ml-[21px] border-l border-sidebar-border pl-2.5")}>
+                        <ul aria-label={menu.label} className={cn("mt-0.5 space-y-0.5", collapsed ? "pb-1" : "relative mb-1.5 ml-[1.3125rem] border-l border-sidebar-border pl-2.5")}>
                           {menu.items.map((pg, i) => {
                             const on = menu.current === pg.id;
                             const sub = (
@@ -144,8 +144,8 @@ export function SidebarContent({
                                 aria-current={on ? "page" : undefined}
                                 aria-label={collapsed ? `${i + 1}: ${pg.title}` : undefined}
                                 className={cn(
-                                  "relative flex items-center rounded-md text-[13px] transition-colors",
-                                  collapsed ? "mx-auto h-7 w-7 justify-center text-[11px] font-semibold" : "min-h-8 px-2.5 py-1.5 leading-snug",
+                                  "relative flex items-center rounded-md text-[0.8125rem] transition-colors",
+                                  collapsed ? "mx-auto h-7 w-7 justify-center text-[0.6875rem] font-semibold" : "min-h-8 px-2.5 py-1.5 leading-snug",
                                   on
                                     ? collapsed
                                       ? "brand-gradient text-white"
@@ -155,7 +155,7 @@ export function SidebarContent({
                                       : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-strong",
                                 )}
                               >
-                                {!collapsed && on && <span className="absolute -left-[11.5px] inset-y-1.5 w-[3px] rounded-full brand-gradient-v" aria-hidden />}
+                                {!collapsed && on && <span className="absolute -left-[0.71875rem] inset-y-1.5 w-[0.1875rem] rounded-full brand-gradient-v" aria-hidden />}
                                 {collapsed ? i + 1 : <span className="min-w-0 break-words">{pg.short}</span>}
                               </Link>
                             );
@@ -189,8 +189,8 @@ export function SidebarContent({
           </div>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] font-semibold leading-tight text-sidebar-strong">{session?.name ?? "—"}</p>
-              <p className="mt-0.5 truncate text-[11.5px] capitalize text-sidebar-muted">{session ? (IS_LIVE ? session.role : `${session.role} · demo`) : ""}</p>
+              <p className="truncate text-[0.8125rem] font-semibold leading-tight text-sidebar-strong">{session?.name ?? "—"}</p>
+              <p className="mt-0.5 truncate text-[0.71875rem] capitalize text-sidebar-muted">{session ? (IS_LIVE ? session.role : `${session.role} · demo`) : ""}</p>
             </div>
           )}
           <Tooltip content="Log out" side={collapsed ? "right" : "top"}>

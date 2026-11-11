@@ -71,7 +71,7 @@ export function SearchableSelect({
               />
             </div>
             <Command.List className="max-h-72 overflow-y-auto p-1">
-              <Command.Empty className="px-3 py-6 text-center text-[13px] text-muted-foreground">No matches.</Command.Empty>
+              <Command.Empty className="px-3 py-6 text-center text-[0.8125rem] text-muted-foreground">No matches.</Command.Empty>
               {allowClear && (
                 <Command.Item
                   value={`__all__ ${clearLabel}`}

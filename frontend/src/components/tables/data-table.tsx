@@ -156,7 +156,7 @@ export function DataTable<T extends RowData>({
         <EmptyState title="No results" description={data.length ? emptyMessage : "There are no records for this selection."} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[40rem] text-sm">
             <thead>
               {table.getHeaderGroups().map((hg) => (
                 <tr key={hg.id} className="border-b border-border bg-table-head">
@@ -169,7 +169,7 @@ export function DataTable<T extends RowData>({
                         key={header.id}
                         scope="col"
                         aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-                        className={cn("whitespace-nowrap px-3.5 py-2.5 text-[12.5px] font-semibold text-heading", isNum ? "text-right" : "text-left")}
+                        className={cn("whitespace-nowrap px-3.5 py-2.5 text-[0.78125rem] font-semibold text-heading", isNum ? "text-right" : "text-left")}
                       >
                         {header.isPlaceholder ? null : canSort ? (
                           <button
@@ -224,7 +224,7 @@ export function DataTable<T extends RowData>({
       )}
 
       {data && filteredCount > 0 && (
-        <div className="flex flex-col gap-3 border-t border-border px-4 py-3 text-[13px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 border-t border-border px-4 py-3 text-[0.8125rem] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>
             {formatCount(pagination.pageIndex * pagination.pageSize + 1)}–
             {formatCount(Math.min(filteredCount, (pagination.pageIndex + 1) * pagination.pageSize))} of {formatCount(filteredCount)}
@@ -237,7 +237,7 @@ export function DataTable<T extends RowData>({
               value={String(pagination.pageSize)}
               onValueChange={(v) => setPagination({ pageIndex: 0, pageSize: Number(v) })}
               options={["10", "25", "50", "100"].map((v) => ({ value: v, label: v }))}
-              className="h-8 w-[72px]"
+              className="h-8 w-[4.5rem]"
             />
             <Button size="icon-sm" variant="outline" aria-label="Previous page" disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
               <ChevronLeft />

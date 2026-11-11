@@ -43,7 +43,23 @@ class Settings(BaseSettings):
     account_lockout_threshold: int = 10
     account_lockout_minutes: int = 30
     upload_max_mb: int = Field(60, ge=1, le=500)
+    # Data uploads (master data / Escalation Matrix): a validated preview waits this long for "Confirm import"; the
+    # staged file is deleted afterwards. A workbook may expand to at most this size when unzipped (the real master file
+    # ~60 MB) and at most this ratio (real files ~9x) – a much larger expansion is a zip bomb, not a workbook.
+    staging_ttl_minutes: int = Field(60, ge=5, le=24 * 60)
+    zip_max_uncompressed_mb: int = Field(1024, ge=50, le=20_000)
+    zip_max_ratio: int = Field(200, ge=10, le=10_000)
+    # Successful imports kept (data rows + file) besides the active one; older ones are pruned
+    keep_datasets: int = Field(3, ge=1, le=50)
+    # Temporary password of users created by the bulk import on User Management (they change it after signing in)
+    user_import_password: str = Field("bsnl@1234567", min_length=8, max_length=128)
+    # Ticket Management: files of one work submission (PDF, Office, images)
+    ticket_file_max_mb: int = Field(20, ge=1, le=200)  # per file
+    ticket_upload_max_mb: int = Field(50, ge=1, le=500)  # all files of one submission together
+    ticket_max_files: int = Field(10, ge=1, le=50)
     report_timezone: str = "Asia/Kolkata"  # timestamps printed on generated reports
+    # The dashboard warns when the active data is older than this many days (a new master data file is due)
+    stale_data_days: int = Field(3, ge=1, le=60)
 
     # Outgoing mail (SMTP). Nothing is sent unless an admin presses "Send Test Mail", or AMC_REPORT_EMAILS_ENABLED is
     # true and an enabled schedule is due. Settings are checked by app.mail.smtp.smtp_status(): a wrong value disables
@@ -148,6 +164,16 @@ class Settings(BaseSettings):
     @property
     def upload_dir(self) -> Path:
         return self.data_dir / "uploads"
+
+    @property
+    def staging_dir(self) -> Path:
+        """Uploads waiting for "Confirm import" (validated, not imported yet) – never served, removed after the TTL."""
+        return self.data_dir / "staging"
+
+    @property
+    def ticket_dir(self) -> Path:
+        """Ticket attachments: inside DATA_DIR (git-ignored, never served as static files)."""
+        return self.data_dir / "tickets"
 
 
 @lru_cache

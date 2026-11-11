@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertOctagon, Boxes, CircleCheckBig, CircleDashed, Gauge, Globe2, ShieldCheck, Users, Wrench } from "lucide-react";
+import { Activity, AlertOctagon, Boxes, CircleCheckBig, Gauge, Globe2, ShieldCheck, TrendingDown, Users, Wrench } from "lucide-react";
 import { StatCard } from "@/components/kpi/stat-card";
 import { useFilters } from "@/hooks/use-filters";
 import type { KpiListKind, OverviewResponse } from "@/lib/api";
@@ -24,7 +24,7 @@ const C = {
   brand: "var(--primary)",
 };
 
-/** Circle Overview headline KPIs in three rows (Scope & Handover, GPs & AMC, Uptime & Non-AMC). Cards with a link open the list behind the number. */
+/** Circle Overview headline KPIs in three rows (Scope & Handover, GPs & AMC, Uptime). Cards with a link open the list behind the number. */
 export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?: States; asOf?: string; loading: boolean }) {
   const L = loading || !s;
   const { hrefTo } = useFilters();
@@ -165,7 +165,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
         />
       </KpiRow>
 
-      <KpiRow title="Uptime (MTD) & Non-AMC">
+      <KpiRow title="Uptime (MTD)">
         <StatCard
           compact
           dense
@@ -201,6 +201,21 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           dense
           loading={L}
           className="md:col-span-3"
+          icon={TrendingDown}
+          tone={C.serious}
+          label={`GPs Below ${THRESHOLDS.penalty}% (MTD)`}
+          info={`AMC GPs with month-to-date availability below ${THRESHOLDS.penalty}% (0% included; NA not counted). The MTD value is rounded to 2 decimals first, as in the O&M sheet's "GP Uptime Performance (AMC GPs)" table (all bands below ${THRESHOLDS.penalty}% added up).`}
+          value={formatCount(s?.gpsBelowPenalty)}
+          unit="GPs"
+          caption={s ? [s.reportingGps ? `${((s.gpsBelowPenalty / s.reportingGps) * 100).toFixed(1)}% of ${formatCount(s.reportingGps)} reporting GPs` : null, byState((d) => d.gpsBelowPenalty)].filter(Boolean).join(" · ") : mtd}
+          href={listHref("gps-below-90")}
+          linkLabel={KPI_LISTS["gps-below-90"].linkLabel}
+        />
+        <StatCard
+          compact
+          dense
+          loading={L}
+          className="md:col-span-3"
           icon={Gauge}
           tone={C.serious}
           label={`Penalty-Prone Blocks <${THRESHOLDS.penalty}%`}
@@ -211,21 +226,6 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           href={listHref("penalty-blocks")}
           linkLabel={KPI_LISTS["penalty-blocks"].linkLabel}
         />
-        <StatCard
-          compact
-          dense
-          loading={L}
-          className="md:col-span-3"
-          icon={CircleDashed}
-          tone="var(--na)"
-          label="Non-AMC GPs"
-          info="Revised existing GPs (not converted to NP / closed / deducted) that are not under AMC on the reporting week end. Same figure as the Non-AMC part of the AMC GPs card."
-          value={formatCount(s?.nonAmcGps)}
-          unit="GPs"
-          caption={s && s.revisedExisting ? `${((s.nonAmcGps / s.revisedExisting) * 100).toFixed(1)}% of revised existing GPs` : undefined}
-          href={listHref("non-amc-gps")}
-          linkLabel={KPI_LISTS["non-amc-gps"].linkLabel}
-        />
       </KpiRow>
     </div>
   );
@@ -234,7 +234,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
 function KpiRow({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section aria-label={title} className="space-y-3">
-      <h2 className="flex items-center gap-2.5 text-[13px] font-extrabold uppercase tracking-[0.08em] text-subheading">
+      <h2 className="flex items-center gap-2.5 text-[0.8125rem] font-extrabold uppercase tracking-[0.08em] text-subheading">
         <span className="brand-gradient h-4 w-1 rounded-full" aria-hidden />
         {title}
         <span className="h-px flex-1 bg-border" aria-hidden />

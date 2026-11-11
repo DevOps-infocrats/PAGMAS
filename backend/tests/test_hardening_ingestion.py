@@ -262,10 +262,22 @@ def uploads():
     return set(d.iterdir()) if d.exists() else set()
 
 
+def genuine_xlsb() -> bytes:
+    """A minimal but genuine workbook package (passes the file checks; its content is unique per call)."""
+    import io
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("xl/workbook.bin", uuid.uuid4().bytes)
+    return buf.getvalue()
+
+
 def test_same_file_twice_returns_the_existing_import(client):
     csrf = login(client)
     for model, kind in ((Dataset, "run"), (EscalationImport, "Escalation Matrix import")):
         stored = upload_file()
+        stored.write_bytes(genuine_xlsb())  # the duplicate check runs after the file checks
         content = stored.read_bytes()
         with SessionLocal() as db:
             rec = model(file_name="first.xlsb", stored_path=str(stored), sha256=hashlib.sha256(content).hexdigest(), status="SUCCESS")
@@ -295,7 +307,7 @@ def test_failed_uploads_leave_no_file(client, monkeypatch):
 
     monkeypatch.setattr(admin, "detect_kind", lambda path: (_ for _ in ()).throw(RuntimeError("client went away")))
     try:
-        assert post(b"PK\x03\x04" + uuid.uuid4().bytes).status_code == 500
+        assert post(genuine_xlsb()).status_code == 500  # passes the file checks, then the server fails
     except RuntimeError:
         pass  # the test client re-raises server errors
     assert uploads() == before

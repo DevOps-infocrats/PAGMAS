@@ -1,4 +1,4 @@
-import type { AdminApi, DashboardApi, FieldQuery, KpiListQuery } from "./contracts";
+import type { AdminApi, DashboardApi, EscalationSheetQuery, FieldQuery, KpiListQuery, NonDoableApi, TicketApi } from "./contracts";
 import { ApiError } from "./errors";
 
 /**
@@ -20,14 +20,15 @@ function csrfToken(): string | undefined {
 const fallbackMessage = (status: number) => (status === 503 ? "The data service is not ready yet." : `Request failed (${status})`);
 const UNREACHABLE = "Cannot reach the data service. Is the backend running?";
 
-async function errorMessage(res: Response): Promise<string> {
+async function errorBody(res: Response): Promise<{ message: string; body?: unknown }> {
   try {
     const body = (await res.json()) as { detail?: unknown };
-    if (typeof body.detail === "string") return body.detail;
+    if (typeof body.detail === "string") return { message: body.detail, body };
+    return { message: fallbackMessage(res.status), body };
   } catch {
     /* not JSON */
   }
-  return fallbackMessage(res.status);
+  return { message: fallbackMessage(res.status) };
 }
 
 /** Session expired or revoked: go back to the login page, keeping the current location. */
@@ -52,7 +53,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new ApiError(0, UNREACHABLE);
   }
   toLogin(res.status, path);
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+  if (!res.ok) {
+    const e = await errorBody(res);
+    throw new ApiError(res.status, e.message, e.body);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -108,6 +112,8 @@ export const reportQuery = (p: { weekId: string; compareWeekId: string; circleId
 const fieldQuery = (q: FieldQuery, extra: Record<string, string | undefined> = {}) =>
   qs({ ...extra, week: q.weekId, circle: q.circleId, district: q.districtId, block: q.blockId, search: q.search, page: q.page });
 
+const sheetQuery = (q: EscalationSheetQuery) => qs({ circle: q.circleId, district: q.districtId, block: q.blockId, search: q.search, page: q.page, page_size: q.pageSize });
+
 export const httpApi: DashboardApi = {
   getMeta: () => request("/meta"),
   getOverview: (p) => request(`/overview${qs({ week: p.weekId, compare: p.compareWeekId })}`),
@@ -128,6 +134,11 @@ export const httpApi: DashboardApi = {
   getAmcAreaManagers: (week, circle) => request(`/amc-plan/area-managers${qs({ week, circle })}`),
   getFieldSummary: (week) => request(`/field-team/summary${qs({ week })}`),
   getFieldLookup: (q) => request(`/field-team/lookup${fieldQuery(q)}`),
+  getEscalationSheet: (q) => request(`/field-team/sheet${sheetQuery(q)}`),
+  saveEscalationSheet: (importId, changes) => request("/field-team/sheet", { method: "PATCH", body: JSON.stringify({ importId, changes }) }),
+  replaceInEscalationSheet: (body) => request("/field-team/sheet/replace", { method: "POST", body: JSON.stringify(body) }),
+  getEscalationSheetEdits: (gpCode) => request(`/field-team/sheet/edits${qs({ gpCode })}`),
+  escalationSheetExportUrl: (q) => `${API_BASE}/field-team/sheet/export.xlsx${sheetQuery({ ...q, page: undefined, pageSize: undefined })}`,
   getFieldWorkload: (role, q) => request(`/field-team/workload${qs({ role, week: q.weekId, circle: q.circleId })}`),
   getFieldPeople: (role, q) => request(`/field-team/people${qs({ role, week: q.weekId, circle: q.circleId, search: q.search })}`),
   getFieldDown: (mode, q) => request(`/field-team/down${fieldQuery(q, { mode })}`),
@@ -141,13 +152,45 @@ export const httpAdminApi: AdminApi = {
     body.append("file", file);
     return upload("/ingestion/upload", body, onProgress);
   },
+  previewUpload: (file, kind, onProgress) => {
+    const body = new FormData();
+    body.append("kind", kind);
+    body.append("file", file);
+    return upload("/ingestion/preview", body, onProgress);
+  },
+  confirmUpload: (token) => request("/ingestion/confirm", { method: "POST", body: JSON.stringify({ token }) }),
+  discardUpload: (token) => request(`/ingestion/preview/${encodeURIComponent(token)}`, { method: "DELETE" }),
   getRunIssues: (id, p = {}) => request(`/ingestion/runs/${encodeURIComponent(id)}/issues${qs({ severity: p.severity, code: p.code, page: p.page })}`),
+  runIssuesXlsxUrl: (id, p = {}) => `${API_BASE}/ingestion/runs/${encodeURIComponent(id)}/issues.xlsx${qs({ severity: p.severity, code: p.code })}`,
   getRunReport: (id) => request(`/ingestion/runs/${encodeURIComponent(id)}/report`),
   getEscalationImports: () => request("/ingestion/escalation"),
+  checkColumns: (source) => {
+    if ("file" in source) {
+      const body = new FormData();
+      body.append("file", source.file);
+      return upload("/ingestion/column-check", body);
+    }
+    return "runId" in source
+      ? request(`/ingestion/runs/${encodeURIComponent(source.runId)}/column-check`)
+      : request(`/ingestion/escalation/${encodeURIComponent(source.escalationId)}/column-check`);
+  },
+  getColumnMap: () => request("/ingestion/column-map"),
+  addColumnNames: (body) => request("/ingestion/column-map", { method: "POST", body: JSON.stringify(body) }),
+  removeColumnName: (body) => request("/ingestion/column-map/remove", { method: "POST", body: JSON.stringify(body) }),
+  listPlanFiles: () => request("/plan-files"),
+  savePlanFile: (name, data) => request(`/plan-files/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ data }) }),
+  getPlanFileHistory: (name) => request(`/plan-files/${encodeURIComponent(name)}/history`),
+  reprocessRun: (id) => request(`/ingestion/runs/${encodeURIComponent(id)}/reprocess`, { method: "POST" }),
+  reprocessEscalation: (id) => request(`/ingestion/escalation/${encodeURIComponent(id)}/reprocess`, { method: "POST" }),
   getReconciliation: () => request("/ingestion/reconciliation"),
   listUsers: () => request("/users"),
   createUser: (body) => request("/users", { method: "POST", body: JSON.stringify(body) }),
   updateUser: (id, body) => request(`/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  importUsers: (file, dryRun) => {
+    const body = new FormData();
+    body.append("file", file);
+    return upload(`/users/import?dryRun=${dryRun ? "true" : "false"}`, body);
+  },
   getUserLocations: () => request("/users/locations"),
   getMailStatus: () => request("/mail/status"),
   getMailOptions: () => request("/mail/options"),
@@ -165,4 +208,73 @@ export const httpAdminApi: AdminApi = {
   deleteMailConfig: (id) => request(`/mail/configs/${id}/delete`, { method: "POST" }),
   previewMailRecipients: (id) => request(`/mail/configs/${id}/recipients`),
   listMailRuns: () => request("/mail/runs"),
+};
+
+export const httpTicketApi: TicketApi = {
+  getKpis: (scope) => request(`/tickets/kpis${qs({ scope })}`),
+  list: (q) =>
+    request(
+      `/tickets${qs({ scope: q.scope, search: q.search, status: q.status, priority: q.priority, date_from: q.dateFrom, date_to: q.dateTo, circle: q.circle, areaManager: q.areaManager, week: q.week, gp: q.gp, progressDate: q.progressDate, page: q.page, page_size: q.pageSize })}`,
+    ),
+  get: (id) => request(`/tickets/${id}`),
+  listAssignees: () => request("/tickets/assignees"),
+  create: (body) => request("/tickets", { method: "POST", body: JSON.stringify(body) }),
+  getDirectory: (circle, week) => request(`/tickets/directory${qs({ circle: circle ?? undefined, week })}`),
+  getFilterOptions: () => request("/tickets/filter-options"),
+  resendEmail: (id, recipientId) => request(`/tickets/${id}/recipients/${recipientId}/email`, { method: "POST" }),
+  start: (id) => request(`/tickets/${id}/start`, { method: "POST" }),
+  submit: (id, description, files, onProgress) => {
+    const body = new FormData();
+    body.append("description", description);
+    for (const f of files) body.append("attachments", f, f.name);
+    return upload(`/tickets/${id}/submit`, body, onProgress);
+  },
+  close: (id, comment) => request(`/tickets/${id}/close`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
+  remove: (id, reason) => request(`/tickets/${id}`, { method: "DELETE", body: JSON.stringify({ reason: reason || null }) }),
+  getShareContacts: (id) => request(`/tickets/${id}/share-contacts`),
+  share: (id, recipients, remark) => request(`/tickets/${id}/share`, { method: "POST", body: JSON.stringify({ recipients, remark }) }),
+  requestChanges: (id, comment) => request(`/tickets/${id}/request-changes`, { method: "POST", body: JSON.stringify({ comment }) }),
+  getNotifications: () => request("/tickets/notifications"),
+  markNotificationsRead: () => request("/tickets/notifications/read", { method: "POST" }),
+  attachmentUrl: (id, inline) => `${API_BASE}/tickets/attachments/${id}${inline ? "?inline=true" : ""}`,
+  getTaskAreaManagers: (week) => request(`/tickets/task/area-managers${qs({ week })}`),
+  getTaskPreview: (am, week, circle) => request(`/tickets/task/preview${qs({ am, week, circle })}`),
+  submitProgress: (id, items, note) => request(`/tickets/${id}/progress`, { method: "POST", body: JSON.stringify({ items, note: note || null }) }),
+  submitProgressForm: (id, items, note, proofs, onProgress, newGps) => {
+    const body = new FormData();
+    body.append("payload", JSON.stringify({ items, newGps: newGps ?? [], note: note || null }));
+    for (const p of proofs) {
+      body.append("proofs", p.file, p.file.name);
+      body.append("proofGps", String(p.taskGpId));
+    }
+    return upload(`/tickets/${id}/progress-form`, body, onProgress);
+  },
+  getReviewContacts: (id, role) => request(`/tickets/${id}/review-contacts${qs({ role })}`),
+  reviewGps: (id, body) => request(`/tickets/${id}/review`, { method: "POST", body: JSON.stringify(body) }),
+  progressFileUrl: (id, inline) => `${API_BASE}/tickets/progress-files/${id}${inline ? "?inline=true" : ""}`,
+  getGpMonitorSummary: (f, basis) => request(`/tickets/gp-monitor/summary${qs({ ...f, basis })}`),
+  listGpMonitor: (q) =>
+    request(`/tickets/gp-monitor${qs({ ...q, desc: q.desc === undefined ? undefined : String(q.desc), page_size: q.pageSize, pageSize: undefined })}`),
+  getGpMonitorDetail: (gpCode) => request(`/tickets/gp-monitor/gps/${encodeURIComponent(gpCode)}`),
+  taskWorkbookUrl: (id, kind) => `${API_BASE}/tickets/${id}/task/${kind}.xlsx`,
+};
+
+export const httpNdApi: NonDoableApi = {
+  getSummary: () => request("/nondoable/summary"),
+  listCases: (q) => request(`/nondoable/cases${qs({ status: q.status, q: q.q, mine: q.mine ? "true" : undefined, ticket: q.ticket, page: q.page, size: q.size })}`),
+  getCase: (id) => request(`/nondoable/cases/${id}`),
+  getContacts: (id, role) => request(`/nondoable/cases/${id}/contacts${qs({ role })}`),
+  submitForm: (id, kind, data, files, revisit, onProgress) => {
+    const body = new FormData();
+    body.append("payload", JSON.stringify(data));
+    if (revisit) body.append("kind", revisit);
+    for (const f of files.evidence) body.append("evidence", f, f.name);
+    for (const f of files.photos) body.append("photos", f, f.name);
+    return upload(`/nondoable/cases/${id}/${kind}`, body, onProgress);
+  },
+  act: (id, body) => request(`/nondoable/cases/${id}/action`, { method: "POST", body: JSON.stringify(body) }),
+  fileUrl: (id, inline) => `${API_BASE}/nondoable/files/${id}${inline ? "?inline=true" : ""}`,
+  listMgg: () => request("/nondoable/mgg"),
+  addMgg: (userId) => request("/nondoable/mgg", { method: "POST", body: JSON.stringify({ userId }) }),
+  removeMgg: (userId) => request(`/nondoable/mgg/${userId}/remove`, { method: "POST" }),
 };

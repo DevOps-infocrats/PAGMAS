@@ -105,7 +105,9 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "penaltyBlocks": int((block_avail < s.penalty_threshold).sum()),
         # State Performance Comparison: GPs below the penalty threshold (0% included), blocks above the healthy
         # threshold (block mean of AMC GPs, like penaltyBlocks) and the reporting bases of the percentages.
-        "gpsBelowPenalty": int((mtd < s.penalty_threshold).sum()),
+        # Workbook rule (O&M "GP Uptime Performance (AMC GPs)": the bands below 90% added up): the MTD value is
+        # rounded to 2 decimals first, so 89.996% counts as 90.00% (not below).
+        "gpsBelowPenalty": int((mtd.round(2) < s.penalty_threshold).sum()),
         "blocksAbove98": int((block_avail > s.healthy_threshold).sum()),
         "reportingGps": int(mtd.notna().sum()),
         "reportingBlocks": int(block_avail.notna().sum()),

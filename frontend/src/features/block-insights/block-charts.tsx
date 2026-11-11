@@ -242,7 +242,7 @@ export function BlockUptimeSection({
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h4 className="text-[15px] font-bold text-subheading">{chartTitle}</h4>
+              <h4 className="text-[0.9375rem] font-bold text-subheading">{chartTitle}</h4>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {known.length ? (
                   <>

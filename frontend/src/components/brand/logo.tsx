@@ -35,7 +35,7 @@ export function Logo({
       width={width}
       height={height}
       loading={eager ? "eager" : "lazy"}
-      style={{ width, height }}
+      style={{ width: `${width / 16}rem`, height: `${height / 16}rem` }}
       className={cn("select-none", className)}
       draggable={false}
     />

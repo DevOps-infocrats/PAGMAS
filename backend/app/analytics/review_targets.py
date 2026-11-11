@@ -130,6 +130,17 @@ def effective_plan(store: Store) -> tuple[_Plan | None, str | None, dict[str, st
     Returns (plan, problem, sources) – sources = {"YYYY-MM": "file" | "plan file" | "file + plan file"}.
     """
     plan, problem = load_plan()
+    if plan is not None and store.full_circles is not None:
+        # Data access: plan-file values are per whole state – kept only for circles the viewer has in full.
+        def keep(vals: dict[str, int | None]) -> dict[str, int | None]:
+            return {k: v for k, v in vals.items() if k.upper() in store.full_circles}
+
+        plan = plan.model_copy(
+            update={
+                "monthlyPlan": {m: keep(v) for m, v in plan.monthlyPlan.items()},
+                "weeklyClosureTargets": {w: keep(v) for w, v in plan.weeklyClosureTargets.items()},
+            }
+        )
     from_file = _file_month_plan(store)
     base_monthly = plan.monthlyPlan if plan else {}
     sources: dict[str, str] = {}
@@ -255,7 +266,7 @@ def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]
     total["projectedCoveragePct"] = _paired_pct(rows, "projection", "revisedScope")
 
     # Weekly closure targets – computed from the GP-wise plan block of the file, like AMC Conversion → Weekly:
-    #   new target = GPs whose Planned Date falls in the Fri–Thu week, achieved = Ach Date in the week (up to the
+    #   new target = GPs whose Planned Date falls in the week (as in the master data sheet), achieved = Ach Date in the week (up to the
     #   cutoff); old target = the manually set target of review_plan.json, shown next to it for comparison.
     # Weeks shown: the first WEEKS_FROM_START weeks of the plan (from the first manual week, else the first week of
     # the month) and the reporting week when it comes later – the table stays narrow as the months go on.
@@ -336,7 +347,7 @@ def targets_page(store: Store, p: ReportingPeriods, circles: list[dict[str, Any]
         "definitions": [
             _plan_source_note(month, future, plan_sources),
             f"{ml} MTD Achieved = GPs whose Ach Date (GP-wise plan block of the master data file) falls between 1 {D:%b} and {ach_cutoff:%d %b %Y} – the same count as AMC Conversion; % = of the {ml} plan.",
-            f"Weekly: new target = GPs whose Planned Date falls in the Fri–Thu week (master data file); old target = the manually set target ({PLAN_FILE}); achieved = GPs whose Ach Date falls in the week, up to {ach_cutoff:%d %b %Y}; weeks not started show —. A new target LOWER than the old target is highlighted in red. Shown: the first {WEEKS_FROM_START} weeks of the plan and the current week.",
+            f"Weekly: new target = GPs whose Planned Date falls in the week (as in the master data sheet) (master data file); old target = the manually set target ({PLAN_FILE}); achieved = GPs whose Ach Date falls in the week, up to {ach_cutoff:%d %b %Y}; weeks not started show —. A new target LOWER than the old target is highlighted in red. Shown: the first {WEEKS_FROM_START} weeks of the plan and the current week.",
             "Circle cards: GPs converted to AMC = GPs whose AMC date falls in the period (AMC + incremental); week vs previous week, month-to-date vs the same days of the previous month, last four weeks, and the AMC count at the end of the baseline month (amcBaselineMonth in the plan file).",
         ],
         "warnings": warnings,
@@ -355,7 +366,7 @@ def _target_change(new: float | int | None, old: float | int | None) -> float | 
 def _weekly_columns(store: Store, p: ReportingPeriods, plan: _Plan | None, month_start: dt.date, cutoff: dt.date) -> list[dict[str, Any]]:
     """Week columns of the weekly closure table: the first WEEKS_FROM_START weeks of the plan + the reporting week
     (if later). The plan starts at the first manually set week (review_plan.json), else the week holding the 1st of
-    the reporting month. Dates continue the file's Fri–Thu weeks after its last week."""
+    the reporting month. Dates continue the file's week (as in the master data sheet)s after its last week."""
     # Ordered by date, never by week number (numbers wrap W-52 -> W-1 at the year end).
     manual = [store.week_by_number(int(k[2:])) for k in (plan.weeklyClosureTargets if plan else {})]
     if manual:

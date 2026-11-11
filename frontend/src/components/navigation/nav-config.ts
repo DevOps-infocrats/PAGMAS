@@ -1,4 +1,4 @@
-import { Boxes, FileBarChart2, Mail, PhoneCall, Target, LayoutDashboard, Map, MapPin, ServerCog, Settings, Users, type LucideIcon } from "lucide-react";
+import { Ban, Boxes, ClipboardCheck, FileBarChart2, Mail, PhoneCall, Target, Ticket, LayoutDashboard, Map, MapPin, ServerCog, Settings, Users, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   label: string;
@@ -37,6 +37,15 @@ export const NAV: NavGroup[] = [
   {
     label: "Reporting",
     items: [{ label: "Management Review", href: "/dashboard/reports", icon: FileBarChart2 }],
+  },
+  {
+    // Admins assign and review work; every user sees the tickets assigned to them (rules enforced by the backend).
+    label: "Ticket Management",
+    items: [
+      { label: "Admin Tickets", href: "/dashboard/tickets/admin", icon: ClipboardCheck, adminOnly: true },
+      { label: "User Tickets", href: "/dashboard/tickets/user", icon: Ticket },
+      { label: "Non-Doable Cases", href: "/dashboard/tickets/non-doable", icon: Ban },
+    ],
   },
   {
     label: "Administration",

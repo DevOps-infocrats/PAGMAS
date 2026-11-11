@@ -22,7 +22,7 @@ export function Preloader() {
             <Logo variant="wordmark" width={168} eager />
           </div>
           <div className="fibre-track" aria-hidden />
-          <p className="splash-tagline mt-4 text-[12px] font-semibold uppercase tracking-[0.28em] text-[#9fb6c4]">Carving Lives · Network Analytics</p>
+          <p className="splash-tagline mt-4 text-[0.75rem] font-semibold uppercase tracking-[0.28em] text-[#9fb6c4]">Carving Lives · Network Analytics</p>
         </div>
       </div>
       <SplashController />

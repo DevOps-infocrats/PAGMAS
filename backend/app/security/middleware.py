@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from urllib.parse import urlparse
@@ -19,8 +20,12 @@ API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-act
 DOCS_CSP = "default-src 'self'; img-src 'self' data: https://fastapi.tiangolo.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; frame-ancestors 'none'"
 # Probes are polled every few seconds: no access log line and no rate limit.
 HEALTH_PATHS = frozenset({"/api/health", "/api/ready"})
-UPLOAD_PATHS = frozenset({"/api/v1/ingestion/upload"})
+UPLOAD_PATHS = frozenset({"/api/v1/ingestion/upload", "/api/v1/ingestion/preview", "/api/v1/ingestion/column-check", "/api/v1/users/import"})  # users/import checks its own 5 MB limit
 SMALL_BODY_BYTES = 64 * 1024
+# Work submissions and daily progress with proof documents of the Ticket Management module, and the Non-Doable forms
+# with evidence / site photographs (E1 verification, E2 justification, revisit): limit TICKET_UPLOAD_MAX_MB
+TICKET_UPLOAD_RE = re.compile(r"^/api/v1/(tickets/\d+/(submit|progress-form)|nondoable/cases/\d+/(verification|justification|revisit))$")
+MULTIPART_OVERHEAD = 1024 * 1024  # form boundaries and the description field
 
 
 class SecurityHeadersMiddleware:
@@ -69,12 +74,14 @@ class BodySizeLimitMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self.upload_bytes = get_settings().upload_max_mb * 1024 * 1024
+        self.ticket_bytes = get_settings().ticket_upload_max_mb * 1024 * 1024 + MULTIPART_OVERHEAD
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        max_bytes = self.upload_bytes if scope.get("path", "") in UPLOAD_PATHS else SMALL_BODY_BYTES
+        path = scope.get("path", "")
+        max_bytes = self.upload_bytes if path in UPLOAD_PATHS else self.ticket_bytes if TICKET_UPLOAD_RE.match(path) else SMALL_BODY_BYTES
         for k, v in scope.get("headers", []):
             if k == b"content-length" and v.isdigit() and int(v) > max_bytes:
                 await _plain(send, 413, b'{"detail":"Request body too large"}')

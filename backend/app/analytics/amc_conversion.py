@@ -8,7 +8,7 @@ Execution = GPs whose AMC date falls inside the month / week (AMC + incremental)
 
   Monthly: plan vs converted for every month of the plan; a month that has not started has no execution.
            Cumulative plan starts from the GPs already under AMC at the end of the month before the plan.
-  Weekly:  every week of the plan (Fri–Thu, continuing the file's weeks): target vs converted in the week.
+  Weekly:  every week of the plan (the sheet's week, continuing the file's weeks): target vs converted in the week.
 """
 
 from __future__ import annotations

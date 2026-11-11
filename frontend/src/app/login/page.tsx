@@ -18,18 +18,18 @@ export default function LoginPage() {
     <div className="login-scene relative isolate flex min-h-dvh overflow-hidden text-white">
       <NetworkBackdrop />
 
-      <div className="relative z-10 mx-auto grid w-full max-w-[1240px] items-center gap-12 px-5 py-10 sm:px-8 lg:grid-cols-[1.1fr_440px] lg:gap-16 lg:px-12">
+      <div className="relative z-10 mx-auto grid w-full max-w-[77.5rem] items-center gap-12 px-5 py-10 sm:px-8 lg:grid-cols-[1.1fr_27.5rem] lg:gap-16 lg:px-12">
         <section className="hidden lg:block">
           <Logo variant="full" width={170} eager className="-ml-5 -mt-6 drop-shadow-[0_6px_24px_rgb(25_189_74/0.25)]" />
-          <p className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11.5px] font-semibold uppercase tracking-[0.14em] text-[#9fe3b8] backdrop-blur">
+          <p className="mt-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[0.71875rem] font-semibold uppercase tracking-[0.14em] text-[#9fe3b8] backdrop-blur">
             <span className="size-1.5 rounded-full bg-[#19bd4a] shadow-[0_0_8px_#19bd4a]" aria-hidden />
             Network analytics
           </p>
-          <h2 className="mt-5 max-w-xl text-[42px] font-semibold leading-[1.12] tracking-tight">
+          <h2 className="mt-5 max-w-xl text-[2.625rem] font-semibold leading-[1.12] tracking-tight">
             One clear view of every{" "}
             <span className="bg-gradient-to-r from-[#3ddc74] via-[#22c3a6] to-[#38b6f0] bg-clip-text text-transparent">circle, block and Gram Panchayat.</span>
           </h2>
-          <p className="mt-4 max-w-lg text-[15px] leading-relaxed text-[#b7cad6]">
+          <p className="mt-4 max-w-lg text-[0.9375rem] leading-relaxed text-[#b7cad6]">
             HOTO progress, AMC coverage, availability and fibre route — in a single operations workspace.
           </p>
 
@@ -41,22 +41,22 @@ export default function LoginPage() {
                 </span>
                 <span>
                   <span className="block text-sm font-semibold text-white">{h.title}</span>
-                  <span className="block text-[13px] text-[#a9bfcc]">{h.text}</span>
+                  <span className="block text-[0.8125rem] text-[#a9bfcc]">{h.text}</span>
                 </span>
               </li>
             ))}
           </ul>
         </section>
 
-        <section className="mx-auto w-full max-w-[440px]">
-          <div className="login-card-in rounded-[22px] bg-gradient-to-br from-[#19bd4a] via-[#14a6a0] to-[#0a8fc4] p-[1.5px] shadow-[0_30px_80px_-20px_rgb(0_0_0/0.6),0_0_60px_-10px_rgb(10_143_196/0.45)]">
-            <div className="rounded-[21px] bg-card px-7 pb-7 pt-8 text-card-foreground sm:px-9 sm:pb-9">
+        <section className="mx-auto w-full max-w-[27.5rem]">
+          <div className="login-card-in rounded-[1.375rem] bg-gradient-to-br from-[#19bd4a] via-[#14a6a0] to-[#0a8fc4] p-[0.09375rem] shadow-[0_30px_80px_-20px_rgb(0_0_0/0.6),0_0_60px_-10px_rgb(10_143_196/0.45)]">
+            <div className="rounded-[1.3125rem] bg-card px-7 pb-7 pt-8 text-card-foreground sm:px-9 sm:pb-9">
               <div className="flex flex-col items-center text-center">
                 <span className="relative flex size-16 items-center justify-center rounded-2xl bg-gradient-to-br from-[#e9f9ef] to-[#e4f3fb] ring-1 ring-[#19bd4a]/20">
                   <span className="login-glow absolute inset-0 rounded-2xl" aria-hidden />
                   <Logo variant="mark" width={38} eager />
                 </span>
-                <h1 className="mt-5 text-[24px] font-semibold tracking-tight text-heading">Welcome back</h1>
+                <h1 className="mt-5 text-[1.5rem] font-semibold tracking-tight text-heading">Welcome back</h1>
                 <p className="mt-1 text-sm text-muted-foreground">Sign in to Pratap Network Analytics</p>
               </div>
 

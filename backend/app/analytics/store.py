@@ -92,6 +92,11 @@ class Store:
     amc_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
     # days in `daily` that come from the upload history (earlier files), not from the active file
     history_days: list[dt.date] = field(default_factory=list)
+    # Data access (see scoped_store): None = the whole dataset. Otherwise the viewer's areas, and the circles
+    # (upper-case names) given in full – state-level reference values (O&M numbers, plan targets, circle sheets)
+    # are kept only for those, never applied to part of a state.
+    scope_key: tuple[tuple[str, str], ...] | None = None
+    full_circles: frozenset[str] | None = None
     _week_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _memo: OrderedDict[tuple, Any] = field(default_factory=OrderedDict)
@@ -138,7 +143,7 @@ class Store:
         return self.weeks[-1]
 
     def week_containing(self, d: dt.date) -> Week:
-        """The file's Fri–Thu week holding `d`; outside the file's weeks the 7-day rhythm continues (numbers 1..52)."""
+        """The file's week (as in the master data sheet) holding `d`; outside the file's weeks the 7-day rhythm continues (numbers 1..52)."""
         for w in self.weeks:
             if w.start <= d <= w.end:
                 return w
@@ -364,6 +369,72 @@ def _cold_load() -> Store:
         return fresh
 
 
+# ---------------------------------------------------------------- data access (viewer areas)
+
+SCOPED_MAX = 16  # scoped snapshots kept (one per distinct set of areas)
+_scoped: OrderedDict[tuple, tuple[Store, Store]] = OrderedDict()
+_scoped_lock = threading.Lock()
+
+
+def scoped_store(base: Store, areas: tuple[tuple[str, str], ...]) -> Store | None:
+    """The part of `base` a viewer may see: the GPs of their areas (level, id) – circle / district / block ids as in
+    User Management – with every GP-wise frame cut to those GPs. All figures are then computed by the same code as
+    for the whole dataset, so totals are exactly the sum of the viewer's GPs. Areas not in the data are ignored
+    (never widened); None when no area matches. Cached per snapshot + areas (dropped with a new snapshot)."""
+    key = (base.dataset_id, areas)
+    with _scoped_lock:
+        hit = _scoped.get(key)
+        if hit is not None and hit[0] is base:
+            _scoped.move_to_end(key)
+            return hit[1]
+    g = base.gps
+    ids = {lvl: {i for l, i in areas if l == lvl} for lvl in ("circle", "district", "block")}
+    mask = (g["circle_id"].isin(ids["circle"]) | g["district_id"].isin(ids["district"]) | g["block_id"].isin(ids["block"])).to_numpy()
+    if not mask.any():
+        return None
+    idx = g.index[mask]
+    sub = g[mask]
+    full = frozenset(str(c).upper() for c in g.loc[g["circle_id"].isin(ids["circle"]), "circle"].unique())
+    # State-level reference rows: kept for circles given in full; rows that are not about a circle (e.g. the
+    # "W-35 END DATE" row of the O&M sheet) stay.
+    all_circles = {str(c).upper() for c in g["circle"].unique()}
+    rep = base.reported
+    if not rep.empty:
+        st = rep["state"].astype(str).str.upper()
+        rep = rep[st.isin(full) | ~st.isin(all_circles)]
+    # Master Block rows: every block of a full circle, else the blocks that have GPs in the viewer's areas.
+    mb = base.master_blocks
+    if not mb.empty:
+        st = mb["state"].astype(str).str.upper()
+        pairs = set(zip(sub["circle"].astype(str).str.upper(), sub["block_code"].astype(str)))
+        mb = mb[st.isin(full) | pd.Series([(s, str(b)) in pairs for s, b in zip(st, mb["block_code"])], index=mb.index)]
+    plan = base.amc_plan
+    scoped = Store(
+        dataset_id=base.dataset_id,
+        file_name=base.file_name,
+        imported_at=base.imported_at,
+        data_as_of=base.data_as_of,
+        gps=sub,
+        daily=base.daily.loc[idx],
+        weekly=base.weekly.loc[idx],
+        monthly=base.monthly.loc[idx],
+        monthly_amc=base.monthly_amc.loc[idx],
+        weeks=base.weeks,
+        reported=rep,
+        master_blocks=mb,
+        amc_plan=plan[plan.index.isin(idx)] if not plan.empty else plan,
+        history_days=base.history_days,
+        scope_key=areas,
+        full_circles=full,
+    )
+    with _scoped_lock:
+        _scoped[key] = (base, scoped)
+        _scoped.move_to_end(key)
+        while len(_scoped) > SCOPED_MAX:
+            _scoped.popitem(last=False)
+    return scoped
+
+
 def _wide(frame: pd.DataFrame, index: pd.Index, as_date: bool = False) -> pd.DataFrame:
     wide = frame.reindex(index)
     if as_date:
@@ -458,14 +529,32 @@ def _load() -> Store:
         weeks=weeks,
         reported=reported,
         master_blocks=mblocks,
-        amc_plan=_amc_plan(amc_plan, idx),
+        amc_plan=_amc_plan(amc_plan, idx, weeks, meta[3]),
     )
 
 
-def _amc_plan(df: pd.DataFrame, index: pd.Index) -> pd.DataFrame:
-    """Plan rows of GPs in the GP list, dates as datetime.date (None when blank)."""
+PLAN_DATE_SLACK_BEFORE = 92  # days before the file's first week a Planned / Ach Date may still be (earlier plans)
+PLAN_DATE_SLACK_AFTER = 366  # days after the data date a Planned Date may be (plans of the coming year)
+
+
+def plan_date_range(weeks: list[Week], data_as_of: dt.date) -> tuple[dt.date, dt.date]:
+    """Dates a GP-wise plan date can be valid in: from 3 months before the file's first week to one year after the data
+    date. Anything else is a typing error (11-01-2026 for 01-11-2026) and is not counted as a target / ready GP."""
+    first = weeks[0].start if weeks else data_as_of
+    return first - dt.timedelta(days=PLAN_DATE_SLACK_BEFORE), data_as_of + dt.timedelta(days=PLAN_DATE_SLACK_AFTER)
+
+
+def _amc_plan(df: pd.DataFrame, index: pd.Index, weeks: list[Week] | None = None, data_as_of: dt.date | None = None) -> pd.DataFrame:
+    """Plan rows of GPs in the GP list, dates as datetime.date (None when blank). A Planned Date / Ach Date outside
+    plan_date_range is set to None (never counted) and kept in planned_date_invalid / ach_date_invalid for the warnings."""
     df = df.set_index("gp_code")
     df = df[df.index.isin(index)]
     for c in ("planned_date", "ach_date", "letter_date"):
         df[c] = pd.to_datetime(df[c], errors="coerce").dt.date.where(df[c].notna(), None)
+    if data_as_of is not None:
+        lo, hi = plan_date_range(weeks or [], data_as_of)
+        for c in ("planned_date", "ach_date"):
+            bad = [isinstance(v, dt.date) and not (lo <= v <= hi) for v in df[c]]
+            df[f"{c}_invalid"] = [v if b else None for v, b in zip(df[c], bad)]
+            df[c] = [None if b else v for v, b in zip(df[c], bad)]
     return df

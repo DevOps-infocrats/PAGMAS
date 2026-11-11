@@ -18,11 +18,13 @@ import {
   type MailAudience,
   type MailConfigBody,
   type MailConfigItem,
+  type MailExtraRecipient,
   type MailOptions,
   type MailPreview,
   type MailRunItem,
   type MailStatus,
   type MailTemplateItem,
+  type ScopeLevel,
 } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 
@@ -152,8 +154,8 @@ function SchedulesTab({ tz, options, templates, onChanged }: { tz: string; optio
     <Card className="p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-[15px] font-bold text-subheading">Schedules</h2>
-          <p className="text-[13px] text-muted-foreground">Who gets which template, when. Saving or enabling a schedule never sends an e-mail – it only sets the next send time.</p>
+          <h2 className="text-[0.9375rem] font-bold text-subheading">Schedules</h2>
+          <p className="text-[0.8125rem] text-muted-foreground">Who gets which template, when. Saving or enabling a schedule never sends an e-mail – it only sets the next send time.</p>
         </div>
         <Button variant="primary" onClick={() => setEditing("new")} disabled={!options}>
           <Plus /> New schedule
@@ -167,7 +169,7 @@ function SchedulesTab({ tz, options, templates, onChanged }: { tz: string; optio
         <p className="text-sm text-muted-foreground">No schedule yet. Use “New schedule”.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-sm">
+          <table className="w-full min-w-[56.25rem] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 {["Name", "Recipients", "Template", "When", "Next send", "Last run", "Status", ""].map((c) => (
@@ -182,7 +184,7 @@ function SchedulesTab({ tz, options, templates, onChanged }: { tz: string; optio
                 <tr key={c.id} className="border-b border-border/60 align-top last:border-0">
                   <td className="py-2.5 pr-3 font-medium">{c.name}</td>
                   <td className="py-2.5 pr-3">
-                    {c.audiences.map((a) => AUDIENCE_LABEL[a]).join(", ")}
+                    {[...c.audiences.map((a) => AUDIENCE_LABEL[a]), ...(c.extraRecipients?.length ? [`${c.extraRecipients.length} extra recipient${c.extraRecipients.length > 1 ? "s" : ""}`] : [])].join(", ")}
                     <div className="text-xs text-muted-foreground">{filterSummary(c, options)}</div>
                   </td>
                   <td className="py-2.5 pr-3">{c.templateName}</td>
@@ -300,6 +302,7 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
           filterBlocks: config.filterBlocks,
           filterPeople: config.filterPeople,
           userIds: config.userIds,
+          extraRecipients: config.extraRecipients ?? [],
           frequency: config.frequency,
           startDate: config.startDate,
           sendTime: config.sendTime,
@@ -316,6 +319,7 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
           filterBlocks: [],
           filterPeople: [],
           userIds: [],
+          extraRecipients: [],
           frequency: "daily",
           startDate: today,
           sendTime: "09:00",
@@ -333,7 +337,7 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
   const bas = options.filters.businessAreas.filter((b) => inCircles(b.circleId));
   const blocks = options.filters.blocks.filter((b) => inCircles(b.circleId));
   const people = options.people.filter((p) => f.audiences.includes(p.role) && inCircles(p.circleId));
-  const valid = f.name.trim().length >= 2 && f.audiences.length > 0 && /^\d{2}:\d{2}$/.test(f.sendTime) && !!f.startDate;
+  const valid = f.name.trim().length >= 2 && (f.audiences.length > 0 || f.extraRecipients.length > 0) && /^\d{2}:\d{2}$/.test(f.sendTime) && !!f.startDate;
 
   const save = async () => {
     setBusy(true);
@@ -370,7 +374,7 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
           <DialogTitle className="flex items-center gap-2 text-base font-bold">
             <CalendarClock className="size-4" /> {config ? "Edit schedule" : "New schedule"}
           </DialogTitle>
-          <DialogDescription className="text-[13px] text-muted-foreground">Each recipient gets one e-mail with only their own GPs. Saving does not send anything.</DialogDescription>
+          <DialogDescription className="text-[0.8125rem] text-muted-foreground">Each recipient gets one e-mail with only their own GPs. Saving does not send anything.</DialogDescription>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -395,6 +399,7 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
           </div>
           {!options.hasMatrix && f.audiences.some((a) => a !== "users") && <p className="text-xs text-warning-text">No Escalation Matrix uploaded – Area Managers, SME and COH come from it.</p>}
           <p className="text-xs text-muted-foreground">Area Managers get their own GPs (block-wise). SME and COH get their circle (area-manager-wise). Dashboard users get their assigned areas.</p>
+          <ExtraRecipients value={f.extraRecipients} onChange={(v) => set("extraRecipients", v)} locations={options.locations ?? []} />
         </Section>
 
         <Section title="2. Which area (optional – empty = everything)">
@@ -522,6 +527,115 @@ function ConfigDialog({ config, options, templates, timezone, onDone }: { config
   );
 }
 
+const AREA_LEVELS: { value: ScopeLevel; label: string }[] = [
+  { value: "circle", label: "State" },
+  { value: "district", label: "District" },
+  { value: "block", label: "Block" },
+];
+
+/** People typed in by the admin (not in the Escalation Matrix, no account). Each one gets their own e-mail with
+ *  only the chosen states / districts / blocks (none = every state), within the schedule's area filters. */
+function ExtraRecipients({ value, onChange, locations }: { value: MailExtraRecipient[]; onChange: (v: MailExtraRecipient[]) => void; locations: MailOptions["locations"] }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [level, setLevel] = useState<ScopeLevel>("circle");
+  const [pick, setPick] = useState<string | undefined>();
+  const [areas, setAreas] = useState<MailExtraRecipient["areas"]>([]);
+  const options = useMemo(() => {
+    const out: Record<ScopeLevel, { value: string; label: string }[]> = { circle: [], district: [], block: [] };
+    for (const c of locations) {
+      out.circle.push({ value: c.id, label: c.name });
+      for (const d of c.districts) {
+        out.district.push({ value: d.id, label: `${d.name} (${c.name})` });
+        for (const b of d.blocks) out.block.push({ value: b.id, label: `${b.name} (${d.name}, ${c.name})` });
+      }
+    }
+    return out;
+  }, [locations]);
+  const label = (a: MailExtraRecipient["areas"][number]) => options[a.level].find((o) => o.value === a.id)?.label ?? `${a.id} (not in the current data)`;
+  const address = email.trim().toLowerCase();
+  const duplicate = value.some((x) => x.email.toLowerCase() === address);
+  const emailOk = EMAIL_RE.test(address) && !duplicate;
+
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border p-2.5">
+      <span className="text-xs font-medium text-muted-foreground">Extra recipients (people not in the Escalation Matrix – each gets their own e-mail for the areas chosen)</span>
+      {value.length > 0 && (
+        <ul className="space-y-1.5">
+          {value.map((x) => (
+            <li key={x.email} className="flex items-start justify-between gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs">
+              <div>
+                <span className="font-medium">{x.name || x.email}</span>
+                {x.name && <span className="text-muted-foreground"> · {x.email}</span>}
+                <div className="text-muted-foreground">{x.areas.length ? x.areas.map(label).join("; ") : "All states"}</div>
+              </div>
+              <button type="button" className="rounded p-0.5 hover:bg-primary/15" aria-label={`Remove ${x.email}`} onClick={() => onChange(value.filter((y) => y !== x))}>
+                <X className="size-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <Input aria-label="Extra recipient name" placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+        <Input aria-label="Extra recipient e-mail" type="email" placeholder="E-mail address" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={254} />
+      </div>
+      {duplicate && <p className="text-xs text-warning-text">This address is already in the list.</p>}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Select
+          ariaLabel="Area level"
+          className="w-full sm:w-32"
+          value={level}
+          onValueChange={(v) => {
+            setLevel(v as ScopeLevel);
+            setPick(undefined);
+          }}
+          options={AREA_LEVELS}
+        />
+        <SearchableSelect className="flex-1" label="Area" hideLabel value={pick} onChange={setPick} options={options[level]} placeholder="Area (optional – none = all states)…" />
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!pick}
+          onClick={() => {
+            if (pick && !areas.some((a) => a.level === level && a.id === pick)) setAreas([...areas, { level, id: pick }]);
+            setPick(undefined);
+          }}
+        >
+          <Plus /> Area
+        </Button>
+      </div>
+      {areas.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {areas.map((a) => (
+            <li key={`${a.level}:${a.id}`} className="inline-flex items-center gap-1 rounded bg-primary-soft py-0.5 pl-2 pr-1 text-xs text-primary">
+              {label(a)}
+              <button type="button" className="rounded p-0.5 hover:bg-primary/15" aria-label="Remove area" onClick={() => setAreas(areas.filter((x) => x !== a))}>
+                <X className="size-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={!emailOk || value.length >= 50}
+        onClick={() => {
+          onChange([...value, { email: address, name: name.trim() || null, areas }]);
+          setName("");
+          setEmail("");
+          setAreas([]);
+          setPick(undefined);
+        }}
+      >
+        <Plus /> Add recipient{areas.length ? "" : " (all states)"}
+      </Button>
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <fieldset className="space-y-2.5 rounded-lg border border-border p-3">
@@ -555,7 +669,7 @@ function RecipientsDialog({ config, templates }: { config: MailConfigItem; templ
     <DialogContent className="top-[5vh] max-h-[90vh] max-w-3xl overflow-y-auto">
       <div className="space-y-3 p-5">
         <DialogTitle className="text-base font-bold">Recipients – {config.name}</DialogTitle>
-        <DialogDescription className="text-[13px] text-muted-foreground">Who would receive the next e-mail and what each one covers. Nothing is sent from here.</DialogDescription>
+        <DialogDescription className="text-[0.8125rem] text-muted-foreground">Who would receive the next e-mail and what each one covers. Nothing is sent from here.</DialogDescription>
         {q.error ? (
           <ErrorState error={q.error} onRetry={q.reload} />
         ) : !q.data ? (
@@ -567,6 +681,7 @@ function RecipientsDialog({ config, templates }: { config: MailConfigItem; templ
             <p className="text-sm">
               <b>{q.data.recipients.length}</b> e-mail(s) · <b>{q.data.skipped.length}</b> skipped
             </p>
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -593,6 +708,7 @@ function RecipientsDialog({ config, templates }: { config: MailConfigItem; templ
                 ))}
               </tbody>
             </table>
+            </div>
             {q.data.skipped.length > 0 && (
               <div>
                 <h3 className="mb-1 text-sm font-semibold">Not sent to</h3>
@@ -631,7 +747,7 @@ function PreviewFrame({ preview }: { preview: MailPreview }) {
         <span className="text-muted-foreground">Subject:</span> <b>{preview.subject}</b>
       </p>
       {/* sandboxed: the preview HTML cannot run scripts or reach the page */}
-      <iframe title="E-mail preview" sandbox="" srcDoc={preview.html} className="h-[420px] w-full rounded-lg border border-border bg-white" />
+      <iframe title="E-mail preview" sandbox="" srcDoc={preview.html} className="h-[26.25rem] w-full rounded-lg border border-border bg-white" />
     </div>
   );
 }
@@ -657,8 +773,8 @@ function TemplatesTab({ templates, options, onChanged }: { templates: ReturnType
     <Card className="p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-[15px] font-bold text-subheading">Templates</h2>
-          <p className="text-[13px] text-muted-foreground">
+          <h2 className="text-[0.9375rem] font-bold text-subheading">Templates</h2>
+          <p className="text-[0.8125rem] text-muted-foreground">
             Text with placeholders such as {"{{recipient_name}}"} or {"{{breakdown_table}}"}, filled per recipient. Built-in templates can be edited and reset; your own
             ones can also be deleted.
           </p>
@@ -770,7 +886,7 @@ function TemplateDialog({ template, options, onDone }: { template: MailTemplateI
       <div className="grid grid-cols-1 gap-5 p-5 lg:grid-cols-2">
         <div className="space-y-3">
           <DialogTitle className="text-base font-bold">{template ? `Edit “${template.name}”` : "New template"}</DialogTitle>
-          <DialogDescription className="text-[13px] text-muted-foreground">Click a placeholder to insert it. Tables must stand on their own line.</DialogDescription>
+          <DialogDescription className="text-[0.8125rem] text-muted-foreground">Click a placeholder to insert it. Tables must stand on their own line.</DialogDescription>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="t-name">Name</Label>
@@ -794,7 +910,7 @@ function TemplateDialog({ template, options, onDone }: { template: MailTemplateI
               onChange={(e) => setBody(e.target.value)}
               rows={14}
               maxLength={20000}
-              className="w-full rounded-md border border-input bg-card px-3 py-2 font-mono text-[13px] leading-relaxed shadow-xs focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
+              className="w-full rounded-md border border-input bg-card px-3 py-2 font-mono text-[0.8125rem] leading-relaxed shadow-xs focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/25"
             />
           </div>
           <div className="space-y-1">
@@ -806,13 +922,13 @@ function TemplateDialog({ template, options, onDone }: { template: MailTemplateI
                   type="button"
                   title={p.description}
                   onClick={() => insert(p.name, p.table)}
-                  className={cn("rounded px-1.5 py-0.5 font-mono text-[11px] hover:brightness-95", p.table ? "bg-good-soft text-good-text" : "bg-primary-soft text-primary")}
+                  className={cn("rounded px-1.5 py-0.5 font-mono text-[0.6875rem] hover:brightness-95", p.table ? "bg-good-soft text-good-text" : "bg-primary-soft text-primary")}
                 >
                   {p.name}
                 </button>
               ))}
             </div>
-            <p className="text-[11px] text-muted-foreground">Blue = text value · green = table</p>
+            <p className="text-[0.6875rem] text-muted-foreground">Blue = text value · green = table</p>
           </div>
           {error && <p className="text-sm text-critical-text">{error}</p>}
           <div className="flex justify-end">
@@ -830,7 +946,7 @@ function TemplateDialog({ template, options, onDone }: { template: MailTemplateI
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">Renders the e-mail exactly as this person would get it. Nothing is sent.</p>
-          {preview ? <PreviewFrame preview={preview} /> : <div className="grid h-[420px] place-items-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">Preview appears here</div>}
+          {preview ? <PreviewFrame preview={preview} /> : <div className="grid h-[26.25rem] place-items-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">Preview appears here</div>}
         </div>
       </div>
     </DialogContent>
@@ -843,8 +959,8 @@ function RunsTab({ tz, tick }: { tz: string; tick: number }) {
   const runs = useApiQuery(`mail-runs:${tick}`, () => adminApi.listMailRuns());
   return (
     <Card className="p-5">
-      <h2 className="text-[15px] font-bold text-subheading">Run history</h2>
-      <p className="mb-4 text-[13px] text-muted-foreground">One row per scheduled send. A send missed for more than 6 hours (server not running) is skipped, not sent late.</p>
+      <h2 className="text-[0.9375rem] font-bold text-subheading">Run history</h2>
+      <p className="mb-4 text-[0.8125rem] text-muted-foreground">One row per scheduled send. A send missed for more than 6 hours (server not running) is skipped, not sent late.</p>
       {runs.error ? (
         <ErrorState error={runs.error} onRetry={runs.reload} />
       ) : !runs.data ? (
@@ -853,7 +969,7 @@ function RunsTab({ tz, tick }: { tz: string; tick: number }) {
         <p className="text-sm text-muted-foreground">Nothing has been sent yet.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full min-w-[45rem] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 {["Schedule", "Planned for", "Status", "Sent", "Failed", "Skipped", "Note"].map((c) => (
@@ -874,7 +990,7 @@ function RunsTab({ tz, tick }: { tz: string; tick: number }) {
                   <td className="py-2.5 pr-3 tabular-nums">{r.sent}</td>
                   <td className="py-2.5 pr-3 tabular-nums">{r.failed}</td>
                   <td className="py-2.5 pr-3 tabular-nums">{r.skipped}</td>
-                  <td className="max-w-[380px] py-2.5 pr-3 text-xs text-muted-foreground">{r.message ?? ""}</td>
+                  <td className="max-w-[23.75rem] py-2.5 pr-3 text-xs text-muted-foreground">{r.message ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -888,8 +1004,8 @@ function RunsTab({ tz, tick }: { tz: string; tick: number }) {
 function StatusCard({ status, error, onRetry }: { status?: MailStatus; error?: Error; onRetry: () => void }) {
   return (
     <Card className="p-5">
-      <h2 className="text-[15px] font-bold text-subheading">Mail server (SMTP)</h2>
-      <p className="mb-4 text-[13px] text-muted-foreground">Read from the MAIL_* settings in backend/.env. The password is never shown.</p>
+      <h2 className="text-[0.9375rem] font-bold text-subheading">Mail server (SMTP)</h2>
+      <p className="mb-4 text-[0.8125rem] text-muted-foreground">Read from the MAIL_* settings in backend/.env. The password is never shown.</p>
       {error ? (
         <ErrorState error={error} onRetry={onRetry} />
       ) : !status ? (
@@ -938,8 +1054,8 @@ function TestMailCard({ configured }: { configured: boolean }) {
 
   return (
     <Card className="p-5">
-      <h2 className="text-[15px] font-bold text-subheading">Send Test Mail</h2>
-      <p className="mb-4 text-[13px] text-muted-foreground">Sends one short test message to check the SMTP settings. No report is built and no schedule runs.</p>
+      <h2 className="text-[0.9375rem] font-bold text-subheading">Send Test Mail</h2>
+      <p className="mb-4 text-[0.8125rem] text-muted-foreground">Sends one short test message to check the SMTP settings. No report is built and no schedule runs.</p>
       <form
         className="flex flex-col gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {

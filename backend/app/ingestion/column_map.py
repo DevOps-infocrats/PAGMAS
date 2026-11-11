@@ -99,6 +99,7 @@ ESCALATION_COLUMNS: dict[str, tuple[str, ...]] = {
     "splicer_phone": ("Splicer Contact No.", "Splicer Contact No", "Splicer Contact Number", "Splicer number"),
     "fe_name": ("FE Name",),
     "fe_phone": ("FE Contact No", "FE Contact No.", "FE Contact Number", "FE Number"),
+    "fe_email": ("FE Email ID", "FE Email", "FE Mail ID", "FE E-mail ID"),
     "am_name": ("AM Name",),
     "am_phone": ("AM Contact No", "AM Contact No.", "AM Contact Number", "AM Number"),
     "am_email": ("AM Email ID", "AM Email", "AM Mail ID"),

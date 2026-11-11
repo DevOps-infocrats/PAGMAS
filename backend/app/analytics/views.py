@@ -61,6 +61,43 @@ def kpis(store: Store, mask: Any, week: str, compare: str, keys: list[str]) -> l
 # ---------------------------------------------------------------- meta / lookups
 
 
+_recomputed_cache: dict[int, list[dict[str, str]]] = {}
+
+
+def recomputed_weeks(dataset_id: int) -> list[dict[str, str]]:
+    """Weeks whose GP availability was recomputed from the daily values at import (the file's weekly column did not
+    match the daily data): [{"id": "W-41", "note": "…"}]. Read once per dataset from its validation issues."""
+    cached = _recomputed_cache.get(dataset_id)
+    if cached is not None:
+        return cached
+    from sqlalchemy import select
+
+    from ..db import SessionLocal
+    from ..models import ValidationIssue
+
+    out: list[dict[str, str]] = []
+    with SessionLocal() as db:
+        for msg in db.scalars(select(ValidationIssue.message).where(ValidationIssue.dataset_id == dataset_id, ValidationIssue.code == "WEEK_RECOMPUTED")):
+            code = (msg or "").split(" ", 1)[0]
+            if not code.startswith("W-"):
+                continue
+            head, sep, _examples = msg.partition(";")  # drop the GP examples after "… W-41 column;"
+            out.append({"id": code, "note": head.rstrip() + (")" if sep else "")})
+    _recomputed_cache[dataset_id] = out
+    return out
+
+
+def data_age_days(as_of: dt.date) -> int:
+    """Whole days between the data date and today (reporting timezone)."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        today = dt.datetime.now(ZoneInfo(get_settings().report_timezone)).date()
+    except Exception:  # noqa: BLE001 - unknown zone: UTC
+        today = dt.datetime.now(dt.UTC).date()
+    return max(0, (today - as_of).days)
+
+
 def meta(store: Store) -> dict[str, Any]:
     g = store.gps
     s = get_settings()
@@ -71,6 +108,9 @@ def meta(store: Store) -> dict[str, Any]:
         "weeks": [week_json(w) for w in store.weeks],
         "latestWeekId": store.latest_week.code,
         "dataAsOf": store.data_as_of.isoformat(),
+        "dataAgeDays": data_age_days(store.data_as_of),
+        "staleAfterDays": s.stale_data_days,
+        "recomputedWeeks": recomputed_weeks(store.dataset_id),
         "datasetFileName": store.file_name,
         "importedAt": clean(store.imported_at),
         "thresholds": {"healthy": s.healthy_threshold, "penalty": s.penalty_threshold},

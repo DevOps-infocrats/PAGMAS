@@ -81,11 +81,11 @@ import from `api/`, and the frontend only ever talks to `/api/v1` through `src/l
 
 ```powershell
 # 1. API  (http://127.0.0.1:8010)
-cd E:\PRATAP\BSNL\backend
+cd E:\BSNL\BSNL\backend
 .\start.ps1
 
 # 2. Dashboard  (http://localhost:3000)
-cd E:\PRATAP\BSNL\frontend
+cd E:\BSNL\BSNL\frontend
 npm install
 npm run dev
 ```
@@ -119,7 +119,8 @@ Only about 3 MB of it is source code. The rest is generated or company data, all
 | `frontend/.next` | ~400 MB | Next.js dev/build cache | yes – recreated on the next `npm run dev` / `build` |
 | `backend/.venv` | ~530 MB | Python packages (pandas, numpy, FastAPI …) | yes – `pip install -r requirements-dev.txt` restores it |
 | `data/uploads` | ~170 MB | every workbook uploaded so far (many duplicates) | old/failed uploads are now pruned automatically |
-| `backend/var/app.db` | ~55 MB | old SQLite database from before the PostgreSQL move | yes, once PostgreSQL is confirmed as the live database |
+
+The old SQLite database from before the PostgreSQL move (`backend/var/app.db`, ~55 MB) was moved out of the project to `E:\BSNL\BACKUP_20261110_1605\old_sqlite`.
 
 ## Weekly routine
 

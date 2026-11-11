@@ -1,9 +1,10 @@
-"""Low-level workbook access (xlsb / xlsx / xlsm) via python-calamine."""
+"""Low-level workbook access (xlsb / xlsx) via python-calamine, and the file checks every data upload passes first."""
 
 from __future__ import annotations
 
 import datetime as dt
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +13,12 @@ from python_calamine import CalamineWorkbook
 Cell = Any
 Grid = list[list[Cell]]
 
-ALLOWED_SUFFIXES = {".xlsb", ".xlsx", ".xlsm"}
-# Both xlsx/xlsm and xlsb are ZIP containers -> must start with the ZIP local-file signature.
+# Macro workbooks (.xlsm) are refused: the data files never need macros and a macro file is a needless risk.
+ALLOWED_SUFFIXES = {".xlsb", ".xlsx"}
+# Both xlsx and xlsb are ZIP containers -> must start with the ZIP local-file signature.
 ZIP_MAGIC = b"PK\x03\x04"
+# The part every genuine workbook package has (a renamed ZIP / document does not)
+WORKBOOK_PART = {".xlsx": "xl/workbook.xml", ".xlsb": "xl/workbook.bin"}
 
 
 class WorkbookError(Exception):
@@ -22,11 +26,46 @@ class WorkbookError(Exception):
 
 
 def check_file_signature(path: Path) -> None:
-    if path.suffix.lower() not in ALLOWED_SUFFIXES:
+    """Layered file checks, cheapest first (fail fast): type -> empty -> ZIP signature -> genuine workbook package ->
+    zip-bomb guard. Only then is the file handed to the workbook reader."""
+    suffix = path.suffix.lower()
+    if suffix == ".xlsm":
+        raise WorkbookError("Macro workbooks (.xlsm) are not accepted – save the file as .xlsx or .xlsb (Excel: File → Save As) and upload again")
+    if suffix not in ALLOWED_SUFFIXES:
         raise WorkbookError(f"Unsupported file type '{path.suffix}'. Allowed: {', '.join(sorted(ALLOWED_SUFFIXES))}")
+    size = path.stat().st_size
+    if size == 0:
+        raise WorkbookError("The file is empty (0 bytes) – please choose the workbook again")
     with path.open("rb") as fh:
         if fh.read(4) != ZIP_MAGIC:
-            raise WorkbookError("File content is not a valid Excel workbook")
+            raise WorkbookError("File content is not a valid Excel workbook (it may be a renamed file of another type)")
+    check_package(path, size)
+
+
+def check_package(path: Path, size: int | None = None) -> None:
+    """The ZIP must be a real workbook package of its type and must not expand absurdly (zip bomb): limits come from
+    ZIP_MAX_UNCOMPRESSED_MB / ZIP_MAX_RATIO (the real master file is ~7 MB -> ~60 MB, ~9x)."""
+    from ..config import get_settings
+
+    s = get_settings()
+    size = size if size is not None else path.stat().st_size
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            names = {i.filename for i in infos}
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        raise WorkbookError(f"The file is damaged and cannot be opened as an Excel workbook ({type(exc).__name__})") from None
+    part = WORKBOOK_PART.get(path.suffix.lower())
+    if "[Content_Types].xml" not in names or (part and part not in names):
+        other = next((k for k, v in WORKBOOK_PART.items() if v in names and k != path.suffix.lower()), None)
+        hint = f" – it looks like a {other} file with the wrong extension" if other else ""
+        raise WorkbookError(f"The file is not a genuine {path.suffix.lower()} workbook{hint}")
+    expanded = sum(i.file_size for i in infos)
+    if expanded > s.zip_max_uncompressed_mb * 1024 * 1024 or expanded > max(size, 1) * s.zip_max_ratio:
+        raise WorkbookError(
+            f"The file expands to {expanded / 1024 / 1024:,.0f} MB when opened ({expanded / max(size, 1):,.0f}x its size) – refused as unsafe "
+            f"(limits {s.zip_max_uncompressed_mb} MB, {s.zip_max_ratio}x)"
+        )
 
 
 def open_workbook(path: Path) -> CalamineWorkbook:

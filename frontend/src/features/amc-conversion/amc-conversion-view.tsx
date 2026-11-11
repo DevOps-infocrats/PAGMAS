@@ -6,8 +6,8 @@ import { TitleBar, ViewHint } from "@/components/layout/page-header";
 import { useMeta } from "@/components/providers/data-provider";
 import { useFilters } from "@/hooks/use-filters";
 import { AMC_PATH, AMC_VIEWS, amcViewFrom } from "@/lib/amc-views";
-import { AmcPlanSummaryView } from "./amc-plan-summary";
-import { AmcPlanTimelineView } from "./amc-plan-timeline";
+import { AmcPeriodChips, AmcPlanSummaryView } from "./amc-plan-summary";
+import { AmcPlanTimelineView, AmcTimelineDateChip } from "./amc-plan-timeline";
 
 /**
  * AMC Conversion – Plan vs Execution, one view at a time (?view=, sidebar sub-menu):
@@ -24,6 +24,9 @@ export function AmcConversionView() {
     return `${base}${base.includes("?") ? "&" : "?"}view=${view.id}`;
   })();
   const planPage = view.id === "monthly" || view.id === "weekly";
+  // Every view: the state picker sits on the right of the title bar (no filter row below it, so the bar is shorter),
+  // and the data date is shown in the bar instead of a separate line under it.
+  const summary = view.id === "summary";
   return (
     <div className={planPage ? "space-y-3" : "space-y-5"}>
       {/* ---------------- Title bar: same in every view, like the other pages ---------------- */}
@@ -35,11 +38,27 @@ export function AmcConversionView() {
         ]}
         title={stateName ?? "AMC Conversion Plan vs Execution"}
         view={view.title}
-        note={stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."}
+        note={
+          summary ? (
+            <>
+              {stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."} <AmcPeriodChips />
+            </>
+          ) : planPage ? (
+            <>
+              {stateName ? "AMC conversion plan vs execution of this state." : "All states – select a state to see only its figures."}{" "}
+              <AmcTimelineDateChip view={view.id as "monthly" | "weekly"} />
+            </>
+          ) : stateName ? (
+            "AMC conversion plan vs execution of this state."
+          ) : (
+            "All states – select a state to see only its figures."
+          )
+        }
         compact={planPage}
+        aside={summary || planPage ? <CircleFilter className="w-full sm:w-60" /> : undefined}
       >
         {/* State (shared filter); the view is kept */}
-        <CircleFilter className="sm:w-full" />
+        {summary || planPage ? null : <CircleFilter className="sm:w-full" />}
       </TitleBar>
       <div key={view.id} className={planPage ? "view-in space-y-3" : "view-in space-y-5"}>
         <ViewHint>{view.hint}</ViewHint>

@@ -22,5 +22,5 @@ export function Skeleton({ className }: { className?: string }) {
 }
 
 export function Label({ className, ...props }: React.ComponentProps<"label">) {
-  return <label className={cn("text-[13px] font-medium text-foreground", className)} {...props} />;
+  return <label className={cn("text-[0.8125rem] font-medium text-foreground", className)} {...props} />;
 }

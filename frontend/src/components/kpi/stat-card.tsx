@@ -91,14 +91,14 @@ export function StatCard({
         >
           <Icon className="size-3.5" />
         </span>
-        <span className="text-[13px] font-bold text-subheading">{label}</span>
+        <span className="text-[0.8125rem] font-bold text-subheading">{label}</span>
         <span className={cn(href && "relative z-10")}>
           <InfoTip label={label} content={info} />
         </span>
       </div>
       <p className={cn("flex items-baseline gap-1.5", dense ? "mt-1" : "mt-1.5")}>
-        <span className={cn("tabular font-bold leading-none tracking-tight text-heading", dense ? "text-[22px]" : compact ? "text-[24px]" : "text-[26px]")}>{value}</span>
-        {unit && <span className="text-[13px] font-medium text-muted-foreground">{unit}</span>}
+        <span className={cn("tabular font-bold leading-none tracking-tight text-heading", dense ? "text-[1.375rem]" : compact ? "text-[1.5rem]" : "text-[1.625rem]")}>{value}</span>
+        {unit && <span className="text-[0.8125rem] font-medium text-muted-foreground">{unit}</span>}
       </p>
       {caption && <p className={cn("text-xs text-muted-foreground", dense ? "mt-0.5" : "mt-1")}>{caption}</p>}
       {href && (
@@ -124,7 +124,7 @@ export function StatCard({
         </div>
       )}
       {breakdown && (
-        <dl className={cn("text-[13px]", dense ? "space-y-0.5" : "space-y-1")}>
+        <dl className={cn("text-[0.8125rem]", dense ? "space-y-0.5" : "space-y-1")}>
           {breakdown.map((b) => (
             <div key={b.label} className="flex items-center justify-between gap-3">
               <dt className="flex min-w-0 items-center gap-2 text-muted-foreground">
@@ -154,7 +154,7 @@ export function StatCard({
         className,
       )}
     >
-      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: tone }} aria-hidden />
+      <span className="absolute inset-x-0 top-0 h-[0.1875rem]" style={{ background: tone }} aria-hidden />
       {layout === "split" && details ? (
         <div className="grid flex-1 grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] sm:items-center">
           {headline}

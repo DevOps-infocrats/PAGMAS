@@ -101,7 +101,7 @@ export function KpiTabs({
                 active && "bg-primary-soft/40",
               )}
             >
-              {active && <span className="brand-gradient absolute inset-x-0 top-0 h-[3px]" aria-hidden />}
+              {active && <span className="brand-gradient absolute inset-x-0 top-0 h-[0.1875rem]" aria-hidden />}
               <KpiBody kpi={k} def={metric(k.key)} compareLabel={compareLabel} periodLabel={periodLabel} />
             </div>
           );
@@ -109,7 +109,7 @@ export function KpiTabs({
       </div>
       <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={selected ? `${baseId}-tab-${selected.key}` : undefined} className="p-4 pt-3">
         {selected && (
-          <p className="px-1 pb-1 text-[13px] text-muted-foreground">
+          <p className="px-1 pb-1 text-[0.8125rem] text-muted-foreground">
             <span className="font-medium text-foreground">{metric(selected.key).label}</span> · weekly trend, last {weeks.length} reporting weeks
           </p>
         )}

@@ -257,10 +257,32 @@ def render(subject: str, body: str, v: dict[str, Any]) -> Rendered:
         note = "Note: the active data file has no GP-wise AMC plan (Planned Date / Ach Date), so all figures are 0."
         text_lines.insert(0, note + "\n")
         html_parts.insert(0, f'<p style="color:#9a5b00">{escape(note)}</p>')
-    text = "\n".join(text_lines) + f"\n\n{FOOTER}\nThis is an automatic e-mail from Pratap Network Analytics."
-    html = (
-        '<div style="font-family:Segoe UI,Arial,sans-serif;color:#1f2a37;font-size:14px;line-height:1.5">'
-        + "".join(html_parts)
-        + f'<p style="margin-top:18px;color:#5b6675;font-size:12px">{escape(FOOTER)}<br>This is an automatic e-mail from Pratap Network Analytics.</p></div>'
-    )
+    html, text = _in_layout(v, html_parts, text_lines)
     return Rendered(subj, text, html)
+
+
+def _in_layout(v: dict[str, Any], html_parts: list[str], text_lines: list[str]) -> tuple[str, str]:
+    """The admin's template text (already escaped HTML / plain text) inside the PAGMAS e-mail layout, with the KPI
+    tiles of the same figures (target, achieved, %, overdue – only what the AMC plan logic computes)."""
+    from . import layout as L
+
+    overdue = str(v.get("overdue", "0")).replace(",", "")
+    late = overdue.isdigit() and int(overdue) > 0
+    email = L.Email(
+        title="AMC Conversion status",
+        badge="Action Required" if late else "For Information",
+        badge_tone="warning" if late else "info",
+        reference=" · ".join(x for x in (str(v.get("area") or ""), str(v.get("recipient_role") or "")) if x) or None,
+        date=f"Data as of {v.get('data_date')}" if v.get("data_date") else None,
+        kpis=[
+            L.Kpi(f"Month target · {v.get('month', '')}".strip(" ·"), str(v.get("month_target", "—")), "info"),
+            L.Kpi("Achieved so far", str(v.get("mtd_achieved", "—")), "good", f"of {v.get('mtd_target', '—')} due · {v.get('mtd_pct', '—')}"),
+            L.Kpi("Overdue", str(v.get("overdue", "—")), "critical" if late else "good", "planned, not yet achieved"),
+            L.Kpi(f"Week target · {v.get('week', '')}".strip(" ·"), str(v.get("week_target", "—")), "neutral", v.get("week_range")),
+            L.Kpi("Week achieved", str(v.get("week_achieved", "—")), "good", str(v.get("week_pct", "—"))),
+        ],
+        sections=[L.Section("Report", html="".join(html_parts), text="\n".join(text_lines))],
+        action=L.Action(f"{v.get('overdue')} planned GP(s) are not yet achieved – please complete the pending conversions.", who=str(v.get("recipient_role") or "") or None) if late else None,
+        notes=[FOOTER],
+    )
+    return L.render(email)[0], L.text(email)

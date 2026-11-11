@@ -20,9 +20,9 @@ const pct = (a: number, b: number) =>
   b ? `${((a / b) * 100).toFixed(1)}%` : "NA";
 
 /**
- * Five headline KPIs of one block:
- *  1. Total GPs (existing / new / revised), HOTO Done GPs (done / pending), AMC GPs (AMC / incremental / non-AMC), Non-AMC GPs
- *  2. Total fibre route (BSNL / BBNL)
+ * Five headline KPIs of one block, 3 per row:
+ *  1. Total GPs (existing / new / revised), HOTO Done GPs (done / pending), AMC GPs (AMC / incremental / non-AMC)
+ *  2. Non-AMC GPs, Total fibre route (BSNL / BBNL)
  * AMC GPs and Non-AMC GPs open the GP lists of this block; Back returns here.
  */
 export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
@@ -33,8 +33,9 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
   const notApplicable = s ? s.existingGps - s.revisedExisting : 0;
   return (
     <div className="space-y-3">
-      {/* Row 1: Total GPs, HOTO Done GPs, AMC GPs, Non-AMC GPs (2 per row on tablets, 1 on phones) */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {/* 3 per row on wide screens: row 1 = Total GPs, HOTO Done GPs, AMC GPs; row 2 = Non-AMC GPs, Total Fibre Route
+          (2 per row on tablets, 1 on phones) */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <StatCard
           compact
           dense
@@ -198,10 +199,6 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
           href={kpiListHref(listBase, "non-amc-gps", "block")}
           linkLabel={KPI_LISTS["non-amc-gps"].linkLabel}
         />
-      </div>
-
-      {/* Row 2: fibre route – same 4-column grid as row 1, so the card has the standard width */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           compact
           dense

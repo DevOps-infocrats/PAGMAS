@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate, formatPercent } from "@/lib/utils/format";
 import { BODY_ROW, HEAD_ROW, RowHead, TableCard, Td, Th } from "@/features/amc-conversion/table-ui";
 import { ChainCell, FieldError, MaskNote, Pager, SearchBox, step } from "./field-parts";
+import { EscalationSheetView } from "./escalation-sheet";
 import { TeamDirectory } from "./team-directory";
 
 const STATE_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-7)"];
@@ -33,7 +34,7 @@ export function FieldTeamView() {
   const { filters, hrefTo } = useFilters();
   const view = FIELD_VIEWS.find((v) => v.id === fieldViewFrom(params.get("view")))!;
   const stateName = meta?.circles.find((c) => c.id === filters.circle)?.name;
-  const located = view.id === "lookup" || view.id === "down" || view.id === "gaps";
+  const located = view.id === "lookup" || view.id === "down" || view.id === "gaps" || view.id === "sheet";
   const base = hrefTo(FIELD_PATH, { circle: undefined, district: undefined, block: undefined, gp: undefined });
   const pageHref = `${base}${base.includes("?") ? "&" : "?"}view=${view.id}`;
   return (
@@ -66,6 +67,7 @@ function ViewBody({ id }: { id: FieldViewId }) {
   if (id === "workload") return <WorkloadView />;
   if (id === "down") return <DownView />;
   if (id === "gaps") return <GapsView />;
+  if (id === "sheet") return <EscalationSheetView />;
   return <SummaryView />;
 }
 
@@ -114,7 +116,7 @@ function SummaryView() {
     <div className="space-y-5">
       {r && <Source fileName={r.source.fileName} importedAt={r.source.importedAt} asOf={r.asOf} week={r.week.label} />}
       <section aria-label="Field team" className="space-y-2.5">
-        <h2 className="text-[13px] font-extrabold uppercase tracking-[0.08em] text-subheading">Field team – each person counted once</h2>
+        <h2 className="text-[0.8125rem] font-extrabold uppercase tracking-[0.08em] text-subheading">Field team – each person counted once</h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <StatCard
             compact
@@ -228,7 +230,7 @@ function LookupView() {
       ) : (
         <TableCard title="Escalation chain by GP" description={`${formatCount(d.total)} GPs · call in this order: FRT → Splicer → FE → AM → SHQ SPOC → COH → CBH`}>
           <div className={cn("overflow-x-auto rounded-lg border border-border", res.loading && "opacity-60")}>
-            <table className="w-full min-w-[1150px] text-[13px]">
+            <table className="w-full min-w-[71.875rem] text-[0.8125rem]">
               <caption className="sr-only">Escalation chain by GP</caption>
               <thead>
                 <tr className={HEAD_ROW}>
@@ -244,10 +246,10 @@ function LookupView() {
                 {d.items.map((g) => (
                   <tr key={g.id} className={cn(BODY_ROW, "align-top")}>
                     <RowHead>
-                      <span className="block max-w-[180px] truncate" title={g.name}>
+                      <span className="block max-w-[11.25rem] truncate" title={g.name}>
                         {g.name}
                       </span>
-                      <span className="block text-[11px] font-normal text-muted-foreground">
+                      <span className="block text-[0.6875rem] font-normal text-muted-foreground">
                         {g.code} · {g.block}, {g.district}
                       </span>
                     </RowHead>
@@ -298,8 +300,8 @@ function WorkloadView() {
           description={`${formatCount(d.people)} ${roleLabel === "FRT team" ? "teams" : "people"} · ${formatCount(d.avgGps ?? null)} GPs on average, up to ${formatCount(d.maxGps ?? null)}${d.unassignedGps ? ` · ${formatCount(d.unassignedGps)} GPs without a ${roleLabel}` : ""}`}
           actions={<Segmented<FieldRole> ariaLabel="Role" value={role} onChange={setRole} options={ROLES} />}
         >
-          <div className={cn("max-h-[640px] overflow-auto rounded-lg border border-border", q.loading && "opacity-60")}>
-            <table className="w-full min-w-[860px] text-[13px]">
+          <div className={cn("max-h-[40rem] overflow-auto rounded-lg border border-border", q.loading && "opacity-60")}>
+            <table className="w-full min-w-[53.75rem] text-[0.8125rem]">
               <caption className="sr-only">{d.roleLabel} workload</caption>
               <thead className="sticky top-0 z-20">
                 <tr className={HEAD_ROW}>
@@ -381,7 +383,7 @@ function DownView() {
           }
         >
           <div className={cn("overflow-x-auto rounded-lg border border-border", res.loading && "opacity-60")}>
-            <table className="w-full min-w-[1000px] text-[13px]">
+            <table className="w-full min-w-[62.5rem] text-[0.8125rem]">
               <caption className="sr-only">Down GPs with their field team</caption>
               <thead>
                 <tr className={HEAD_ROW}>
@@ -398,10 +400,10 @@ function DownView() {
                 {d.items.map((g) => (
                   <tr key={g.id} className={cn(BODY_ROW, "align-top", g.noSplicer && "bg-critical-soft/30")}>
                     <RowHead>
-                      <span className="block max-w-[200px] truncate" title={g.name}>
+                      <span className="block max-w-[12.5rem] truncate" title={g.name}>
                         {g.name}
                       </span>
-                      <span className="block text-[11px] font-normal text-muted-foreground">
+                      <span className="block text-[0.6875rem] font-normal text-muted-foreground">
                         {g.code} · {g.block}, {g.circle}
                       </span>
                     </RowHead>
@@ -445,7 +447,7 @@ function GapsView() {
         <>
           <TableCard title="Gaps in the Escalation Matrix" description="Click a row to list its GPs">
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[640px] text-[13px]">
+              <table className="w-full min-w-[40rem] text-[0.8125rem]">
                 <caption className="sr-only">Gaps in the Escalation Matrix by state</caption>
                 <thead>
                   <tr className={HEAD_ROW}>
@@ -492,7 +494,7 @@ function GapsView() {
               <MaskNote masked={d.phonesMasked} />
               <TableCard title={active.label} description={`${formatCount(d.total ?? 0)} GPs`}>
                 <div className={cn("overflow-x-auto rounded-lg border border-border", res.loading && "opacity-60")}>
-                  <table className="w-full min-w-[1000px] text-[13px]">
+                  <table className="w-full min-w-[62.5rem] text-[0.8125rem]">
                     <caption className="sr-only">{active.label}</caption>
                     <thead>
                       <tr className={HEAD_ROW}>
@@ -509,10 +511,10 @@ function GapsView() {
                       {d.items.map((g) => (
                         <tr key={g.id} className={cn(BODY_ROW, "align-top")}>
                           <RowHead>
-                            <span className="block max-w-[200px] truncate" title={g.name}>
+                            <span className="block max-w-[12.5rem] truncate" title={g.name}>
                               {g.name}
                             </span>
-                            <span className="block text-[11px] font-normal text-muted-foreground">
+                            <span className="block text-[0.6875rem] font-normal text-muted-foreground">
                               {g.code} · {g.block}, {g.circle}
                             </span>
                           </RowHead>

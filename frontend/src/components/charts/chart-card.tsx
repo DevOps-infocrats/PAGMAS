@@ -49,12 +49,12 @@ export function ChartCard({
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-gradient-to-r from-primary-soft/70 via-card to-card px-5 py-3 sm:flex-nowrap">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="brand-gradient-v h-[18px] w-1 shrink-0 rounded-full" aria-hidden />
-            <h3 className="text-[15.5px] font-bold text-subheading">{title}</h3>
+            <span className="brand-gradient-v h-[1.125rem] w-1 shrink-0 rounded-full" aria-hidden />
+            <h3 className="text-[0.96875rem] font-bold text-subheading">{title}</h3>
             {info && <InfoTip label={title} content={info} />}
           </div>
           {(description || period) && (
-            <p className="mt-0.5 pl-3 text-[13px] leading-relaxed text-subheading/70">
+            <p className="mt-0.5 pl-3 text-[0.8125rem] leading-relaxed text-subheading/70">
               {description}
               {description && period && " · "}
               {period && <span className="text-subtle-foreground">{period}</span>}
@@ -97,7 +97,7 @@ export function ChartCard({
         ) : empty ? (
           <EmptyState title="Nothing to show" description={emptyMessage} />
         ) : view === "table" && table ? (
-          <div className="overflow-auto px-1" style={{ maxHeight: height + 40 }}>
+          <div className="overflow-auto px-1" style={{ maxHeight: `${(height + 40) / 16}rem` }}>
             {table}
           </div>
         ) : (
@@ -111,11 +111,11 @@ export function ChartCard({
 /** Small accessible table used as the "table view" of a chart. */
 export function MiniTable({ columns, rows }: { columns: string[]; rows: (string | number)[][] }) {
   return (
-    <table className="w-full text-[13px]">
+    <table className="w-full text-[0.8125rem]">
       <thead className="sticky top-0 bg-table-head">
         <tr className="border-b border-border text-left text-heading">
           {columns.map((c, i) => (
-            <th key={c} scope="col" className={cn("px-2.5 py-2 text-[12.5px] font-semibold", i > 0 && "text-right")}>
+            <th key={c} scope="col" className={cn("px-2.5 py-2 text-[0.78125rem] font-semibold", i > 0 && "text-right")}>
               {c}
             </th>
           ))}

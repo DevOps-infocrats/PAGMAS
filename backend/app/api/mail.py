@@ -25,10 +25,10 @@ from ..config import get_settings
 from ..db import get_db
 from ..mail import service
 from ..mail import template as tpl
-from ..mail.audience import AUDIENCE_LABELS, AUDIENCES, _json_list, filter_options, matrix_frame, matrix_people, recipients
+from ..mail.audience import AUDIENCE_LABELS, AUDIENCES, Assignment, _json_list, check_assignments, filter_options, location_tree, matrix_frame, matrix_people, recipients
 from ..mail.report import ReportContext
 from ..mail.schedule import Schedule, ScheduleError, describe, validate
-from ..mail.smtp import MailError, send_test_mail, smtp_status
+from ..mail.smtp import MailError, send_test_mail, smtp_status, valid_address
 from ..models import MailConfig, MailRun, MailTemplate, User
 from ..security.deps import CurrentUser, audit, require_admin
 
@@ -110,6 +110,7 @@ def options(db: Session = Depends(get_db)) -> dict:
         "hasMatrix": st is not None and matrix_frame(st) is not None,
         "audiences": [{"id": a, "label": AUDIENCE_LABELS[a]} for a in AUDIENCES],
         "filters": filter_options(st) if st is not None else {"circles": [], "businessAreas": [], "blocks": []},
+        "locations": location_tree(st) if st is not None else [],  # area picker of the extra recipients
         "people": people,
         "users": [{"id": u.id, "name": u.name, "email": u.email, "role": u.role} for u in db.scalars(select(User).where(User.is_active.is_(True)).order_by(func.lower(User.name)))],
         "placeholders": [{"name": k, "description": v, "table": k in tpl.TABLE_PLACEHOLDERS} for k, v in tpl.ALL_PLACEHOLDERS.items()],
@@ -220,16 +221,31 @@ def preview_template(body: PreviewIn, db: Session = Depends(get_db)) -> dict:
     if not people:
         raise HTTPException(status.HTTP_409_CONFLICT, "No recipient to preview – check the Escalation Matrix e-mails or the schedule's filters")
     r = service.compose(ReportContext(st), body.subject, body.body, people[0])
-    return {"recipient": {"name": people[0].name, "role": people[0].role_label, "emails": people[0].emails}, "subject": r.subject, "html": r.html, "text": r.text}
+    from ..mail.layout import LOGO_CID
+
+    html = r.html.replace(f"cid:{LOGO_CID}", "/brand/pratap-wordmark.png")  # the browser preview shows the dashboard's own logo file
+    return {"recipient": {"name": people[0].name, "role": people[0].role_label, "emails": people[0].emails}, "subject": r.subject, "html": html, "text": r.text}
 
 
 # ---------------------------------------------------------------- schedules
 
 
+class AreaIn(BaseModel):
+    level: Literal["circle", "district", "block"]
+    id: str = Field(min_length=1, max_length=120)
+
+
+class ExtraRecipientIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    name: str | None = Field(default=None, max_length=120)
+    areas: list[AreaIn] = Field(default_factory=list, max_length=100)  # [] = every circle (within the filters)
+
+
 class ConfigIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     template_id: int | None = Field(default=None, alias="templateId")
-    audiences: list[Audience] = Field(min_length=1, max_length=4)
+    audiences: list[Audience] = Field(default_factory=list, max_length=4)
+    extra_recipients: list[ExtraRecipientIn] = Field(default_factory=list, alias="extraRecipients", max_length=50)
     filter_circles: list[str] = Field(default_factory=list, alias="filterCircles", max_length=50)
     filter_bas: list[str] = Field(default_factory=list, alias="filterBusinessAreas", max_length=200)
     filter_blocks: list[str] = Field(default_factory=list, alias="filterBlocks", max_length=2000)
@@ -259,6 +275,7 @@ def _config_json(c: MailConfig, templates: dict[int, str]) -> dict:
         "filterBlocks": _json_list(c.filter_blocks),
         "filterPeople": _json_list(c.filter_people),
         "userIds": _json_list(c.user_ids),
+        "extraRecipients": _json_list(c.extra_recipients),
         "frequency": c.frequency,
         "startDate": c.start_date.isoformat(),
         "sendTime": c.send_time,
@@ -286,6 +303,17 @@ def _apply(c: MailConfig, body: ConfigIn, db: Session) -> None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
     if body.template_id is not None and db.get(MailTemplate, body.template_id) is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown template")
+    if not body.audiences and not body.extra_recipients:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Choose at least one audience or add an extra recipient")
+    extras: dict[str, dict] = {}
+    for x in body.extra_recipients:
+        addr = valid_address(x.email)
+        if not addr:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Not a valid e-mail address: {x.email[:80]}")
+        if addr in extras:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Extra recipient added twice: {addr}")
+        areas = list(dict.fromkeys((a.level, a.id.strip()) for a in x.areas))
+        extras[addr] = {"email": addr, "name": " ".join((x.name or "").split()) or None, "areas": [{"level": lv, "id": i} for lv, i in areas]}
     ids = sorted(set(body.user_ids)) if "users" in body.audiences else []
     if ids:
         known = set(db.scalars(select(User.id).where(User.id.in_(ids))))
@@ -301,12 +329,16 @@ def _apply(c: MailConfig, body: ConfigIn, db: Session) -> None:
             bad += [x for x in body.filter_people if x not in {p.id for p in matrix_people(st)}]
         if bad:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown filter value(s): {', '.join(map(str, bad[:5]))}")
+        areas = [Assignment(a["level"], a["id"]) for x in extras.values() for a in x["areas"]]
+        if areas and (problems := check_assignments(st, areas)):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Extra recipients: " + "; ".join(problems[:5]))
     c.name = body.name.strip()
     c.template_id = body.template_id
     c.audiences = json.dumps(list(dict.fromkeys(body.audiences)))
     c.filter_circles, c.filter_bas = json.dumps(sorted(set(body.filter_circles))), json.dumps(sorted({b.strip() for b in body.filter_bas}))
     c.filter_blocks, c.filter_people = json.dumps(sorted(set(body.filter_blocks))), json.dumps(sorted(set(body.filter_people)))
     c.user_ids = json.dumps(ids)
+    c.extra_recipients = json.dumps(list(extras.values()))
     c.frequency, c.start_date, c.send_time, c.weekday, c.month_day = s.frequency, s.start_date, s.send_time, s.weekday, s.month_day
     c.enabled = body.enabled
     try:

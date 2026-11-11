@@ -6,6 +6,7 @@ import { LifecycleBadge } from "@/components/feedback/badges";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/feedback/states";
 import { BlockFilter, CircleFilter, DistrictFilter } from "@/components/filters/filter-bar";
 import { SearchableSelect } from "@/components/filters/searchable-select";
+import { BackLink } from "@/components/layout/back-link";
 import { RelatedViews, TitleBar, ViewHint } from "@/components/layout/page-header";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
@@ -13,6 +14,7 @@ import { useDefaultSelection } from "@/hooks/use-default-selection";
 import { useFilters } from "@/hooks/use-filters";
 import { api, type GpDetailResponse } from "@/lib/api";
 import { GP_PATH, GP_VIEWS, gpViewFrom, type GpViewId } from "@/lib/gp-views";
+import { useInsightsNav } from "@/lib/insights-back";
 import { formatDate } from "@/lib/utils/format";
 import { GpKpis } from "./gp-kpis";
 import { GpUptimeSection } from "./gp-uptime";
@@ -36,6 +38,8 @@ export function GpInsightsView() {
     const base = hrefTo(GP_PATH);
     return `${base}${base.includes("?") ? "&" : "?"}view=${id}`;
   };
+  // Summary: "Back to <block> block" when opened from Block Insights; a sub-view: "Back to Summary (KPIs)" when opened from its links.
+  const { back, withFrom } = useInsightsNav("gp", viewId);
 
   return (
     <div className="space-y-5">
@@ -56,7 +60,14 @@ export function GpInsightsView() {
         view={view.title}
         period={period ? `${period.week.label} · ${formatDate(period.week.startDate)} – ${formatDate(period.week.endDate)}` : "Loading period…"}
         note={d ? `LGD ${d.gp.lgdCode} · ID ${d.gp.id.toUpperCase()}` : "Select a Gram Panchayat to see its details."}
-        aside={d && <LifecycleBadge status={d.gp.lifecycle} />}
+        aside={
+          back || d ? (
+            <>
+              <BackLink back={back} />
+              {d && <LifecycleBadge status={d.gp.lifecycle} />}
+            </>
+          ) : undefined
+        }
       >
         {/* All pickers change this page; the view is kept */}
         <CircleFilter required className="sm:w-full" />
@@ -91,7 +102,7 @@ export function GpInsightsView() {
             <RelatedViews
               label="More in GP Insights"
               title="More for this GP"
-              items={GP_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: viewHref(v.id), title: v.title }))}
+              items={GP_VIEWS.filter((v) => v.id !== "summary").map((v) => ({ href: withFrom(viewHref(v.id)), title: v.title }))}
             />
           )}
         </section>

@@ -58,6 +58,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _relax_not_null()
 
 
 # Nullable columns added after a table first shipped: create_all does not alter existing tables.
@@ -68,8 +69,18 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "shq_email": "VARCHAR(200)",
         "coh_email": "VARCHAR(200)",
         "cbh_email": "VARCHAR(200)",
+        "fe_email": "VARCHAR(200)",
     },
     "gp_amc_plan": {"approval_status": "VARCHAR(60)"},
+    "mail_configs": {"extra_recipients": "TEXT"},
+    "tickets": {"circle": "VARCHAR(80)", "deleted_at": "TIMESTAMP WITH TIME ZONE", "deleted_by_name": "VARCHAR(120)"},
+    "ticket_tasks": {"circle": "VARCHAR(80)", "cbh_name": "VARCHAR(160)"},
+    "ticket_task_gps": {
+        "fe_name": "VARCHAR(120)", "fe_email": "VARCHAR(200)", "gp_category": "VARCHAR(1)", "review": "VARCHAR(20)", "review_at": "TIMESTAMP WITH TIME ZONE",
+        "letter_date": "DATE", "amc_on": "DATE", "added_by": "VARCHAR(120)",
+    },
+    "ticket_progress_lines": {"category": "VARCHAR(1)"},
+    "ticket_recipients": {"am_name": "VARCHAR(160)", "fe_mail": "VARCHAR(200)"},
 }
 
 
@@ -85,3 +96,23 @@ def _add_missing_columns() -> None:
             for name, ddl in columns.items():
                 if name not in have:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
+# Columns that became optional after the table first shipped (create_all never alters an existing table).
+RELAXED_COLUMNS = {"gps": ("total_rkm",)}  # blank TOTAL RKM = not reported, stored as NULL (never invented as 0)
+
+
+def _relax_not_null() -> None:
+    if not is_postgres():  # SQLite test databases are created from the current models
+        return
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    for table, names in RELAXED_COLUMNS.items():
+        if not insp.has_table(table):
+            continue
+        cols = {c["name"]: c for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name in names:
+                if name in cols and not cols[name]["nullable"]:
+                    conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {name} DROP NOT NULL"))
