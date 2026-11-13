@@ -18,7 +18,9 @@
 /docs/*.pdf
 
 #devops
-deployment/
+#deployment/
+#docker-compose.yml
+
+
 docker-compose.yml
-
-
+deployment/
