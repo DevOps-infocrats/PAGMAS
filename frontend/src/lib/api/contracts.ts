@@ -30,6 +30,11 @@ export interface MetaResponse {
   blocks: Pick<Block, "id" | "name" | "code" | "circleId" | "districtId">[];
   /** Last day with data in the imported file (live mode only) */
   dataAsOf?: string;
+  /** Days between dataAsOf and today; the dashboard warns above staleAfterDays */
+  dataAgeDays?: number;
+  staleAfterDays?: number;
+  /** Weeks whose availability was recomputed from the daily values (the file's weekly column did not match them) */
+  recomputedWeeks?: { id: string; note: string }[];
   datasetFileName?: string;
   importedAt?: string | null;
   thresholds?: { healthy: number; penalty: number };
@@ -57,6 +62,8 @@ export interface OverviewDetail {
   hotoPendingBlocks: number;
   hotoDoneGps: number;
   hotoPendingGps: number;
+  /** AMC GPs not classified Incremental in the source column (= amcOriginalGps) */
+  amcAtHotoGps: number;
   amcGps: number;
   amcOriginalGps: number;
   incrementalGps: number;
@@ -67,10 +74,18 @@ export interface OverviewDetail {
   gpsAtZero: number;
   naGps: number;
   penaltyBlocks: number;
+  /** AMC GPs with MTD availability below the penalty threshold (0% included) */
+  gpsBelowPenalty: number;
+  /** Blocks whose mean AMC GP availability (MTD) is above the healthy threshold */
+  blocksAbove98: number;
+  /** AMC GPs / blocks with an MTD availability value (base of the availability percentages) */
+  reportingGps: number;
+  reportingBlocks: number;
   oneTimeUp: number;
   totalRkm: number;
-  bsnlRkm: number;
-  bbnlRkm: number;
+  /** null = the file has no BSNL / BBNL Live KM column (NA, never 0) */
+  bsnlRkm: number | null;
+  bbnlRkm: number | null;
   amcRkm: number;
   rkmPartsDifference: number | null;
 }
@@ -238,6 +253,8 @@ export interface GpDetailResponse {
   olt: Olt | null;
   addedWeek: ReportingWeek | null;
   revisedExisting: boolean;
+  /** HOTO status of the GP's block (done = at least one GP of the block handed over by the week end); live backend only */
+  blockHoto?: { done: boolean; hotoDoneGps: number; totalGps: number };
   issues: DataQualityIssue[];
   dataAsOf?: string;
   /** Availability per period column next to the GP's block value (live backend only) */
@@ -627,6 +644,17 @@ export interface RunIssuesResponse {
   items: { row: number | null; column: string | null; gpCode: string | null; severity: string; code: string; message: string; sheet: string }[];
 }
 
+export type ScopeLevel = "circle" | "district" | "block";
+
+/** One circle / district / block a viewer receives in the AMC Conversion e-mails. */
+export interface UserScope {
+  level: ScopeLevel;
+  id: string;
+  /** null when the area is no longer in the active data (then it is ignored) */
+  label: string | null;
+  valid: boolean;
+}
+
 export interface AppUser {
   id: number;
   email: string;
@@ -635,12 +663,182 @@ export interface AppUser {
   isActive: boolean;
   lastLoginAt: string | null;
   locked: boolean;
+  /** viewers only; admins receive every circle */
+  scopes: UserScope[];
+}
+
+export interface UserLocations {
+  hasData: boolean;
+  circles: { id: string; name: string; districts: { id: string; name: string; blocks: { id: string; name: string }[] }[] }[];
+}
+
+export interface UserCreateBody {
+  email: string;
+  name: string;
+  role: "admin" | "viewer";
+  password: string;
+  scopes?: { level: ScopeLevel; id: string }[];
+}
+
+/** Bulk import of dashboard users from an Excel / CSV file (Name + Email columns) */
+export interface UserImportItem {
+  /** row number in the file, as Excel shows it */
+  row: number;
+  name: string;
+  email: string;
+  /** NEW = will be created (preview), CREATED = created, EXISTS = already a user (not changed), SKIPPED = problem in the row */
+  status: "NEW" | "CREATED" | "EXISTS" | "SKIPPED";
+  reason: string | null;
+}
+
+export interface UserImportResult {
+  dryRun: boolean;
+  fileName: string | null;
+  total: number;
+  new: number;
+  created: number;
+  exists: number;
+  skipped: number;
+  temporaryPassword: string;
+  items: UserImportItem[];
+}
+
+export interface UserUpdateBody {
+  name?: string;
+  email?: string;
+  role?: "admin" | "viewer";
+  isActive?: boolean;
+  password?: string;
+  scopes?: { level: ScopeLevel; id: string }[];
+}
+
+/* ---------------------------------------------------------------- Mail Configuration */
+
+/** CBH is stored from the Escalation Matrix as a backup only and is never mailed. */
+export type MailAudience = "am" | "sme" | "coh" | "users";
+export type MailFrequency = "daily" | "weekly" | "monthly";
+
+export interface MailStatus {
+  smtp: { configured: boolean; problems: string[]; server: string | null; port: number | null; security: "SSL" | "STARTTLS" | "none"; usernameSet: boolean; sender: string | null };
+  /** AMC_REPORT_EMAILS_ENABLED – master switch of the scheduled e-mails */
+  reportEmailsEnabled: boolean;
+  approvalEmailsEnabled: boolean;
+  schedulerRunning: boolean;
+  timezone: string;
+}
+
+/** A person of the Escalation Matrix (Area Manager / SME / COH) */
+export interface MailPerson {
+  id: string;
+  role: Exclude<MailAudience, "users">;
+  roleLabel: string;
+  name: string;
+  circleId: string;
+  circle: string;
+  emails: string[];
+  gps: number;
+  businessAreas: string[];
+}
+
+export interface MailOptions {
+  hasData: boolean;
+  hasMatrix: boolean;
+  audiences: { id: MailAudience; label: string }[];
+  filters: { circles: { id: string; name: string }[]; businessAreas: { name: string; circleId: string }[]; blocks: { id: string; circleId: string; name: string }[] };
+  people: MailPerson[];
+  users: { id: number; name: string; email: string; role: string }[];
+  placeholders: { name: string; description: string; table: boolean }[];
+  /** circles → districts → blocks of the active data (area picker of the extra recipients) */
+  locations: UserLocations["circles"];
+}
+
+/** A person typed in on a schedule (not in the Escalation Matrix, no account); no areas = every circle. */
+export interface MailExtraRecipient {
+  email: string;
+  name: string | null;
+  areas: { level: ScopeLevel; id: string }[];
+}
+
+export interface MailTemplateItem {
+  id: number;
+  key: string | null;
+  builtIn: boolean;
+  name: string;
+  description: string | null;
+  subject: string;
+  body: string;
+  usedBy: number;
+  updatedAt: string | null;
+}
+
+export interface MailTemplateBody {
+  name: string;
+  description: string | null;
+  subject: string;
+  body: string;
+}
+
+export interface MailPreview {
+  recipient: { name: string; role: string; emails: string[] };
+  subject: string;
+  html: string;
+  text: string;
+}
+
+export interface MailConfigBody {
+  name: string;
+  templateId: number | null;
+  audiences: MailAudience[];
+  filterCircles: string[];
+  filterBusinessAreas: string[];
+  filterBlocks: string[];
+  filterPeople: string[];
+  userIds: number[];
+  extraRecipients: MailExtraRecipient[];
+  frequency: MailFrequency;
+  startDate: string;
+  sendTime: string;
+  weekday: number | null;
+  monthDay: number | null;
+  enabled: boolean;
+}
+
+export interface MailConfigItem extends MailConfigBody {
+  id: number;
+  templateName: string;
+  summary: string;
+  timezone: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface MailRecipientPreview {
+  hasData: boolean;
+  recipients: { name: string; roles: string; emails: string[]; areas: string[]; gps: number; breakdown: "block" | "am" }[];
+  skipped: { name: string; role: string; reason: string }[];
+}
+
+export interface MailRunItem {
+  id: number;
+  configId: number;
+  configName: string;
+  scheduledFor: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  status: "RUNNING" | "SUCCESS" | "PARTIAL" | "FAILED" | "SKIPPED";
+  sent: number;
+  failed: number;
+  skipped: number;
+  message: string | null;
 }
 
 /* ---------------------------------------------------------------- KPI drill-down lists */
 
-export type KpiListKind = "gps-above-98" | "gps-at-zero" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "hoto-pending-blocks" | "all-blocks" | "non-amc-gps" | "amc-original-gps" | "incremental-gps" | "removed-gps"
-  | "amc-plan-month" | "amc-plan-mtd" | "amc-achieved-mtd" | "amc-plan-week" | "amc-achieved-week" | "amc-overdue";
+export type KpiListKind = "gps-above-98" | "gps-at-zero" | "gps-below-90" | "penalty-blocks" | "hoto-gps" | "hoto-blocks" | "existing-gps" | "new-gp-blocks" | "na-gps" | "one-time-up" | "hoto-pending-gps" | "hoto-pending-blocks" | "all-blocks" | "non-amc-gps" | "amc-original-gps" | "incremental-gps" | "amc-gps" | "removed-gps"
+  | "amc-plan-month" | "amc-plan-mtd" | "amc-achieved-mtd" | "amc-plan-week" | "amc-achieved-week" | "amc-overdue" | "amc-converted-mtd" | "amc-converted-week";
 /** value = the list's measure: MTD availability, HOTO date or HOTO coverage */
 export type KpiListSort = "value-desc" | "value-asc" | "name";
 
@@ -670,6 +868,8 @@ export interface KpiListItem {
   availability?: number | null;
   /** GP lists */
   amcDate?: string | null;
+  /** Source AMC date (not hidden by the selected reporting-week cutoff) */
+  amcSourceDate?: string | null;
   hotoDate?: string | null;
   /** penalty-prone block list */
   amcGps?: number;
@@ -680,6 +880,11 @@ export interface KpiListItem {
   hotoPct?: number | null;
   /** HOTO-pending block list: revised existing GPs in the block */
   revisedGps?: number;
+  /** all-blocks list: AMC breakdown columns */
+  amcOriginalGps?: number;
+  incrementalGps?: number;
+  totalAmcGps?: number;
+  nonAmcGps?: number;
   /** Non-AMC GP list: "Done" / "Pending" */
   hotoStatus?: string;
   /** existing-GP / removed-GP lists: In scope / Converted to NP / Closed / Deducted */
@@ -688,12 +893,17 @@ export interface KpiListItem {
   remark?: string | null;
   /** HOTO-pending list: area manager (null = not assigned in source) */
   amName?: string | null;
+  reason?: string;
+  /** HOTO block list: all GP rows in the block, with HOTO dates for completed GPs */
+  gpDetails?: { id: string; name: string; code: string; hotoDate: string | null }[];
   /** AMC plan lists (GP-wise plan of the GP sheet) */
   category?: string | null;
   plannedDate?: string | null;
   achDate?: string | null;
+  letterDate?: string | null;
   planStatus?: string | null;
   letterStatus?: string | null;
+  approvalStatus?: string | null;
   /** new-GP list (block-wise, Master Block sheet) */
   existingGps?: number | null;
   newGps?: number;
@@ -718,6 +928,15 @@ export interface KpiListResponse {
   pages: number;
   sort: KpiListSort;
   items: KpiListItem[];
+  /** all-blocks only: aggregate totals across the filtered rows (for the mini KPI strip) */
+  blockSummary?: {
+    totalBlocks: number;
+    hotoDoneBlocks: number;
+    amcOriginalGps: number;
+    incrementalGps: number;
+    totalAmcGps: number;
+    nonAmcGps: number;
+  } | null;
 }
 
 /* ---------------------------------------------------------------- AMC conversion: plan vs execution */
@@ -795,13 +1014,55 @@ export interface AmcPlanCounts {
   weekLetterSubmitted: number;
   weekLetterPending: number;
   weekLetterNotRecorded: number;
+  /** "Approval Status" of the achieved GPs (MTD / week). IE accepted includes BSNL accepted (BSNL approves after IE). */
+  mtdIeAccepted?: number;
+  mtdBsnlAccepted?: number;
+  mtdIeRejected?: number;
+  mtdIePending?: number;
+  weekIeAccepted?: number;
+  weekBsnlAccepted?: number;
+  weekIeRejected?: number;
+  weekIePending?: number;
+  /** Part of each figure whose plan category is "5% Incremental" (the rest is "Additional Plan") */
+  incMonthTarget?: number;
+  incMtdTarget?: number;
+  incMtdAchieved?: number;
+  incWeekTarget?: number;
+  incWeekAchieved?: number;
   mtdAchievedPct: number | null;
   monthAchievedPct: number | null;
   weekAchievedPct: number | null;
+  /** Management view – GP Ready = Ach Date (= mtdAchieved / weekAchieved), GP Achieved = AMC Date of the plan GPs, Gap = target − achieved */
+  monthReady: number;
+  weekReady: number;
+  monthConverted: number;
+  weekConverted: number;
+  incMonthConverted: number;
+  incWeekConverted: number;
+  monthGap: number;
+  weekGap: number;
+  monthReadyPct: number | null;
+  weekReadyPct: number | null;
+  monthConvertedPct: number | null;
+  weekConvertedPct: number | null;
+  /** Letters of the GP Ready GPs: submitted = letter submission date filled, not submitted = the rest, accepted = AMC Date filled */
+  monthReadyLetterSubmitted: number;
+  monthReadyLetterNotSubmitted: number;
+  monthReadyLetterAccepted: number;
+  weekReadyLetterSubmitted: number;
+  weekReadyLetterNotSubmitted: number;
+  weekReadyLetterAccepted: number;
+  /** the same letter split for the 5% Incremental part of the GP Ready GPs */
+  incMonthReadyLetterSubmitted: number;
+  incMonthReadyLetterNotSubmitted: number;
+  incWeekReadyLetterSubmitted: number;
+  incWeekReadyLetterNotSubmitted: number;
 }
 
 export interface AmcPlanSummary {
   hasPlan: boolean;
+  /** the file has an "Approval Status" column with values (false for imports made before it was read) */
+  hasApproval?: boolean;
   /** week cutoff: the selected week's end, capped at the last date with data */
   asOf: string;
   /** month KPIs (month target, MTD, overdue) are counted up to this date: the latest data date */
@@ -819,13 +1080,19 @@ export interface AmcPlanSummary {
 }
 
 export interface AmcPlanCell {
-  /** GPs whose Planned Date falls in the period – or, for a month without Planned Dates yet, the targets file */
+  /** GPs whose Planned Date falls in the period (always – never the management plan) */
   target: number;
-  /** excel = counted from Planned Date; plan = data/amc_month_targets.json; mixed = Overall of both */
+  /** always "excel" (Planned Date count); "plan" / "mixed" only from an older backend */
   targetSource: "excel" | "plan" | "mixed";
+  /** months: the management plan (data/amc_month_targets.json) for reference only – not a target, total or gap */
+  planTarget?: number | null;
   /** GPs whose Ach Date falls in the period, up to the data date; null = period not started */
   achieved: number | null;
   achievedPct: number | null;
+  /** management view (null = not started): GP Ready = Ach Date (= achieved), GP Achieved = AMC Date, gap = target − converted */
+  ready: number | null;
+  converted: number | null;
+  gap: number | null;
   /** part of the target whose Planned Date is on or before the data date; null = not started */
   dueTarget: number | null;
   cumulativeTarget: number;
@@ -852,6 +1119,10 @@ export interface AmcAreaManagerRow {
   name: string;
   /** false for "Not assigned" / "Vacant (no AM)" */
   assigned: boolean;
+  /** business areas (BA) of the AM's GPs: Escalation Matrix BA, else the master data's BA */
+  businessAreas: string[];
+  /** AM e-mail(s) from the Escalation Matrix; masked (sh*****@domain) unless the user is an admin */
+  emails: string[];
   blocks: number;
   existingGps: number;
   /** under AMC as of the reporting week's end (same rule as the KPI cards) */
@@ -865,6 +1136,9 @@ export interface AmcAreaManagerRow {
   weekTarget: number;
   weekAchieved: number;
   weekAchievedPct: number | null;
+  /** GP Achieved = AMC Date of the plan GPs in the month (1st – data date) / week (an older backend: undefined) */
+  monthConverted?: number;
+  weekConverted?: number;
 }
 
 export interface AmcAreaManagers {
@@ -872,6 +1146,9 @@ export interface AmcAreaManagers {
   /** where the AM names come from: the Escalation Matrix upload, else the master data's AM Name */
   amSource: "escalation" | "master";
   amSourceFile: string | null;
+  /** the active Escalation Matrix has AM e-mails */
+  hasEmails: boolean;
+  emailsMasked: boolean;
   month: { id: string; label: string; start: string; end: string; asOf: string };
   week: { id: string; number: number; label: string; start: string; end: string; asOf: string; complete: boolean };
   amcAsOf: string;
@@ -1062,6 +1339,127 @@ export interface FieldQuery {
   page?: number;
 }
 
+/** Data upload: which file the admin says it is (the server checks the content). */
+export type UploadKind = "master" | "escalation";
+
+export interface UploadIssue {
+  row: number | null;
+  severity: "critical" | "warning" | "info";
+  code: string;
+  column: string | null;
+  gpCode: string | null;
+  message: string;
+  sheet?: string | null;
+}
+
+/** Validation report of a staged upload (step 1 of "preview, then confirm"); nothing is imported yet. */
+export interface UploadPreview {
+  token: string | null;
+  kind: UploadKind;
+  kindLabel: string;
+  fileName: string;
+  size: number;
+  sha256: string;
+  expiresInMinutes: number;
+  canImport: boolean;
+  /** first failing layer: file | kind | duplicate | template | structure; ok = can be imported */
+  stage: "ok" | "file" | "kind" | "duplicate" | "template" | "structure";
+  error: string | null;
+  /** stage "template": why the file is refused (missing required sheet / column …, first 500), with sheet / column */
+  templateErrors?: { sheet: string; row: number | null; column: string | null; severity: string; message: string }[];
+  templateErrorCount?: number;
+  /** master data: required / optional / not-used columns of each sheet (also when the file is refused) */
+  columnCheck?: { sheets: UploadColumnSheet[]; templateHint: string };
+  /** master data: the day / week / month columns found, gaps, and earlier weeks / months kept from earlier uploads */
+  periods?: UploadPeriods;
+  counts?: { rows: number; accepted: number; rejected: number; critical: number; warning: number; info: number };
+  facts?: { label: string; value: string }[];
+  columns?: { missingOptional: string[]; unknown: string[]; mapProblems: string[] };
+  crossCheck?: { state: string; metric: string; reported: number; computed: number; difference: number; match: boolean }[];
+  issues?: UploadIssue[];
+  issueSummary?: { code: string; severity: string; count: number }[];
+}
+
+export interface UploadColumnSheet {
+  sheet: string;
+  found: boolean;
+  headerRow: number | null;
+  required: { name: string; header: string | null; hint: string | null }[];
+  requiredOk: boolean;
+  optionalPresent: string[];
+  optionalAbsent: string[];
+  /** columns of the file the dashboard does not use – ignored */
+  unused: string[];
+  /** time-varying columns by kind (date, week, amcMonth, month, status, target) */
+  periods: Record<string, number>;
+}
+export interface UploadPeriods {
+  days: { count: number; first: string | null; last: string | null };
+  weeks: string[];
+  weekRange: string | null;
+  months: string[];
+  amcMonths: string[];
+  blockPeriodCount: number;
+  /** warnings about the day / week / month columns (gaps, duplicates, labels) – never a reason to reject */
+  gaps: string[];
+  /** earlier weeks / months the file does not have – they stay on the dashboard from earlier uploads */
+  fromHistory: { weeks: string[]; months: string[] };
+}
+
+/** Field Team & Escalation → Escalation Sheet */
+export interface EscalationSheetColumn {
+  key: string;
+  label: string;
+  kind: "text" | "phone" | "email";
+  editable: boolean;
+  maxLength: number;
+}
+export interface EscalationSheetRow {
+  gpCode: string;
+  values: Record<string, string | null>;
+  inMaster?: boolean;
+}
+export interface EscalationSheet {
+  source: { importId: number; fileName: string; importedAt: string | null; edits: number; lastEditAt: string | null };
+  columns: EscalationSheetColumn[];
+  rows: EscalationSheetRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  canEdit: boolean;
+  phonesMasked: boolean;
+}
+export interface EscalationSheetQuery {
+  circleId?: string;
+  districtId?: string;
+  blockId?: string;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+}
+export interface EscalationCellChange {
+  gpCode: string;
+  field: string;
+  old: string | null;
+  new: string | null;
+}
+export interface EscalationCellProblem {
+  gpCode: string;
+  field: string;
+  message: string;
+  conflict?: boolean;
+  current?: string | null;
+}
+export interface EscalationEditItem {
+  gpCode: string;
+  field: string;
+  label: string;
+  old: string | null;
+  new: string | null;
+  by: string;
+  at: string | null;
+}
+
 export interface EscalationImportRun {
   id: string;
   fileName: string;
@@ -1072,6 +1470,80 @@ export interface EscalationImportRun {
   rows: number;
   rejected: number;
   isActive: boolean;
+  /** Optional columns of the matrix were not found (left empty) -> offer "Check columns" */
+  columnsMissing?: boolean;
+}
+
+/** Column mapper (Data Operations): what the importer recognises in a workbook. */
+export type ColumnSectionKey = "gp" | "masterBlock" | "escalation";
+export interface ColumnFit {
+  kind: "date" | "number" | "phone" | "email";
+  pct: number;
+  warning: boolean;
+}
+export interface ColumnCheckField {
+  field: string;
+  label: string;
+  required: boolean;
+  kind: ColumnFit["kind"] | null;
+  acceptedNames: string[];
+  status: "found" | "missing";
+  header?: string;
+  samples?: string[];
+  fit?: ColumnFit | null;
+  duplicates?: string[];
+  suggestion?: string | null;
+  similarity?: number | null;
+}
+export interface ColumnCheckSection {
+  key: ColumnSectionKey;
+  label: string;
+  sheet: string | null;
+  sheetResolved: boolean;
+  sheetSuggestion: string | null;
+  headerFound: boolean;
+  headerRow?: number;
+  headerExact?: boolean;
+  fields: ColumnCheckField[];
+  columns: { header: string; samples: string[]; fit: Record<string, ColumnFit | null> }[];
+}
+export interface ColumnCheck {
+  kind: "master" | "escalation" | null;
+  sheets: string[];
+  sheetMap: { key: "gp" | "masterBlock" | "om"; label: string; acceptedNames: string[]; sheet: string | null; suggestion: string | null }[];
+  sections: ColumnCheckSection[];
+  ready: boolean;
+  missingRequired: number;
+  missingOptional: number;
+  problems: string[];
+}
+export interface ColumnMapName {
+  section: ColumnSectionKey | "sheets";
+  sectionLabel: string;
+  field: string;
+  fieldLabel: string;
+  name: string;
+}
+
+/** Rows (month YYYY-MM or week W-41) → state → GPs; null = no value */
+export type PlanGrid = Record<string, Record<string, number | null>>;
+export interface PlanFile {
+  name: string;
+  label: string;
+  exists: boolean;
+  updatedAt: string | null;
+  sections: { key: string; label: string; rowKind: "month" | "week" }[];
+  fields: { key: string; label: string; pattern: string }[];
+  data: Record<string, unknown>;
+  /** Why the dashboard cannot read the saved file (null = fine) */
+  problem: string | null;
+}
+export interface PlanFileVersion {
+  id: string;
+  savedAt: string | null;
+  savedBy: string | null;
+  note: string | null;
+  content: Record<string, unknown>;
 }
 
 export interface DashboardApi {
@@ -1099,6 +1571,21 @@ export interface DashboardApi {
   /** Field Team & Escalation (live backend only) */
   getFieldSummary(weekId: string): Promise<FieldSummary>;
   getFieldLookup(q: FieldQuery): Promise<FieldPage<FieldGp & { fieldComplete: boolean }>>;
+  /** Escalation Sheet: the active Escalation Matrix as an (admin-editable) sheet */
+  getEscalationSheet(q: EscalationSheetQuery): Promise<EscalationSheet>;
+  saveEscalationSheet(importId: number, changes: EscalationCellChange[]): Promise<{ saved: number; rows: EscalationSheetRow[] }>;
+  replaceInEscalationSheet(body: {
+    importId: number;
+    field: string;
+    find: string;
+    replace: string;
+    circle?: string;
+    district?: string;
+    block?: string;
+    dryRun: boolean;
+  }): Promise<{ matches: number; saved: number; sample: string[] }>;
+  getEscalationSheetEdits(gpCode?: string): Promise<{ importId: number; items: EscalationEditItem[] }>;
+  escalationSheetExportUrl(q: EscalationSheetQuery): string;
   getFieldWorkload(role: FieldRole, q: FieldQuery): Promise<FieldWorkload>;
   getFieldPeople(role: FieldRole, q: FieldQuery): Promise<FieldPeople>;
   getFieldDown(mode: "zero" | "below90", q: FieldQuery): Promise<FieldDown>;
@@ -1152,14 +1639,847 @@ export interface UploadReport {
 }
 
 export interface AdminApi {
-  /** Master data workbook or Escalation Matrix – the backend tells them apart by content (`kind`). */
-  uploadWorkbook(file: File): Promise<{ id: string; status: string; fileName: string; kind?: "master" | "escalation" }>;
+  /** Master data workbook or Escalation Matrix – the backend tells them apart by content (`kind`).
+   *  `onProgress` gets the share of the file sent so far (0–1). */
+  uploadWorkbook(file: File, onProgress?: (fraction: number) => void): Promise<{ id: string; status: string; fileName: string; kind?: "master" | "escalation" }>;
+  /** Step 1: stage + validate the file completely (nothing is imported) */
+  previewUpload(file: File, kind: UploadKind, onProgress?: (fraction: number) => void): Promise<UploadPreview>;
+  /** Step 2: import the staged file of a preview */
+  confirmUpload(token: string): Promise<{ id: string; status: string; fileName: string; kind: UploadKind }>;
+  discardUpload(token: string): Promise<{ discarded: boolean }>;
   getEscalationImports(): Promise<EscalationImportRun[]>;
+  /** Column mapper: check a workbook (nothing is imported or kept), a stored run or an Escalation Matrix import */
+  checkColumns(source: { file: File } | { runId: string } | { escalationId: string }): Promise<ColumnCheck>;
+  getColumnMap(): Promise<{ names: ColumnMapName[]; problems: string[] }>;
+  addColumnNames(body: { columns: { section: ColumnSectionKey; field: string; name: string }[]; sheets: { key: string; name: string }[] }): Promise<{ added: string[]; names: ColumnMapName[] }>;
+  removeColumnName(body: { section: string; field: string; name: string }): Promise<{ removed: string; names: ColumnMapName[] }>;
+  listPlanFiles(): Promise<PlanFile[]>;
+  savePlanFile(name: string, data: Record<string, unknown>): Promise<PlanFile>;
+  getPlanFileHistory(name: string): Promise<PlanFileVersion[]>;
+  /** Import a finished run's / Escalation Matrix's stored file again with the current column names */
+  reprocessRun(runId: string): Promise<{ accepted: boolean; message: string }>;
+  reprocessEscalation(id: string): Promise<{ accepted: boolean; message: string }>;
   getRunIssues(runId: string, params?: { severity?: string; code?: string; page?: number }): Promise<RunIssuesResponse>;
+  /** Excel download of a run's issues (same filters) */
+  runIssuesXlsxUrl(runId: string, params?: { severity?: string; code?: string }): string;
   /** What changed compared with the previous upload */
   getRunReport(runId: string): Promise<UploadReport>;
   getReconciliation(): Promise<ReconciliationResponse>;
   listUsers(): Promise<AppUser[]>;
-  createUser(body: { email: string; name: string; role: "admin" | "viewer"; password: string }): Promise<AppUser>;
-  updateUser(id: number, body: { name?: string; role?: "admin" | "viewer"; isActive?: boolean; password?: string }): Promise<AppUser>;
+  createUser(body: UserCreateBody): Promise<AppUser>;
+  updateUser(id: number, body: UserUpdateBody): Promise<AppUser>;
+  /** dryRun = preview only; otherwise creates the new Viewer accounts with the temporary password */
+  importUsers(file: File, dryRun: boolean): Promise<UserImportResult>;
+  getUserLocations(): Promise<UserLocations>;
+  getMailStatus(): Promise<MailStatus>;
+  getMailOptions(): Promise<MailOptions>;
+  sendTestMail(to: string): Promise<{ ok: boolean; message: string }>;
+  listMailTemplates(): Promise<MailTemplateItem[]>;
+  createMailTemplate(body: MailTemplateBody): Promise<MailTemplateItem>;
+  updateMailTemplate(id: number, body: MailTemplateBody): Promise<MailTemplateItem>;
+  resetMailTemplate(id: number): Promise<MailTemplateItem>;
+  deleteMailTemplate(id: number): Promise<{ deleted: number }>;
+  previewMailTemplate(body: { subject: string; body: string; configId?: number; personId?: string }): Promise<MailPreview>;
+  listMailConfigs(): Promise<MailConfigItem[]>;
+  createMailConfig(body: MailConfigBody): Promise<MailConfigItem>;
+  updateMailConfig(id: number, body: MailConfigBody): Promise<MailConfigItem>;
+  setMailConfigEnabled(id: number, enabled: boolean): Promise<MailConfigItem>;
+  deleteMailConfig(id: number): Promise<{ deleted: number }>;
+  previewMailRecipients(id: number): Promise<MailRecipientPreview>;
+  listMailRuns(): Promise<MailRunItem[]>;
+}
+
+/* ---------------------------------------------------------------- Ticket Management (backend: app/tickets) */
+
+export type TicketStatus = "OPEN" | "IN_PROGRESS" | "PENDING_REVIEW" | "CHANGES_REQUESTED" | "CLOSED";
+export type TicketPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+/** all = every ticket (admins only); mine = tickets assigned to the signed-in user */
+export type TicketScope = "all" | "mine";
+
+export interface TicketKpis {
+  total: number;
+  /** OPEN + IN_PROGRESS */
+  open: number;
+  /** PENDING_REVIEW */
+  pending: number;
+  closed: number;
+  /** IN_PROGRESS */
+  working: number;
+  byStatus: Record<TicketStatus, number>;
+}
+
+export interface TicketSummary {
+  id: number;
+  code: string;
+  subject: string;
+  priority: TicketPriority;
+  status: TicketStatus;
+  assignee: { id: number | null; name: string; email: string };
+  createdBy: { id: number | null; name: string };
+  createdAt: string;
+  updatedAt: string;
+  submittedAt: string | null;
+  closedAt: string | null;
+  /** Circle / State chosen when the ticket was generated (null for older tickets) */
+  circle: string | null;
+  /** list rows only: GP-wise task Area Manager / week and number of recipients */
+  areaManager?: string | null;
+  week?: string | null;
+  recipientCount?: number;
+}
+
+export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "USER" | "OTHER";
+
+export interface TicketRecipient {
+  id: number;
+  role: TicketRecipientRole;
+  name: string;
+  email: string;
+  /** dashboard = an active account has this e-mail (sees the ticket); email = e-mail only */
+  access: "dashboard" | "email";
+  canWork: boolean;
+  /** the Area Manager's own GP workbook goes with the e-mail */
+  workbook: boolean;
+  emailStatus: "NONE" | "PENDING" | "SENT" | "FAILED";
+  /** admins only */
+  emailError: string | null;
+  emailedAt: string | null;
+  /** FE only: parent Area Manager in the Escalation Matrix */
+  areaManager?: string | null;
+}
+
+export interface DirectoryEmail {
+  email: string;
+  user: { id: number; name: string; role: string } | null;
+}
+
+export interface DirectoryPerson {
+  name: string;
+  gps: number;
+  emails: DirectoryEmail[];
+  weekGps?: number;
+  pendingGps?: number;
+  businessAreas?: string[];
+  /** Area Manager: the week's task GPs without a Field Engineer in the Escalation Matrix */
+  unmappedFeGps?: number;
+}
+
+/** A Field Engineer of the circle = one Escalation Matrix mapping (Area Manager, FE name, FE e-mail of the GP rows) */
+export interface DirectoryFe {
+  name: string;
+  /** parent Area Manager */
+  am: string;
+  /** FE e-mail of the matrix rows that decides the FE's GPs (null = rows without an FE e-mail) */
+  mappedEmail: string | null;
+  emails: DirectoryEmail[];
+  gps: number;
+  weekGps: number;
+  pendingGps: number;
+}
+
+export interface TicketDirectory {
+  circles: { name: string; gps: number }[];
+  circle: string | null;
+  week: string;
+  /** escalation = Escalation Matrix upload; master = no matrix (AM names from the master data, no CBH / SME) */
+  source: "escalation" | "master";
+  cbh: DirectoryPerson[];
+  sme: DirectoryPerson[];
+  coh?: DirectoryPerson[];
+  am: DirectoryPerson[];
+  fe: DirectoryFe[];
+}
+
+export interface TicketCreateBody {
+  assigneeId?: number | null;
+  subject: string;
+  description: string;
+  priority: TicketPriority;
+  task?: { amName?: string; week: string };
+  circle?: string;
+  /** FE: `am` + `feEmail` name the matrix mapping of the FE's GPs; `email` is where the ticket e-mail goes */
+  recipients?: { role: "CBH" | "SME" | "COH" | "AM" | "FE" | "OTHER"; name: string; email: string; am?: string; feEmail?: string | null }[];
+  sendEmail?: boolean;
+}
+
+export interface TicketAttachmentItem {
+  id: number;
+  fileName: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+  /** PDF / JPG / PNG open in the browser */
+  previewable: boolean;
+}
+
+export interface TicketSubmissionItem {
+  id: number;
+  version: number;
+  description: string;
+  submittedAt: string;
+  submittedBy: string;
+  review: "PENDING" | "ACCEPTED" | "CHANGES_REQUESTED";
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewComment: string | null;
+  attachments: TicketAttachmentItem[];
+}
+
+export interface TicketDetail extends TicketSummary {
+  description: string;
+  startedAt: string | null;
+  closedBy: { id: number | null; name: string | null } | null;
+  assigneeActive: boolean;
+  assigneeRole: string | null;
+  /** Latest admin feedback while the ticket is Changes Requested */
+  feedback: { comment: string | null; by: string | null; at: string | null; version: number } | null;
+  /** Newest first */
+  submissions: TicketSubmissionItem[];
+  events: { at: string; actor: string; action: string; from: TicketStatus | null; to: TicketStatus | null; note: string | null }[];
+  /** What the signed-in user may do now (checked again by the backend) */
+  /** GP-wise weekly task (null = a plain ticket) */
+  task: TicketTask | null;
+  /** CBH / SME / Area Manager / other users the ticket was sent to */
+  recipients: TicketRecipient[];
+  /** the signed-in user's role on this ticket (null = admin not on it) */
+  myRole: TicketRecipientRole | "ASSIGNEE" | null;
+  /** progress = daily GP progress (assigned Area Manager); close = an admin may close now; email = send / retry e-mails */
+  /** reviewAs = review steps of the GPs this user may do (AM approve / return, SME forward, COH letter / AMC; admins: all) */
+  can: { start: boolean; submit: boolean; review: boolean; progress: boolean; close: boolean; email: boolean; share?: boolean; reviewAs?: GpReviewRole[] };
+}
+
+export interface TicketTaskGp {
+  id: number;
+  gpCode: string;
+  gpName: string;
+  circle: string;
+  businessArea: string | null;
+  district: string | null;
+  block: string | null;
+  /** WEEK = Planned Date in the week · PENDING = planned earlier, not achieved yet · ADDED = added by the FE / AM */
+  kind: "WEEK" | "PENDING" | "ADDED";
+  category: string | null;
+  plannedDate: string | null;
+  readyDate: string | null;
+  amcDate: string | null;
+  target: number;
+  /** achieved in the master data (AMC Date) when the task was created */
+  baseAchieved: number;
+  /** achieved by the Area Manager's daily submissions */
+  reported: number;
+  cumulative: number;
+  gap: number;
+  remarks: string | null;
+  /** DONE once the cumulative achievement reached the target */
+  status: GpStatus;
+  /** proof documents of this GP (all daily submissions) */
+  files: TicketProofFile[];
+  /** latest daily submission with a line for this GP */
+  lastUpdated: string | null;
+  /** who submitted that line (Area Manager / FE) */
+  lastUpdatedBy?: string | null;
+  /** Field Engineer of the GP in the Escalation Matrix at creation (null = not mapped) */
+  feName?: string | null;
+  /** current classification chosen in the daily progress (null = not classified yet) */
+  gpCategory?: GpCategory | null;
+  /** review chain: null = with the FE; locked = approved by the Area Manager (no more daily changes) */
+  review?: GpReviewState | null;
+  reviewLabel?: string | null;
+  reviewAt?: string | null;
+  locked?: boolean;
+  letterDate?: string | null;
+  amcOn?: string | null;
+  addedBy?: string | null;
+  /** GP corrections, additions and review steps (oldest first) */
+  trail?: GpReviewStep[];
+  /** latest Non-Doable case of the GP (open = still in the Non-Doable workflow) */
+  ndCase?: { id: number; ref: string; status: NdStatus; label: string; revisit: NdRevisit | null; open: boolean } | null;
+  /** workflow stage for display: PENDING_AM = Rectification Done, waiting for the Area Manager's verification */
+  stage?: GpStage;
+  /** the Rectification Done submission the Area Manager verified (from the daily progress history, never overwritten) */
+  feSubmission?: GpFeSubmission | null;
+  /** the Area Manager's verification / approval and the SME(s) it was forwarded to */
+  amApproval?: GpReviewRecord | null;
+  /** the SME's review and the COH(s) it was forwarded to */
+  smeReview?: GpReviewRecord | null;
+  /** the latest send-back while it is the GP's last step: SME → AM (SME_RETURN) or COH → SME (COH_RETURN) */
+  sentBack?: (GpReviewRecord & { action: "SME_RETURN" | "COH_RETURN" }) | null;
+}
+
+export type GpReviewRole = "AM" | "SME" | "COH";
+/** SME_RETURNED = the SME sent it back to the Area Manager · COH_RETURNED = the COH sent it back to the SME */
+export type GpReviewState = "RETURNED" | "AM_APPROVED" | "SME_RETURNED" | "SME_FORWARDED" | "COH_RETURNED" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
+export type GpStage = "NONE" | "PENDING_AM" | GpReviewState;
+export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "SME_RETURN" | "COH_LETTER" | "COH_AMC" | "COH_RETURN";
+export interface GpReviewStep {
+  role: "FE" | "AM" | "SME" | "COH" | "ADMIN";
+  action: GpReviewAction | "EDIT" | "ADD";
+  label: string;
+  category: GpCategory | null;
+  date: string | null;
+  remark: string | null;
+  by: string | null;
+  at: string | null;
+  /** workflow status before / after a review step (null for edits / additions) */
+  fromStatus?: string | null;
+  toStatus?: string | null;
+}
+
+/** SME / COH ticket KPIs: the ticket's GP count against the GPs handed to this reviewer */
+export interface ReviewerKpis {
+  ticketGps: number;
+  assigned: number;
+  /** SME: waiting for their review (AM approved + back from the COH) · COH: waiting for the letter */
+  pending: number;
+  /** sent back by them (SME → AM, COH → SME) */
+  sentBack: number;
+  forwarded?: number; // SME: forwarded to the COH (and later steps)
+  returnedToYou?: number; // SME: sent back by the COH
+  letterSubmitted?: number; // COH
+  amcConverted?: number; // COH
+}
+
+export interface GpFeSubmission {
+  /** Field Engineer of the GP in the Escalation Matrix */
+  feName: string | null;
+  /** who submitted the line (FE, or the Area Manager on the FE's behalf) */
+  submittedBy: string | null;
+  submittedByRole: "FE" | "AM";
+  category: GpCategory | null;
+  remark: string | null;
+  submittedAt: string | null;
+  /** proof documents uploaded up to the Area Manager's approval */
+  files: TicketProofFile[];
+}
+
+export interface GpReviewRecord {
+  by: string;
+  role: "AM" | "SME" | "COH" | "ADMIN";
+  remark: string | null;
+  at: string | null;
+  category: GpCategory | null;
+  /** who the GP was forwarded to (empty = not recorded: approved before GP-level forwarding existed) */
+  forwardedTo: { name: string; email: string }[];
+  forwardedAt: string | null;
+}
+
+export interface ReviewContacts {
+  circle: string | null;
+  role: "SME" | "COH";
+  /** Escalation Matrix people of the circle */
+  people: { name: string; emails: { email: string; account: boolean; onTicket: boolean }[] }[];
+  /** already on the ticket with this role, not in the matrix */
+  onTicket: { name: string; email: string; account: boolean }[];
+}
+
+/** A GP the FE / Area Manager adds to the ticket (target 1; details from the master data when the code is in it) */
+export interface NewTaskGp {
+  gpCode: string;
+  gpName?: string;
+  block?: string;
+  category?: "A" | "C" | "D";
+  remark?: string;
+}
+
+export type GpStatus = "DONE" | "PENDING";
+/** GP classification of the daily progress: A Rectification Done · B Ready for Letter Submission · C Revisit Required ·
+ * D Non-Doable – Proposed · E Letter Submission Done (the only one counted as achieved) */
+export type GpCategory = "A" | "B" | "C" | "D" | "E";
+
+export interface TicketProofFile {
+  id: number;
+  fileName: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string | null;
+  previewable: boolean;
+  /** monitoring rows: ticket the file was uploaded in */
+  ticket?: string | null;
+}
+
+export interface GpMonitorFilters {
+  circle?: string;
+  areaManager?: string;
+  /** Field Engineer name, or "FE not mapped" */
+  fe?: string;
+  block?: string;
+  week?: string;
+  ticket?: string;
+  gpCode?: string;
+  gpName?: string;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface GpMonitorKpis {
+  total: number;
+  done: number;
+  pending: number;
+  donePct: number | null;
+  pendingPct: number | null;
+  withoutProof: { done: number; pending: number };
+  /** current category of each GP (each GP once) – the five category KPIs */
+  categories: Record<GpCategory, number>;
+  /** of those, GPs with at least one proof document */
+  categoryWithDocument: Record<GpCategory, number>;
+  notClassified: number;
+}
+
+export interface GpMonitorOptions {
+  circles: string[];
+  areaManagers: string[];
+  fieldEngineers?: string[];
+  blocks: string[];
+  weeks: string[];
+  tickets: string[];
+}
+
+/** One GP (each GP code once across all task tickets) */
+export interface GpMonitorRow {
+  gpCode: string;
+  gpName: string;
+  circle: string;
+  district: string | null;
+  block: string | null;
+  businessArea: string | null;
+  areaManager: string;
+  fieldEngineer?: string | null;
+  ticketId: number;
+  ticket: string;
+  ticketStatus: TicketStatus;
+  week: string;
+  weekStart: string;
+  weekEnd: string;
+  kind: "WEEK" | "PENDING";
+  plannedDate: string | null;
+  status: GpStatus;
+  target: number;
+  achieved: number;
+  gap: number;
+  completedAt: string | null;
+  completedBy: string | null;
+  lastUpdated: string | null;
+  remarks: string | null;
+  files: TicketProofFile[];
+  tickets: string[];
+  /** current category (latest chosen in any of its tickets), when and in which ticket */
+  gpCategory: GpCategory | null;
+  categoryAt: string | null;
+  categoryTicket: string | null;
+}
+
+/** FE-wise Done / Pending of the filtered GPs */
+export interface GpMonitorFeRow {
+  areaManager: string;
+  fieldEngineer: string;
+  mapped: boolean;
+  total: number;
+  done: number;
+  pending: number;
+  withoutProof: number;
+  donePct: number | null;
+  categories: Record<GpCategory, number>;
+  notClassified: number;
+}
+
+export type GpMonitorSort = "circle" | "areaManager" | "fe" | "gpCode" | "gpName" | "block" | "target" | "achieved" | "gap" | "date" | "ticket" | "week" | "category";
+
+export interface GpMonitorPage {
+  status: GpStatus | null;
+  category: GpCategory | null;
+  items: GpMonitorRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  kpis: GpMonitorKpis;
+  options: GpMonitorOptions;
+}
+
+export interface GpMonitorDetail extends GpMonitorRow {
+  ticketRows: { ticketId: number; ticket: string; ticketStatus: TicketStatus; week: string; weekStart: string; weekEnd: string; areaManager: string; kind: "WEEK" | "PENDING"; target: number; achieved: number; gap: number; status: GpStatus; gpCategory: GpCategory | null }[];
+  history: { at: string | null; ticket: string; week: string; by: string; achievedToday: number; status: GpStatus; gpCategory?: GpCategory | null; remark: string | null; files: TicketProofFile[]; source: "progress" | "master" }[];
+}
+
+/** FE-wise allocation and progress of a task (name null = GPs without an FE in the Escalation Matrix) */
+export interface TicketTaskFe {
+  name: string | null;
+  email: string | null;
+  gps: number;
+  target: number;
+  achieved: number;
+  gap: number;
+  doneGps: number;
+  pendingGps: number;
+  proofFiles: number;
+  lastUpdated: string | null;
+  /** the FE is a recipient of this ticket */
+  recipient: boolean;
+  /** current status (A–E) of the FE's GPs */
+  categories?: Record<GpCategory, number>;
+  notClassified?: number;
+  /** review chain: approved (or further) / returned by the Area Manager / classified A or D and waiting for the AM */
+  approvedGps?: number;
+  returnedGps?: number;
+  awaitingGps?: number;
+  addedGps?: number;
+}
+
+export interface TicketTask {
+  areaManager: string;
+  amEmail: string | null;
+  /** FE = a Field Engineer's view (only their GPs) · SME / COH = a reviewer's view (only the GPs the Area Manager /
+   * the SME forwarded to them) · null = the whole task */
+  scope?: { kind: "FE"; fieldEngineer: string; email: string | null } | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis } | null;
+  /** FE-wise split (empty in a Field Engineer's view) */
+  fes?: TicketTaskFe[];
+  circle: string | null;
+  cbhName: string | null;
+  week: { id: string; start: string; end: string };
+  dataAsOf: string;
+  sourceFile: string;
+  totals: { gps: number; target: number; achieved: number; gap: number; pct: number | null; weekGps: number; pendingGps: number; doneGps: number; openGps: number; proofFiles: number; categories?: Record<GpCategory, number>; notClassified?: number;
+    addedGps?: number; review?: { awaiting: number; returned: number; amApproved: number; smeForwarded: number; letterSubmitted: number; amcConverted: number; ndOpen?: number; ndApproved?: number;
+      smeReturned?: number; cohReturned?: number } };
+  blocks: { block: string; gps: number; target: number; achieved: number; gap: number }[];
+  gps: TicketTaskGp[];
+  latestSubmission: string | null;
+  history: { id: number; submittedAt: string; submittedBy: string; note: string | null; lines: { taskGpId: number; gpCode: string | null; gpName: string | null; block: string | null; achievedToday: number; cumulative: number; gap: number; remark: string | null; status: GpStatus; gpCategory?: GpCategory | null; files: TicketProofFile[] }[] }[];
+}
+
+export interface TaskAreaManager {
+  name: string;
+  emails: string[];
+  circles: string[];
+  businessAreas: string[];
+  gps: number;
+  weekGps: number;
+  pendingGps: number;
+  /** dashboard user whose e-mail is the Area Manager's e-mail (null = no account yet) */
+  user: { id: number; name: string; email: string } | null;
+}
+
+export interface TaskPreviewRow {
+  sort: number;
+  gpCode: string;
+  gpName: string;
+  circle: string;
+  businessArea: string | null;
+  district: string | null;
+  block: string | null;
+  kind: "WEEK" | "PENDING";
+  category: string | null;
+  plannedDate: string | null;
+  readyDate: string | null;
+  amcDate: string | null;
+  target: number;
+  achieved: number;
+  gap: number;
+  feName?: string | null;
+  feEmail?: string | null;
+}
+
+export interface SharePerson {
+  name: string;
+  emails: { email: string; account: boolean; onTicket: boolean }[];
+}
+export interface ShareContacts {
+  circle: string | null;
+  cbh: SharePerson[];
+  sme: SharePerson[];
+}
+
+/** Counts of task GPs: ready = Ach Date filled, amc = AMC Date filled; toReady = gps − ready, toConvert = gps − amc */
+export interface TaskFigure {
+  gps: number;
+  ready: number;
+  amc: number;
+  toReady: number;
+  toConvert: number;
+}
+
+export interface TaskFigures {
+  /** Planned Date in the selected week (Weekly Target) */
+  week: TaskFigure;
+  /** backlog: planned before the week, not converted before it – information only, NOT in the target / ticket */
+  backlog: TaskFigure;
+  /** the ticket's GPs (= the week's target) */
+  total: TaskFigure;
+}
+
+/** Generate Ticket preview: the Area Manager's and each mapped FE's target and achievement for the week */
+export interface TaskBreakdown {
+  week: { id: string; number: number; start: string; end: string; asOf: string };
+  readyAsOf: string;
+  amcAsOf: string;
+  am: TaskFigures & { name: string };
+  fes: (TaskFigures & { name: string; email: string | null; emails: string[] })[];
+  /** GPs without an FE in the Escalation Matrix (null = none) */
+  unmapped: TaskFigures | null;
+  /** the same AM on AMC Conversion → area manager-wise table (Ach / AMC Date inside the week) */
+  page: { weekTarget: number; weekReady: number; weekConverted: number } | null;
+  definitions: string[];
+}
+
+export interface TicketListQuery {
+  scope: TicketScope;
+  search?: string;
+  status?: TicketStatus;
+  priority?: TicketPriority;
+  dateFrom?: string;
+  dateTo?: string;
+  circle?: string;
+  areaManager?: string;
+  week?: string;
+  /** GP code or GP name */
+  gp?: string;
+  progressDate?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TicketPage {
+  items: TicketSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketAssignee {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+}
+
+export interface TicketNotificationItem {
+  id: number;
+  ticketId: number;
+  kind: "ASSIGNED" | "SUBMITTED" | "CHANGES_REQUESTED" | "CLOSED" | "PROGRESS" | "REVIEW" | "NONDOABLE";
+  title: string;
+  body: string;
+  createdAt: string;
+  read: boolean;
+  href: string;
+}
+
+export interface TicketApi {
+  getKpis(scope: TicketScope): Promise<TicketKpis>;
+  list(q: TicketListQuery): Promise<TicketPage>;
+  get(id: number): Promise<TicketDetail>;
+  /** Admin: active users a ticket can be assigned to */
+  listAssignees(): Promise<TicketAssignee[]>;
+  /** Several tickets are created for a GP-wise task with several Area Managers (one each) */
+  create(body: TicketCreateBody): Promise<TicketSummary & { tickets: TicketSummary[]; emailQueued: number }>;
+  /** Circle-wise CBH / SME / Area Managers from the database */
+  getDirectory(circle: string | null, week?: string): Promise<TicketDirectory>;
+  /** Admin list filters that occur in tickets */
+  getFilterOptions(): Promise<{ circles: string[]; areaManagers: string[]; weeks: string[] }>;
+  /** Send / retry the e-mail of one recipient */
+  resendEmail(id: number, recipientId: number): Promise<TicketDetail>;
+  /** GP-wise task: Area Managers of the week (with the matching dashboard user) and the GPs of one of them */
+  getTaskAreaManagers(week: string): Promise<{ week: { id: string; label: string; start: string; end: string }; source: string; areaManagers: TaskAreaManager[] }>;
+  getTaskPreview(am: string, week: string, circle?: string): Promise<{ rows: TaskPreviewRow[]; dataAsOf: string; emails: string[]; summary?: TaskBreakdown }>;
+  /** Daily progress of the assigned Area Manager (each submission is kept) */
+  submitProgress(id: number, items: { taskGpId: number; achievedToday: number; remark?: string | null }[], note?: string): Promise<TicketDetail>;
+  /** Daily progress with Done / Pending per GP and proof documents per GP (upload progress 0–1) */
+  submitProgressForm(
+    id: number,
+    items: { taskGpId: number; status?: GpStatus; category?: GpCategory; remark?: string | null; gpName?: string; block?: string | null }[],
+    note: string | undefined,
+    proofs: { taskGpId: number; file: File }[],
+    onProgress?: (fraction: number) => void,
+    newGps?: NewTaskGp[],
+  ): Promise<TicketDetail>;
+  /** Review step for GPs of a task ticket (AM approve / return, SME forward, COH letter / AMC) */
+  reviewGps(id: number, body: { taskGpIds: number[]; action: GpReviewAction; remark?: string; category?: "B"; date?: string; to?: { name?: string; email: string }[] }): Promise<TicketDetail>;
+  /** SME (for the Area Manager's approval) / COH (for the SME's forward) of the ticket's circle */
+  getReviewContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
+  /** Same-origin URL of a GP proof document (download, or inline preview for PDF / images) */
+  progressFileUrl(id: number, inline?: boolean): string;
+  /** Admin: Done / Pending GPs of the GP-wise tasks (each GP once) */
+  /** basis "category": the date filter = the day the category was chosen (as in the category tables) */
+  getGpMonitorSummary(f: GpMonitorFilters, basis?: "status" | "category"): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;
+  /** GPs of one status (Done / Pending) or of one current category (A–E) */
+  listGpMonitor(q: GpMonitorFilters & { status?: GpStatus; category?: GpCategory; sort?: GpMonitorSort; desc?: boolean; page?: number; pageSize?: number }): Promise<GpMonitorPage>;
+  getGpMonitorDetail(gpCode: string): Promise<GpMonitorDetail>;
+  /** assignment = the original generated workbook; progress = the latest report */
+  taskWorkbookUrl(id: number, kind: "assignment" | "progress"): string;
+  start(id: number): Promise<TicketDetail>;
+  /** Work submission (description + files) with upload progress (0–1) */
+  submit(id: number, description: string, files: File[], onProgress?: (fraction: number) => void): Promise<TicketDetail>;
+  /** force = close a GP-wise task although GPs are not approved by the Area Manager (comment = the reason) */
+  close(id: number, comment?: string, force?: boolean): Promise<TicketDetail>;
+  /** admin only: soft delete (the ticket leaves every list; its records stay as history) */
+  remove(id: number, reason?: string): Promise<{ deleted: boolean; id: number; code: string }>;
+  /** Area Manager: CBH / SME of the ticket's circle (Escalation Matrix) to share the ticket with */
+  getShareContacts(id: number): Promise<ShareContacts>;
+  /** Area Manager -> CBH / SME: latest GP sheet + remark by e-mail (read-only access with an account) */
+  share(id: number, recipients: { role: "CBH" | "SME"; name: string; email: string }[], remark: string): Promise<TicketDetail & { emailQueued: number }>;
+  requestChanges(id: number, comment: string): Promise<TicketDetail>;
+  getNotifications(): Promise<{ unread: number; items: TicketNotificationItem[] }>;
+  markNotificationsRead(): Promise<{ updated: number }>;
+  /** Same-origin URL of an attachment (download, or inline preview for PDF / images) */
+  attachmentUrl(id: number, inline?: boolean): string;
+}
+
+// ---------------------------------------------------------------- Non-Doable GP exception workflow (backend: app/tickets/nondoable.py)
+// FE → AM → SME → COH → Corporate Team – MGG
+
+export type NdStatus =
+  | "PROPOSED"
+  | "E1_DONE"
+  | "PENDING_AM"
+  | "RETURNED_FE"
+  | "PENDING_SME"
+  | "RETURNED_AM"
+  | "RETURNED_SME"
+  | "PENDING_COH"
+  | "PENDING_MGG"
+  | "APPROVED"
+  | "REJECTED"
+  | "WITHDRAWN";
+export type NdRevisit = "COORDINATION" | "FRT_VISIT" | "FRT_UPDATED" | "REVIEWED";
+export type NdRole = "FE" | "AM" | "SME" | "COH" | "MGG";
+export type NdAction = "AM_FORWARD" | "AM_RETURN" | "SME_RECOMMEND" | "SME_RETURN" | "COH_FORWARD" | "COH_RETURN" | "MGG_APPROVE" | "MGG_REJECT" | "WITHDRAW";
+
+export interface NdCaseRow {
+  id: number;
+  ref: string;
+  ticketId: number;
+  ticketCode: string | null;
+  ticketStatus: TicketStatus | null;
+  gpId: number;
+  gpCode: string;
+  gpName: string | null;
+  block: string | null;
+  circle: string | null;
+  district: string | null;
+  fe: string | null;
+  round: number;
+  status: NdStatus;
+  statusLabel: string;
+  revisit: NdRevisit | null;
+  revisitLabel: string | null;
+  physical: "PENDING" | "SUBMITTED";
+  evidence: "NONE" | "SUBMITTED";
+  approval: "NOT_SUBMITTED" | "IN_REVIEW" | "RETURNED" | "APPROVED" | "REJECTED" | "WITHDRAWN";
+  /** FE / AM / SME / COH / "Corporate Team – MGG" (null = nobody, the case is decided) */
+  pendingWith: string | null;
+  /** waiting for an action of the signed-in user */
+  mine: boolean;
+  roles: NdRole[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  decision: "APPROVED" | "REJECTED" | null;
+}
+
+export interface NdFile {
+  id: number;
+  kind: "EVIDENCE" | "PHOTO";
+  fileName: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string | null;
+  uploadedBy: string;
+  previewable: boolean;
+}
+
+export interface NdRecord {
+  id: number;
+  kind: "VERIFICATION" | "JUSTIFICATION" | "REVISIT_COORDINATION" | "REVISIT_VISIT";
+  visitDate: string | null;
+  location: string | null;
+  visitorName: string | null;
+  findings: string | null;
+  reason: string | null;
+  remarks: string | null;
+  justification: string | null;
+  frtTeam: string | null;
+  frtVisit: string | null;
+  outcome: "A" | "C" | "D" | null;
+  by: string;
+  at: string | null;
+  files: NdFile[];
+}
+
+export interface NdEvent {
+  id: number;
+  stage: string;
+  action: string;
+  label: string;
+  role: string;
+  roleLabel: string;
+  from: string | null;
+  fromLabel: string | null;
+  to: string;
+  toLabel: string | null;
+  remark: string | null;
+  recommendation: string | null;
+  reason: string | null;
+  decision: string | null;
+  recordId: number | null;
+  by: string;
+  at: string | null;
+}
+
+export interface NdCaseDetail {
+  case: NdCaseRow & {
+    physicalLabel: string;
+    evidenceLabel: string;
+    approvalLabel: string;
+    feEmail: string | null;
+    createdBy: string;
+    decidedBy: string | null;
+    decidedAt: string | null;
+    decisionRemark: string | null;
+  };
+  ticket: { id: number; code: string; subject: string; status: TicketStatus; circle: string | null; areaManager: string | null; week: string | null };
+  gp: { id: number; gpCode: string; gpName: string; block: string | null; district: string | null; circle: string; category: GpCategory | null; review: GpReviewState | null; target: number; remarks: string | null };
+  tracker: { stage: string; label: string; state: "done" | "current" | "returned" | "pending" | "rejected" | "skipped"; by: string | null; at: string | null }[];
+  records: NdRecord[];
+  history: NdEvent[];
+  otherRounds: { id: number; ref: string; round: number; status: NdStatus; statusLabel: string }[];
+  can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[] };
+  mggMembers: number;
+}
+
+export interface NdSummary {
+  roles: NdRole[];
+  isAdmin: boolean;
+  isMgg: boolean;
+  kpis: Partial<Record<NdRole, Record<string, number>>>;
+}
+
+export interface NdMggMember {
+  userId: number;
+  name: string;
+  email: string;
+  active: boolean;
+  addedBy: string;
+  addedAt: string | null;
+}
+
+export type NdFormKind = "verification" | "justification" | "revisit";
+
+export interface NonDoableApi {
+  getSummary(): Promise<NdSummary>;
+  listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
+  getCase(id: number): Promise<NdCaseDetail>;
+  getContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
+  /** E1 / E2 / revisit forms with evidence and site photographs (upload progress 0–1) */
+  submitForm(
+    id: number,
+    kind: NdFormKind,
+    data: Record<string, string>,
+    files: { evidence: File[]; photos: File[] },
+    revisit?: "COORDINATION" | "VISIT",
+    onProgress?: (fraction: number) => void,
+  ): Promise<NdCaseDetail>;
+  act(id: number, body: { action: NdAction; remark?: string; reason?: string; target?: "FE" | "AM" | "SME"; to?: { name?: string; email: string }[] }): Promise<NdCaseDetail>;
+  fileUrl(id: number, inline?: boolean): string;
+  /** admin: Corporate Team – MGG members (existing accounts only) */
+  listMgg(): Promise<{ members: NdMggMember[] }>;
+  addMgg(userId: number): Promise<{ members: NdMggMember[] }>;
+  removeMgg(userId: number): Promise<{ members: NdMggMember[] }>;
 }

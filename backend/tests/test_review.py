@@ -563,9 +563,9 @@ def test_amc_plan_summary_picked_date(imported, client):
     assert client.get("/api/v1/amc-plan/summary", params={"date": "not-a-date"}).status_code == 422
 
 
-def test_month_targets_switch_from_plan_file_to_master_data(imported, monkeypatch):
-    """A state-month without Planned Dates uses the targets file ("plan"); once the file has Planned Dates for it, the
-    target is their count ("excel") – no other state or month changes."""
+def test_month_targets_are_planned_dates_only_plan_file_is_reference(imported, monkeypatch):
+    """The target is always the Planned Date count of the file – a state-month without Planned Dates has target 0, the
+    targets file is only shown next to it (planTarget) and never enters a target, a total or a gap."""
     import dataclasses
     import datetime as dt
 
@@ -594,9 +594,11 @@ def test_month_targets_switch_from_plan_file_to_master_data(imported, monkeypatc
     assert (cell("Haryana", "2026-10")["target"], cell("Haryana", "2026-10")["targetSource"]) == (1, "excel")  # file now has 1 Oct Planned Date
     assert (cell("Haryana", "2026-11")["target"], cell("Haryana", "2026-11")["targetSource"]) == (2, "excel")
     assert cell("Haryana", "2026-10")["achieved"] == 1
-    assert (cell("Rajasthan", "2026-11")["target"], cell("Rajasthan", "2026-11")["targetSource"]) == (1063, "plan")  # untouched
+    assert (cell("Rajasthan", "2026-11")["target"], cell("Rajasthan", "2026-11")["planTarget"]) == (0, 1063)  # reference only
+    assert cell("Haryana", "2026-11")["planTarget"] == 1242
     total_nov = r["monthly"]["total"]["cells"][months.index("2026-11")]
-    assert total_nov["target"] == 1063 + 2 and total_nov["targetSource"] == "mixed"
+    assert total_nov["target"] == 2 and total_nov["targetSource"] == "excel" and total_nov["planTarget"] == 1063 + 1242
+    assert total_nov["gap"] is None or total_nov["gap"] == total_nov["target"] - (total_nov["converted"] or 0)
 
 
 def test_amc_plan_by_area_manager(imported, client, monkeypatch):
@@ -680,3 +682,78 @@ def test_key_highlights_weeks_count_ach_date(imported, monkeypatch):
     assert ht["total"]["weeklyConversions"] == [dash.get(lb, 0) or 0 for lb in labels]
     rows = {r["code"]: r["weeklyConversions"] for r in ht["rows"]}
     assert rows["RJ"][labels.index("WK-41")] == 2 and rows["RJ"][labels.index("WK-40")] == 1 and rows["HR"][labels.index("WK-41")] == 1
+
+
+def test_amc_plan_approval_counts(imported, monkeypatch):
+    """'Approval Status' of the achieved GPs: BSNL approved counts as IE accepted too; case / spacing are ignored;
+    blank, pending and 'Letter to be submit' count nowhere. Missing column (older imports) = zeros, nothing breaks."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_summary
+
+    store = imported
+    rj = store.gps.index[store.gps["circle"] == "RAJASTHAN"][:7]
+    d = dt.date
+    plan = pd.DataFrame(
+        {
+            "planned_date": [d(2026, 10, 3)] * 7,
+            "ach_date": [d(2026, 10, 3)] * 6 + [None],  # last one not achieved: its approval must not count
+            "category": "Incremental",
+            "current_status": None,
+            "letter_status": "Submitted",
+            "letter_date": None,
+            "approval_status": ["Approved By BSNL", "approved  by bsnl", "Approved By IE", "Rejected BY IE", "Pending by IE", None, "Approved By BSNL"],
+        },
+        index=rj,
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    row = next(x for x in amc_plan_summary(store, "W-41")["rows"] if x["id"] == "rajasthan")
+    assert row["mtdAchieved"] == 6
+    assert (row["mtdIeAccepted"], row["mtdBsnlAccepted"], row["mtdIeRejected"]) == (3, 2, 1)
+    assert (row["weekIeAccepted"], row["weekBsnlAccepted"], row["weekIeRejected"]) == (3, 2, 1)  # 3 Oct is in W-41
+    assert (row["mtdIePending"], row["weekIePending"]) == (1, 1)  # "Pending by IE"; not-achieved rows never count
+    total = amc_plan_summary(store, "W-41")["total"]
+    assert (total["mtdIeAccepted"], total["mtdBsnlAccepted"], total["mtdIeRejected"]) == (3, 2, 1)
+    assert amc_plan_summary(store, "W-41")["hasApproval"] is True
+
+    monkeypatch.setattr(store, "amc_plan", plan.drop(columns=["approval_status"]))
+    row = next(x for x in amc_plan_summary(store, "W-41")["rows"] if x["id"] == "rajasthan")
+    assert (row["mtdIeAccepted"], row["mtdBsnlAccepted"], row["mtdIeRejected"], row["mtdAchieved"]) == (0, 0, 0, 6)
+    assert amc_plan_summary(store, "W-41")["hasApproval"] is False
+
+
+def test_amc_plan_five_percent_incremental_split(imported, monkeypatch):
+    """5% Incremental figures = the GPs whose plan category is "5% Incremental" – a part of each total, never extra."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from app.analytics.amc_plan import amc_plan_summary
+
+    store = imported
+    rj = store.gps.index[store.gps["circle"] == "RAJASTHAN"][:5]
+    d = dt.date
+    plan = pd.DataFrame(
+        {
+            # W-41 = 2–8 Oct (data date 8 Oct)
+            "planned_date": [d(2026, 10, 3), d(2026, 10, 4), d(2026, 10, 5), d(2026, 10, 20), d(2026, 10, 3)],
+            "ach_date": [d(2026, 10, 3), d(2026, 10, 6), None, None, d(2026, 10, 3)],
+            "category": ["5% Incremental", "Additional Plan", "5% incremental", "5% Incremental", None],
+            "current_status": None,
+            "letter_status": None,
+            "letter_date": None,
+            "approval_status": None,
+        },
+        index=rj,
+    )
+    monkeypatch.setattr(store, "amc_plan", plan)
+    s = amc_plan_summary(store, "W-41")
+    row = next(x for x in s["rows"] if x["id"] == "rajasthan")
+    assert (row["monthTarget"], row["incMonthTarget"]) == (5, 3)
+    assert (row["mtdTarget"], row["incMtdTarget"]) == (4, 2)  # planned 1–8 Oct
+    assert (row["mtdAchieved"], row["incMtdAchieved"]) == (3, 1)
+    assert (row["weekTarget"], row["incWeekTarget"]) == (4, 2)
+    assert (row["weekAchieved"], row["incWeekAchieved"]) == (3, 1)
+    assert s["total"]["incMonthTarget"] == 3 and s["total"]["monthTarget"] == 5  # totals unchanged

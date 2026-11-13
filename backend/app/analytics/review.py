@@ -31,7 +31,7 @@ from ..models import CircleSheetValue
 from .metrics import BANDS, band_counts, r2
 from .reconcile import reconcile
 from .review_periods import reporting_periods
-from .review_summary import executive_summary
+from .review_summary import executive_summary, pick_target
 from .review_targets import targets_page
 from .review_critical import critical_table
 from .store import Store, Week, circle_code, slug
@@ -44,23 +44,17 @@ BANDS_DESC = [b[0] for b in reversed(BANDS)]  # ">98%" first, like the O&M table
 # ---------------------------------------------------------------- source reference values
 
 
-def _source_targets(store: Store) -> dict[str, float]:
-    """O&M KEY NUMBERS "Target for Operational GP (<month> Target)" per circle (upper-case name)."""
-    rep = store.reported
-    if rep.empty:
-        return {}
-    rows = rep[rep["metric"].map(lambda m: bool(re.match(r"\s*target for operational gp", str(m), re.I)))]
-    return {r.state: float(r.value_num) for r in rows.itertuples() if r.value_num is not None and not pd.isna(r.value_num)}
-
-
-def _target_label(store: Store) -> str | None:
-    rep = store.reported
-    hit = rep[rep["metric"].map(lambda m: bool(re.match(r"\s*target for operational gp", str(m), re.I)))] if not rep.empty else rep
-    if not len(hit):
-        return None
-    label = re.sub(r"\s+", " ", str(hit["metric"].iloc[0])).strip()  # "Target for Operational GP (Oct-26Target)"
+def _source_targets(store: Store, td_end: dt.date) -> tuple[dict[str, float], str | None, bool]:
+    """O&M KEY NUMBERS "Target for Operational GP (<month> Target)" per circle (upper-case name) for the month of
+    `td_end`, else the latest month available – the same pick as the Executive Summary (review_summary.pick_target).
+    Returns (targets, label, month matches)."""
+    want = f"{td_end:%Y-%m}"
+    month, t = pick_target(store, want)
+    if not t:
+        return {}, None, False
+    label = t["label"]  # "Target for Operational GP (Oct-26Target)"
     period = re.search(r"\(([^)]*?)\s*target\s*\)", label, re.I)
-    return f"Operational GP target ({period.group(1)})" if period else label
+    return dict(t["values"]), (f"Operational GP target ({period.group(1)})" if period else label), month == want
 
 
 _ONE_TIME_UP = {
@@ -77,14 +71,16 @@ def _source_circle_kpis(store: Store) -> dict[str, dict[str, dict[str, float]]]:
     import (table circle_sheet_values): {CIRCLE: {metricKey: {periodKey: value}}}. Empty when the file had no
     such sheets. The workbook itself is never opened here."""
     with _sheet_lock:
-        if store.dataset_id in _sheet_cache:
-            return _sheet_cache[store.dataset_id]
-    out: dict[str, dict[str, dict[str, float]]] = {}
-    with SessionLocal() as db:
-        for r in db.scalars(select(CircleSheetValue).where(CircleSheetValue.dataset_id == store.dataset_id)):
-            out.setdefault(r.circle, {}).setdefault(r.metric, {})[r.period] = r.value
-    with _sheet_lock:
-        _sheet_cache[store.dataset_id] = out
+        out = _sheet_cache.get(store.dataset_id)
+    if out is None:
+        out = {}
+        with SessionLocal() as db:
+            for r in db.scalars(select(CircleSheetValue).where(CircleSheetValue.dataset_id == store.dataset_id)):
+                out.setdefault(r.circle, {}).setdefault(r.metric, {})[r.period] = r.value
+        with _sheet_lock:
+            _sheet_cache[store.dataset_id] = out
+    if store.full_circles is not None:  # data access: state-level values only for circles given in full
+        return {c: v for c, v in out.items() if str(c).upper() in store.full_circles}
     return out
 
 
@@ -134,7 +130,7 @@ class _Frame:
             "availability": r2(vals.mean()) if vals.notna().any() else None,
             "gpsAbove98": int((vals > s.healthy_threshold).sum()),
             "gpsAtZero": int((vals == 0).sum()),
-            "gpsBelowPenalty": int((vals < s.penalty_threshold).sum()),
+            "gpsBelowPenalty": int((vals.round(2) < s.penalty_threshold).sum()),  # same rule as metrics.summarize
             "gpsReported": int(vals.notna().sum()),
             "naGps": int((amc & vals.isna().to_numpy()).sum()),
             "blocksAbove98": int((blocks > s.healthy_threshold).sum()),
@@ -281,7 +277,7 @@ def _block_detail(store: Store, mask: np.ndarray, week: Week, compare: Week, td_
 
 
 def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dict[str, Any], month_start: dt.date) -> dict[str, Any]:
-    targets = _source_targets(store)
+    targets, label, month_matches = _source_targets(store, td["end"])
     g = store.gps
     amc_dt = frame.amc_dt
     month_end = month_start.replace(day=calendar.monthrange(month_start.year, month_start.month)[1])
@@ -312,7 +308,7 @@ def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dic
                 "targetGap": r2(gap),
                 "targetAchievedPct": r2(m["amcGps"] / target * 100) if target else None,
                 "targetCoveragePct": r2(target / m["revisedExisting"] * 100) if target and m["revisedExisting"] else None,
-                "requiredPerDay": r2(gap / days_left) if gap and days_left else None,
+                "requiredPerDay": r2(gap / days_left) if gap and days_left and month_matches else None,
                 "addedThisMonth": added,
                 "rfpTarget": rfp,
                 "rfpGap": r2(max(0.0, rfp - m["amcGps"])),
@@ -321,7 +317,7 @@ def _targets(store: Store, circles: list[dict[str, Any]], frame: _Frame, td: dic
             }
         )
     return {
-        "label": _target_label(store),
+        "label": label,
         "source": "O&M sheet – KEY NUMBERS" if targets else None,
         "monthEnd": month_end.isoformat(),
         "daysLeft": days_left,
@@ -488,7 +484,7 @@ def management_review(store: Store, week_code: str, compare_code: str, data_qual
                 f"GPs > {s.healthy_threshold:g}%: AMC GPs with availability strictly above {s.healthy_threshold:g}% (exactly {s.healthy_threshold:g}% falls in 95–98%).",
                 f"Penalty-prone block: block whose mean AMC GP availability is below {s.penalty_threshold:g}% (O&M rule).",
                 "NA: AMC GP with no availability value in the source – excluded from averages, never counted as 0%.",
-                "Months use the workbook's monthly AMC columns; TD = month to date from daily data; weeks use the source's W-nn columns (Fri–Thu).",
+                "Months use the workbook's monthly AMC columns; TD = month to date from daily data; weeks use the source's W-nn columns (as in the master data sheet).",
                 "A GP is counted in a column only when it is under AMC by the column's end date.",
                 "One-Time-Up figures come from the circle sheets (external report) and cannot be derived from GP data.",
             ],

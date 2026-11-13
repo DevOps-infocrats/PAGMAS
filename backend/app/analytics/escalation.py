@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import select, text
 
+from ..config import get_settings
 from ..db import SessionLocal, engine
 from ..models import EscalationImport
 from .metrics import r2
@@ -65,11 +66,14 @@ class NoEscalationData(Exception):
 
 _cache: dict[str, Any] = {}
 _lock = threading.Lock()
+_version = 0  # bumped on every invalidation; part of the joined frame's memo key
 
 
 def invalidate_escalation() -> None:
+    global _version
     with _lock:
         _cache.clear()
+        _version += 1
 
 
 def _active() -> tuple[dict[str, Any], pd.DataFrame] | None:
@@ -110,10 +114,14 @@ def _frame(store: Store) -> tuple[dict[str, Any], pd.DataFrame]:
     if act is None:
         raise NoEscalationData("No Escalation Matrix has been uploaded yet – upload it on Data Operations.")
     meta, esc = act
-    key = ("joined", meta["id"], store.dataset_id)
-    with _lock:
-        if _cache.get("joined_key") == key:
-            return meta, _cache["joined"]
+    # Memoised on the snapshot (a viewer's scoped snapshot has its own memo, so scopes never mix); a new upload
+    # has a new import id, and every invalidation a new version.
+    return meta, store.memo(("esc-joined", meta["id"], _version), lambda: _join(store, esc))
+
+
+def _join(store: Store, esc: pd.DataFrame) -> pd.DataFrame:
+    if store.scope_key is not None:  # data access: only the viewer's GPs (rows not in the master list are left out)
+        esc = esc[esc.index.isin(store.gps.index)]
     g = store.gps.reindex(esc.index)
     df = esc.copy()
     df["in_master"] = g["circle"].notna().to_numpy()
@@ -136,9 +144,7 @@ def _frame(store: Store) -> tuple[dict[str, Any], pd.DataFrame]:
     df["am_vacant"] = df["am_name"].map(is_vacant).to_numpy()
     df["field_complete"] = df["has_frt"] & df["has_splicer"] & df["phone_ok_splicer"] & df["has_fe"] & df["phone_ok_fe"]
     df["escalation_complete"] = df["has_am"] & df["has_shq"] & df["has_coh"] & df["has_cbh"]
-    with _lock:
-        _cache.update(joined_key=key, joined=df)
-    return meta, df
+    return df
 
 
 def _mtd(store: Store, week: str) -> pd.Series:
@@ -156,7 +162,7 @@ def _filter(df: pd.DataFrame, circle: str | None, district: str | None, block: s
         m &= (df["block_id"] == block).to_numpy()
     if search and search.strip():
         q = search.strip().lower()
-        hay = df["gp_label"].str.lower() + " " + df.index.astype(str) + " " + df["block_label"].str.lower()
+        hay = df["gp_label"].str.lower() + " " + df.index.astype(str).str.lower() + " " + df["block_label"].str.lower()
         for col in ("frt_code", "splicer_name", "fe_name", "am_name"):
             hay = hay + " " + df[col].fillna("").astype(str).str.lower()
         m &= hay.str.contains(q, regex=False).to_numpy()
@@ -311,7 +317,7 @@ def workload(store: Store, week: str, role: Role, circle: str | None, full: bool
                 "amcGps": int(grp["amc"].sum()),
                 "availability": r2(vals.mean()) if len(vals) else None,
                 "gpsAtZero": int((vals == 0).sum()),
-                "gpsBelow90": int((vals < 90).sum()),
+                "gpsBelow90": int((vals < get_settings().penalty_threshold).sum()),
             }
         )
     rows.sort(key=lambda x: (-x["gps"], x["name"]))
@@ -335,7 +341,7 @@ def workload(store: Store, week: str, role: Role, circle: str | None, full: bool
 def down(store: Store, week: str, mode: Literal["zero", "below90"], circle: str | None, district: str | None, block: str | None, search: str | None, page: int, page_size: int, full: bool) -> dict[str, Any]:
     meta, df = _frame(store)
     mtd = _mtd(store, week).reindex(df.index)
-    sel = (mtd == 0) if mode == "zero" else (mtd < 90)
+    sel = (mtd == 0) if mode == "zero" else (mtd < get_settings().penalty_threshold)
     sub = _filter(df[sel.to_numpy()], circle, district, block, search)
     vals = mtd.reindex(sub.index)
     sub = sub.assign(_mtd=vals).sort_values(["_mtd", "circle_name", "block_label", "gp_label"], kind="stable")

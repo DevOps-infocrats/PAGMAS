@@ -231,6 +231,8 @@ export interface IngestionRun {
   issueCounts?: { critical: number; warning: number; info: number };
   /** An upload report (changes vs the previous upload) exists for this run */
   hasReport?: boolean;
+  /** Optional columns / reference sheets the importer did not find -> offer "Check columns" */
+  missingColumns?: number;
 }
 
 export interface Paginated<T> {

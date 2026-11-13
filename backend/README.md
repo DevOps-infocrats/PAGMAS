@@ -31,7 +31,10 @@ backend/
     reports/     review_pptx.py  pdf.py
   scripts/       generate_env.py  hash_password.py
   tests/         conftest.py  test_security.py  test_accuracy.py  test_review.py
-  start.ps1  requirements.txt  .env.example
+  start.ps1 / start.sh       local start (Windows / macOS-Linux) on port 8010
+  start-production.sh       production start (1 worker, proxy headers)
+  requirements.txt          runtime dependencies    · requirements-dev.txt  + test tools
+  .env.example              settings template
 ```
 
 ### Core
@@ -104,14 +107,14 @@ backend/
 ```powershell
 cd E:\PRATAP\BSNL\backend
 python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt   # production servers: requirements.txt only
 .\.venv\Scripts\python scripts\generate_env.py          # creates .env with a random SECRET_KEY
 .\.venv\Scripts\python -m app.cli create-user --email you@company.com --name "Your Name" --role admin   # prompts for password
 .\.venv\Scripts\python -m app.cli import-file "..\data\raw\Master Data V8.2 Daily track 09-10-26.xlsb"
 .\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8010
 ```
 
-Or simply run `.\start.ps1`. On first start, if no data is imported yet, the newest workbook in `data/raw/` is imported automatically. The server runs without auto-reload – restart it after changing code or `.env`.
+Or simply run `.\start.ps1` (macOS / Linux: `./start.sh`). On first start, if no data is imported yet, the newest workbook in `data/raw/` is imported automatically. The server runs without auto-reload – restart it after changing code or `.env`.
 
 Tests: `.\.venv\Scripts\python -m pytest -q` (accuracy tests run when the real workbook is in `data/raw/`).
 
@@ -162,6 +165,11 @@ renames a column or a sheet, add the new name to its list in `data/column_map.js
 ```json
 "gpColumns": { "amc_date": ["AMC Date", "AMC Dt"] }
 ```
+
+The Escalation Matrix workbook uses the `escalationColumns` section the same way (e.g.
+`"am_phone": ["AM Contact No", "AM Mobile"]`). Its fields include `ba` (business area) and `am_email` (AM e-mail,
+shown on the area-manager tables of AMC Conversion; in full to admins only). Optional matrix columns that are not
+found are listed in the import's message.
 
 Save and upload the workbook again. Rules: the built-in names always keep working (the file only adds names);
 the first listed name wins when a workbook contains several of them (a warning is recorded); a name given to two
@@ -215,6 +223,39 @@ Data-quality checks recorded per import: invalid OLT values (dates/numbers), mis
 * Default reporting week = the latest **completed** week in the file; columns move forward automatically with new weeks.
 * Targets: O&M "Target for Operational GP"; monthly plans and weekly closure targets from `data/review_plan.json`; RFP benchmark 75% of existing GPs.
 * The PPT endpoint takes `sections` and `circles`, refuses to build a deck when a validation check fails, and records every download in the audit log.
+
+## Mail Configuration and User Management (AMC Conversion e-mails)
+
+Admin pages **Administration → Mail Configuration** and **→ User Management**; code in `app/mail/`, API in
+`app/api/mail.py` (+ users in `app/api/admin.py`), tests in `tests/test_mail.py`.
+
+| Module | Job |
+|---|---|
+| `audience.py` | who gets an e-mail and which GPs it covers |
+| `report.py` | AMC figures of a GP set (same rules as AMC Conversion → Plan vs Execution) |
+| `template.py` | `{{placeholders}}`, 3 built-in templates, validation, safe rendering (text + HTML) |
+| `schedule.py` | next send time (daily / weekly / monthly, `MAIL_TIMEZONE`) |
+| `service.py` | scheduler thread, slot claim, delivery, run log |
+| `smtp.py` | SMTP settings check, connection, test mail |
+
+**Audiences.** `am` / `sme` / `coh` / `cbh` come from the active Escalation Matrix (name + e-mail columns; one person
+= one name within one circle; "Vacant…/Vacent-1" posts get nothing). An Area Manager's e-mail covers only the GPs
+assigned to them (block-wise table); SME / COH / CBH get their circle (area-manager-wise table). `users` = dashboard
+users: admins every GP, viewers only their assigned circles / districts / blocks (`user_scopes`; none = no e-mail).
+**Filters** (state, business area, block, chosen people) narrow every recipient's GPs; one address gets one e-mail
+(roles merged). Re-upload the Escalation Matrix once after this change so the SME / COH / CBH e-mails are stored.
+
+**Templates** (`mail_templates`): `detailed`, `summary`, `action` are built in (editable, resettable, not deletable);
+admins can add their own. Unknown placeholders are refused on save; values are HTML-escaped; tables are built by code.
+
+**Sending.** Nothing is sent when saving / enabling a schedule (next time is always in the future), at start-up or in
+tests. The scheduler runs only with `AMC_REPORT_EMAILS_ENABLED=true` (checks every 60 s). Each slot is claimed via the
+unique `mail_runs(config_id, scheduled_for)` row → no double sends; a slot missed by > 6 h is SKIPPED. "Send Test
+Mail" sends one plain message (5 per admin per 10 min).
+
+**Environment** (see `.env.example`): `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_SSL` / `MAIL_USE_TLS` (not both),
+`MAIL_USERNAME` + `MAIL_PASSWORD`, `MAIL_DEFAULT_SENDER`, `MAIL_TIMEZONE`, `AMC_REPORT_EMAILS_ENABLED` (default false).
+`SMTP_APPROVAL_EMAILS_ENABLED` is read but reserved for approval e-mails. Bad mail settings never stop the API.
 
 ## Security
 

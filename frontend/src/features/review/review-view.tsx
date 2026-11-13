@@ -83,19 +83,19 @@ export function ManagementReviewView() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[min(1080px,100%)] space-y-4 lg:w-[max(900px,85%)]">
+    <div className="mx-auto w-full max-w-[min(67.5rem,100%)] space-y-4 lg:w-[max(56.25rem,85%)]">
       {/* 85% of the content area (never under 900px, never over 1080px), so the report reads as a page on a laptop too */}
       {/* ---------------- Compact report header: title + actions, then the period pickers ---------------- */}
       <Card className="overflow-hidden p-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-gradient-to-r from-primary-soft/70 via-primary-soft/30 to-transparent px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="shrink-0 rounded-lg bg-card p-1.5 shadow-sm ring-1 ring-border">
               <Logo variant="full" width={40} eager />
             </span>
             <div className="min-w-0">
-              <h1 className="text-lg font-semibold leading-tight">Management Review</h1>
+              <h1 className="text-brand w-fit text-[1.3125rem] font-extrabold leading-tight tracking-tight">Management Review</h1>
               <p
-                className="truncate text-[13px] text-muted-foreground"
+                className="truncate text-[0.8125rem] text-muted-foreground"
                 title="The default week is the latest completed week in the file. All figures are recalculated from the active workbook whenever a new file is uploaded."
               >
                 {period ? (
@@ -121,7 +121,7 @@ export function ManagementReviewView() {
             </Button>
           </div>
         </div>
-        <div className="border-t border-border px-4 py-3">
+        <div className="border-t border-border bg-muted/40 px-5 py-3">
           <PeriodFilter />
         </div>
       </Card>
@@ -161,7 +161,7 @@ export function ManagementReviewView() {
           )}
           <nav aria-label="Report page navigation" className="flex flex-wrap items-center justify-between gap-3">
             {prev ? (
-              <Link href={pageHref(prev.id)} className="group inline-flex max-w-[48%] items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-sm hover:bg-accent">
+              <Link href={pageHref(prev.id)} className="group inline-flex max-w-[48%] items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-sm shadow-xs transition-colors hover:bg-accent">
                 <ChevronLeft className="size-4 shrink-0 text-muted-foreground group-hover:text-foreground" aria-hidden />
                 <span className="min-w-0">
                   <span className="block text-xs text-muted-foreground">Previous · page {index}</span>
@@ -172,7 +172,7 @@ export function ManagementReviewView() {
               <span />
             )}
             {next && (
-              <Link href={pageHref(next.id)} className="group inline-flex max-w-[48%] items-center gap-2 rounded-lg border border-primary/40 bg-primary-soft/40 px-4 py-2.5 text-right text-sm hover:bg-primary-soft">
+              <Link href={pageHref(next.id)} className="group inline-flex max-w-[48%] items-center gap-2 rounded-lg border border-primary/30 bg-primary-soft/50 px-4 py-2.5 text-right text-sm shadow-xs transition-colors hover:bg-primary-soft">
                 <span className="min-w-0">
                   <span className="block text-xs text-muted-foreground">Next · page {index + 2}</span>
                   <span className="block truncate font-semibold">{next.title}</span>
@@ -214,13 +214,13 @@ function PageHead({ id, number, total, title, hint }: { id?: string; number: num
       <div className="flex min-w-0 items-center gap-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-semibold text-primary-foreground">{number}</span>
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-primary">
             Page {number} of {total}
           </p>
-          <h2 id={id ? `sec-${id}-title` : undefined} className="truncate text-base font-semibold sm:text-lg">
+          <h2 id={id ? `sec-${id}-title` : undefined} className="truncate text-base font-bold text-subheading sm:text-lg">
             {title}
           </h2>
-          {hint && <p className="truncate text-[13px] text-muted-foreground">{hint}</p>}
+          {hint && <p className="truncate text-[0.8125rem] text-muted-foreground">{hint}</p>}
         </div>
       </div>
       <Logo variant="wordmark" width={84} className="shrink-0" />
@@ -230,7 +230,7 @@ function PageHead({ id, number, total, title, hint }: { id?: string; number: num
 
 function PageFoot({ number, total, weekLabel }: { number: number; total: number; weekLabel: string }) {
   return (
-    <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-2 text-[11px] text-muted-foreground">
+    <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/30 px-5 py-2 text-[0.6875rem] text-muted-foreground">
       <span className="truncate">Pratap · Management Governance Review · {weekLabel}</span>
       <span className="shrink-0 font-medium">
         {number} / {total}
@@ -242,8 +242,8 @@ function PageFoot({ number, total, weekLabel }: { number: number; total: number;
 /** One report page: framed like a sheet (accent bar, border, header, footer) so it reads as a single page. */
 function ReportPage({ id, number, total, title, hint, weekLabel, children }: { id: string; number: number; total: number; title: string; hint: string; weekLabel: string; children: React.ReactNode }) {
   return (
-    <section aria-labelledby={`sec-${id}-title`} id={`sec-${id}`} className="scroll-mt-24 overflow-hidden rounded-xl border-2 border-primary/25 bg-card shadow-lg ring-4 ring-primary/5">
-      <div className="brand-gradient h-1.5" aria-hidden />
+    <section aria-labelledby={`sec-${id}-title`} id={`sec-${id}`} className="scroll-mt-24 overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+      <div className="brand-gradient h-1" aria-hidden />
       <PageHead id={id} number={number} total={total} title={title} hint={hint} />
       <div className="p-4 sm:p-5">{children}</div>
       <PageFoot number={number} total={total} weekLabel={weekLabel} />

@@ -45,19 +45,19 @@ function KpiCompareCard({ k, current, previous, circles }: { k: ReviewSummary["k
   const unit = k.unitOfCount;
   const side = (title: string, label: string, range: string, value: number | null, pctV: number | null, denom: number, strong: boolean) => (
     <div className={cn("rounded-lg border", present ? "p-2.5" : "p-3", strong ? "border-primary/40 bg-card" : "border-border bg-muted/30")}>
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</p>
+      <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">{title}</p>
       <p className="text-sm font-semibold">
         {label} <span className="font-normal text-muted-foreground">({range})</span>
       </p>
-      <p className={cn("mt-1 text-[26px] font-semibold leading-8 tabular", strong ? "text-primary" : "text-foreground")}>{fmt(value)}</p>
+      <p className={cn("mt-0.5 text-[1.4375rem] font-bold leading-7 tabular", strong ? "text-primary" : "text-foreground")}>{fmt(value)}</p>
       <p className="text-xs text-muted-foreground">
         {unit} · {formatPercent(pctV, 2)} of {fmt(denom)} reporting {unit}
       </p>
     </div>
   );
   return (
-    <div className={cn("flex flex-col rounded-xl border border-border bg-card shadow-sm", present ? "p-3" : "p-4")}>
-      <p className={cn("text-[15px] font-semibold", present ? "mb-2" : "mb-3")}>{k.label}</p>
+    <div className={cn("flex flex-col rounded-lg border border-border bg-card shadow-xs", present ? "p-3" : "p-4")}>
+      <p className={cn("text-[0.9375rem] font-semibold", present ? "mb-2" : "mb-3")}>{k.label}</p>
       <div className="grid grid-cols-2 gap-3">
         {side("Current week", current.label, shortRange(current.start, current.end), k.current, k.currentPct, k.currentDenominator, true)}
         {side("Previous week", previous.label, shortRange(previous.start, previous.end), k.previous, k.previousPct, k.previousDenominator, false)}
@@ -72,8 +72,9 @@ function KpiCompareCard({ k, current, previous, circles }: { k: ReviewSummary["k
       </div>
       {/* state-wise split of the same KPI */}
       <div className={cn("border-t border-border", present ? "mt-2 pt-2" : "mt-3 pt-3")}>
-        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">State-wise</p>
-        <table className="w-full text-[13px]">
+        <p className="mb-1.5 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">State-wise</p>
+        <div className="overflow-x-auto">
+        <table className="w-full text-[0.8125rem]">
           <caption className="sr-only">{`${k.label} by state`}</caption>
           <thead>
             <tr className="text-xs text-muted-foreground">
@@ -106,6 +107,7 @@ function KpiCompareCard({ k, current, previous, circles }: { k: ReviewSummary["k
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -169,7 +171,8 @@ function ExecutiveContent({ r }: { r: R }) {
 
       <div className={present ? "grid grid-cols-[1.65fr_1fr] gap-3" : "grid gap-4"}>
         <Panel title={ht.title} description={ht.basis} className={cn(present && "sm:p-4")}>
-          <table className="w-full table-fixed text-[13px]">
+          <div className="overflow-x-auto">
+          <table className="w-full table-fixed text-[0.8125rem]">
             <caption className="sr-only">{ht.title}</caption>
             <thead>
               <tr className="bg-primary text-primary-foreground">
@@ -191,7 +194,7 @@ function ExecutiveContent({ r }: { r: R }) {
                 {ht.weeks.map((w, i) => (
                   <th key={w.id} scope="col" className={cn("px-2 py-1.5 text-center text-xs font-semibold", i === 0 && "border-l border-white/20")}>
                     {w.label}
-                    <span className="block whitespace-nowrap text-[11px] font-normal opacity-80">{shortRange(w.start, w.end)}</span>
+                    <span className="block whitespace-nowrap text-[0.6875rem] font-normal opacity-80">{shortRange(w.start, w.end)}</span>
                   </th>
                 ))}
               </tr>
@@ -216,9 +219,10 @@ function ExecutiveContent({ r }: { r: R }) {
               })}
             </tbody>
           </table>
+          </div>
         </Panel>
         <Panel title="Executive insights" description="Calculated from the figures on this page" className={cn(present && "sm:p-4")}>
-          <ul className={present ? "space-y-2 text-[13px]" : "space-y-2.5 text-sm"}>
+          <ul className={present ? "space-y-2 text-[0.8125rem]" : "space-y-2.5 text-sm"}>
             {sm.insights.map((i) => (
               <li key={i.text} className="flex gap-2">
                 <StatusBadge tone={INSIGHT_TAG[i.kind].tone} className="h-fit">
@@ -245,10 +249,10 @@ export function AmcConversionCards({ cc }: { cc: R["targetsPage"]["circleCards"]
   return (
     <div className={present ? "grid grid-cols-3 gap-3" : "grid gap-4 lg:grid-cols-2"}>
       {cc.cards.map((c) => (
-        <div key={c.id} className={cn("flex flex-col rounded-xl border border-border bg-card shadow-sm", present ? "p-3.5" : "p-5")}>
+        <div key={c.id} className={cn("flex flex-col rounded-lg border border-border bg-card shadow-xs", present ? "p-3.5" : "p-5")}>
           <div>
             <div>
-              <p className="text-[15px] font-semibold">{c.name} – GPs converted to AMC</p>
+              <p className="text-[0.9375rem] font-semibold">{c.name} – GPs converted to AMC</p>
               <p className="text-xs text-muted-foreground">AMC + incremental GPs, counted by AMC date</p>
             </div>
             <div className="mt-2 flex flex-wrap items-baseline gap-x-2">
@@ -267,7 +271,7 @@ export function AmcConversionCards({ cc }: { cc: R["targetsPage"]["circleCards"]
               ] as const
             ).map(([title, curL, prevL, ch]) => (
               <div key={title} className={cn("rounded-lg border border-border bg-muted/30", present ? "p-2.5" : "p-3")}>
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{title} conversions</p>
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">{title} conversions</p>
                 <div className="mt-1 flex items-end justify-between gap-2">
                   <div>
                     <p className="text-xs text-muted-foreground">{curL}</p>
@@ -287,11 +291,11 @@ export function AmcConversionCards({ cc }: { cc: R["targetsPage"]["circleCards"]
           </div>
 
           <div className={present ? "mt-2" : "mt-3"}>
-            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">GPs converted per week</p>
+            <p className="mb-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">GPs converted per week</p>
             <div className="grid grid-cols-4 gap-2">
               {c.trend.map((w, i) => (
                 <div key={w.label} className={cn("rounded-md border px-2 py-1.5 text-center", i === c.trend.length - 1 ? "border-primary/40 bg-primary-soft/40" : "border-border")}>
-                  <p className="text-[11px] text-muted-foreground">{w.label}</p>
+                  <p className="text-[0.6875rem] text-muted-foreground">{w.label}</p>
                   <p className="tabular font-semibold">{fmt(w.value)}</p>
                 </div>
               ))}
@@ -334,7 +338,7 @@ function TargetsContent({ r }: { r: R }) {
   const tp = r.targetsPage;
   const rm = tp.roadmap;
   const wk = tp.weekly;
-  const th = "border-l border-white/20 px-1.5 py-2 text-center text-[11px] font-semibold leading-tight";
+  const th = "border-l border-white/20 px-1.5 py-2 text-center text-[0.6875rem] font-semibold leading-tight";
   const present = usePresent();
   const tight = cn(present && "sm:p-4");
   return (
@@ -353,7 +357,7 @@ function TargetsContent({ r }: { r: R }) {
       <div className={present ? "grid grid-cols-[1fr_2.1fr] gap-3" : "space-y-6"}>
         <Panel title={rm.title} description={rm.subtitle} className={tight}>
           <div className="overflow-x-auto rounded-lg border border-border">
-            <table className={cn("w-full text-[13px]", !present && "min-w-[520px]")}>
+            <table className={cn("w-full text-[0.8125rem]", !present && "min-w-[32.5rem]")}>
               <caption className="sr-only">{rm.title}</caption>
               <thead className="bg-primary text-primary-foreground">
                 <tr>
@@ -386,7 +390,7 @@ function TargetsContent({ r }: { r: R }) {
                       <td className={cn("px-3 py-2 text-center tabular font-semibold", total ? "bg-good text-white" : "bg-good-soft text-good-text")}>
                         {dash(x.planAchieved)}
                         {x.planAchievedPct != null && (
-                          <span className={cn("ml-1 text-[11px] font-normal", total ? "text-white/85" : "text-muted-foreground")}>({x.planAchievedPct.toFixed(1)}%)</span>
+                          <span className={cn("ml-1 text-[0.6875rem] font-normal", total ? "text-white/85" : "text-muted-foreground")}>({x.planAchievedPct.toFixed(1)}%)</span>
                         )}
                       </td>
                       {x.futurePlans.map((v, i) => (
@@ -410,7 +414,7 @@ function TargetsContent({ r }: { r: R }) {
 
         <Panel title={wk.title} description="New target = Planned Date in the week (master data file) · old target = manual plan · achieved = Ach Date in the week" className={tight}>
           <div className="overflow-x-auto rounded-lg border border-border">
-            <table className="w-full table-fixed text-[13px]">
+            <table className="w-full table-fixed text-[0.8125rem]">
               <caption className="sr-only">{wk.title}</caption>
               {/* old : new : achieved = 25 : 32 : 43 of each week's width, so "Achieved" and its % always fit */}
               <colgroup>
@@ -419,7 +423,7 @@ function TargetsContent({ r }: { r: R }) {
               </colgroup>
               <thead className="bg-primary text-primary-foreground">
                 <tr>
-                  <th rowSpan={2} scope="col" className="px-3 py-2 text-left text-[11px] font-semibold">
+                  <th rowSpan={2} scope="col" className="px-3 py-2 text-left text-[0.6875rem] font-semibold">
                     Circle
                   </th>
                   {wk.weeks.map((w) => (
@@ -455,7 +459,7 @@ function TargetsContent({ r }: { r: R }) {
                         {x.name}
                       </th>
                       {x.weeks.flatMap((cell, i) => [
-                        <td key={`${i}o`} className={cn("px-1 py-2 text-center tabular text-[12px]", total ? "text-primary-foreground/75" : "text-muted-foreground")}>
+                        <td key={`${i}o`} className={cn("px-1 py-2 text-center tabular text-[0.75rem]", total ? "text-primary-foreground/75" : "text-muted-foreground")}>
                           {cell.oldTarget == null ? "—" : <span className="line-through decoration-1">{fmt(cell.oldTarget)}</span>}
                         </td>,
                         <td
@@ -481,7 +485,7 @@ function TargetsContent({ r }: { r: R }) {
                           title={cell.achievedPct == null ? undefined : `${cell.achievedPct}% of the new target`}
                         >
                           {dash(cell.achieved)}
-                          {cell.achievedPct != null && <span className={cn("block text-[10px] font-normal", total ? "text-white/85" : "text-muted-foreground")}>{cell.achievedPct.toFixed(0)}%</span>}
+                          {cell.achievedPct != null && <span className={cn("block text-[0.625rem] font-normal", total ? "text-white/85" : "text-muted-foreground")}>{cell.achievedPct.toFixed(0)}%</span>}
                         </td>,
                       ])}
                     </tr>
@@ -529,10 +533,10 @@ export function OperationsTab({ r }: { r: R }) {
   return (
     <Panel title="Operations snapshot" description="Scope | HOTO status | AMC status | gap – blocks under AMC = blocks with at least one AMC GP">
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[900px] text-sm">
+        <table className="w-full min-w-[56.25rem] text-sm">
           <caption className="sr-only">Scope, HOTO, AMC and gap by circle</caption>
           <thead>
-            <tr className="border-b border-border bg-muted/60 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <tr className="border-b border-border bg-card text-[0.78125rem] font-semibold text-foreground">
               <th rowSpan={2} scope="col" className="px-3 py-2 text-left">
                 Period
               </th>
@@ -545,7 +549,7 @@ export function OperationsTab({ r }: { r: R }) {
                 </th>
               ))}
             </tr>
-            <tr className="border-b border-border bg-muted/40 text-[11px] font-semibold text-muted-foreground">
+            <tr className="border-b border-border bg-muted/40 text-[0.6875rem] font-semibold text-muted-foreground">
               {parts.flatMap((p) =>
                 codes.map((c, i) => (
                   <th key={`${p}-${c}`} scope="col" className={cn("px-3 py-1.5 text-right", i === 0 && "border-l border-border")}>
@@ -613,10 +617,10 @@ export function CriticalKpiTab({ r }: { r: R }) {
       <InsightBar items={all.insights.kpi} />
       <Panel title={`${wk} vs WK-${r.compareWeek.number} by circle`} description="Weekly columns of the source; colour shows whether the change is an improvement">
         <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full min-w-[45rem] text-sm">
             <caption className="sr-only">Week-on-week change by circle</caption>
             <thead>
-              <tr className="border-b border-border bg-muted/60 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <tr className="border-b border-border bg-card text-[0.78125rem] font-semibold text-foreground">
                 <th scope="col" className="px-4 py-2.5 text-left">
                   KPI
                 </th>
@@ -661,7 +665,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <h3 className="text-xl font-semibold">Critical KPI – Blocks &amp; GPs {section?.name}</h3>
+        <h3 className="text-xl font-bold text-subheading">Critical KPI – Blocks &amp; GPs {section?.name}</h3>
         <CircleSelect circles={r.circles} value={circleId} onChange={setCircleId} />
       </div>
       {!ct ? (
@@ -670,7 +674,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
         <>
           <Panel title={ct.title} description="Months = monthly AMC columns · MTD = month to date from daily data (previous month: same days) · weeks = source W-nn columns · Penalty prone = block average < 90% · * One-Time-Up from the circle sheet">
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full min-w-[760px] text-[13px]">
+              <table className="w-full min-w-[47.5rem] text-[0.8125rem]">
                 <caption className="sr-only">{ct.title}</caption>
                 <thead className="bg-primary text-primary-foreground">
                   <tr>
@@ -683,7 +687,7 @@ export function BlocksGpsTab({ r }: { r: R }) {
                     {ct.columns.map((col) => (
                       <th key={col.key} scope="col" className={cn("px-3 py-2 text-center text-xs font-semibold", (col.kind === "mtd" || col.kind === "ptd") && "bg-white/10")}>
                         {col.label}
-                        {(col.kind === "mtd" || col.kind === "ptd") && <span className="block text-[10px] font-normal opacity-85">{mtdRange(col.endDate)}</span>}
+                        {(col.kind === "mtd" || col.kind === "ptd") && <span className="block text-[0.625rem] font-normal opacity-85">{mtdRange(col.endDate)}</span>}
                       </th>
                     ))}
                   </tr>
@@ -1004,7 +1008,7 @@ export function DataNotesTab({ r }: { r: R }) {
             {
               key: "n",
               header: "Note",
-              render: (x) => <span className="block max-w-[420px] whitespace-normal text-xs text-muted-foreground">{x.note ?? "—"}</span>,
+              render: (x) => <span className="block max-w-[26.25rem] whitespace-normal text-xs text-muted-foreground">{x.note ?? "—"}</span>,
             },
           ]}
         />

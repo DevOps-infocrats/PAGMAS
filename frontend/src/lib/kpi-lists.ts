@@ -10,6 +10,7 @@ export const KPI_LIST_PATH = "/dashboard/kpi-list";
 export const KPI_LISTS: Record<KpiListKind, { unit: "gp" | "block"; linkLabel: string }> = {
   "gps-above-98": { unit: "gp", linkLabel: "View GP list" },
   "gps-at-zero": { unit: "gp", linkLabel: "View GP list" },
+  "gps-below-90": { unit: "gp", linkLabel: "View GP list" },
   "penalty-blocks": { unit: "block", linkLabel: "View block list" },
   "hoto-gps": { unit: "gp", linkLabel: "View GP list" },
   "hoto-blocks": { unit: "block", linkLabel: "View block list" },
@@ -23,6 +24,7 @@ export const KPI_LISTS: Record<KpiListKind, { unit: "gp" | "block"; linkLabel: s
   "non-amc-gps": { unit: "gp", linkLabel: "View GP list" },
   "amc-original-gps": { unit: "gp", linkLabel: "View GP list" },
   "incremental-gps": { unit: "gp", linkLabel: "View GP list" },
+  "amc-gps": { unit: "gp", linkLabel: "View GP list" },
   "removed-gps": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-month": { unit: "gp", linkLabel: "View GP list" },
   "amc-plan-mtd": { unit: "gp", linkLabel: "View GP list" },
@@ -30,6 +32,8 @@ export const KPI_LISTS: Record<KpiListKind, { unit: "gp" | "block"; linkLabel: s
   "amc-plan-week": { unit: "gp", linkLabel: "View GP list" },
   "amc-achieved-week": { unit: "gp", linkLabel: "View GP list" },
   "amc-overdue": { unit: "gp", linkLabel: "View GP list" },
+  "amc-converted-mtd": { unit: "gp", linkLabel: "View GP list" },
+  "amc-converted-week": { unit: "gp", linkLabel: "View GP list" },
 };
 
 /**
@@ -51,6 +55,7 @@ export const KPI_LIST_GROUPS = {
     tabs: [
       { kind: "gps-above-98", label: "GPs >98%" },
       { kind: "gps-at-zero", label: "GPs at 0%" },
+      { kind: "gps-below-90", label: "GPs <90%" },
       { kind: "na-gps", label: "Not reported (NA)" },
       { kind: "penalty-blocks", label: "Penalty blocks <90%" },
       { kind: "one-time-up", label: "One-time UP (Sept)" },
@@ -85,13 +90,15 @@ export const KPI_LIST_GROUPS = {
     tabs: [
       { kind: "hoto-gps", label: "HOTO done GPs" },
       { kind: "hoto-pending-gps", label: "HOTO pending GPs" },
+      { kind: "removed-gps", label: "Converted to NP / Closed" },
     ],
   },
   // Block Insights → AMC GPs card: the two kinds of AMC GP side by side.
   amcGps: {
-    title: "AMC GPs",
+    title: "AMC GP details",
     view: "summary",
     tabs: [
+      { kind: "amc-gps", label: "All AMC GPs" },
       { kind: "amc-original-gps", label: "AMC (original) GPs" },
       { kind: "incremental-gps", label: "Incremental GPs" },
     ],

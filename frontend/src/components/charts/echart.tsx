@@ -1,12 +1,13 @@
 "use client";
 
-import { BarChart, LineChart } from "echarts/charts";
-import { AriaComponent, GridComponent, LegendComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
+import { BarChart, LineChart, PieChart } from "echarts/charts";
+import { AriaComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
+import { LegacyGridContainLabel } from "echarts/features";
 import { SVGRenderer } from "echarts/renderers";
 import { useEffect, useRef } from "react";
 
-echarts.use([BarChart, LineChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, AriaComponent, SVGRenderer]);
+echarts.use([BarChart, LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, MarkAreaComponent, AriaComponent, SVGRenderer, LegacyGridContainLabel]); // grid.containLabel (axis labels kept inside the chart) needs this in ECharts 6
 
 export type EChartsOption = echarts.EChartsCoreOption;
 export interface EChartClickParams {
@@ -57,5 +58,5 @@ export function EChart({
     chart.current?.setOption({ aria: { enabled: true }, ...option }, { notMerge: true });
   }, [option]);
 
-  return <div ref={ref} role="img" aria-label={ariaLabel} style={{ height, width: "100%", cursor: onClick ? "pointer" : undefined }} />;
+  return <div ref={ref} role="img" aria-label={ariaLabel} style={{ height: `${height / 16}rem`, width: "100%", cursor: onClick ? "pointer" : undefined }} />;
 }

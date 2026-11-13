@@ -93,7 +93,7 @@ export function KpiTabs({
                 }
               }}
               className={cn(
-                "relative cursor-pointer p-5 text-left transition-colors hover:bg-accent/60 focus-visible:z-10",
+                "relative cursor-pointer px-4 py-3.5 text-left transition-colors hover:bg-accent/60 focus-visible:z-10",
                 i > 0 && "border-t border-border sm:border-t-0",
                 i % 2 === 1 && "sm:border-l",
                 i >= 2 && "sm:border-t xl:border-t-0",
@@ -101,7 +101,7 @@ export function KpiTabs({
                 active && "bg-primary-soft/40",
               )}
             >
-              {active && <span className="brand-gradient absolute inset-x-0 top-0 h-[3px]" aria-hidden />}
+              {active && <span className="brand-gradient absolute inset-x-0 top-0 h-[0.1875rem]" aria-hidden />}
               <KpiBody kpi={k} def={metric(k.key)} compareLabel={compareLabel} periodLabel={periodLabel} />
             </div>
           );
@@ -109,7 +109,7 @@ export function KpiTabs({
       </div>
       <div id={`${baseId}-panel`} role="tabpanel" aria-labelledby={selected ? `${baseId}-tab-${selected.key}` : undefined} className="p-4 pt-3">
         {selected && (
-          <p className="px-1 pb-1 text-[13px] text-muted-foreground">
+          <p className="px-1 pb-1 text-[0.8125rem] text-muted-foreground">
             <span className="font-medium text-foreground">{metric(selected.key).label}</span> · weekly trend, last {weeks.length} reporting weeks
           </p>
         )}
@@ -142,7 +142,7 @@ export function MoreMetrics({
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center justify-between gap-3 rounded-lg px-5 py-3.5 text-left hover:bg-accent/50"
       >
-        <span className="text-sm font-medium">
+        <span className="text-sm font-bold text-subheading">
           More metrics
           {kpis && <span className="ml-2 text-muted-foreground">{kpis.length}</span>}
         </span>

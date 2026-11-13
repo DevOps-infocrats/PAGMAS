@@ -30,7 +30,7 @@ export function Switch({ className, ...props }: React.ComponentProps<typeof Sw.R
       )}
       {...props}
     >
-      <Sw.Thumb className="block size-4 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[18px]" />
+      <Sw.Thumb className="block size-4 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[1.125rem]" />
     </Sw.Root>
   );
 }
@@ -46,7 +46,7 @@ export function TabsTrigger({ className, ...props }: React.ComponentProps<typeof
   return (
     <T.Trigger
       className={cn(
-        "rounded px-3 py-1.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm",
+        "rounded px-3 py-1.5 text-[0.8125rem] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm",
         className,
       )}
       {...props}

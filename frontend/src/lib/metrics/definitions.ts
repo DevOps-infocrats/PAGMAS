@@ -57,6 +57,11 @@ export interface SummaryMetricsShape {
   hotoDoneBlocks: number;
   hotoDoneGps: number;
   hotoPendingGps: number;
+  amcAtHotoGps: number;
+  gpsBelowPenalty: number;
+  blocksAbove98: number;
+  reportingGps: number;
+  reportingBlocks: number;
   amcGps: number;
   nonAmcGps: number;
   amcPct: number | null;

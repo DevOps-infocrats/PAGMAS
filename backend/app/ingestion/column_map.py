@@ -68,6 +68,7 @@ GP_COLUMNS: dict[str, tuple[str, ...]] = {
     "plan_status": ("Current Status",),
     "plan_letter_status": ("Letter Status",),
     "plan_letter_date": ("Letter submission Date",),
+    "plan_approval_status": ("Approval Status",),  # IE / BSNL approval of the incremental letter
 }
 GP_REQUIRED: tuple[str, ...] = ("circle", "district", "block_name", "block_code", "gp_name", "gp_code", "total_rkm", "hoto_date", "amc_date")
 GP_HEADER_ANCHORS: tuple[str, ...] = ("circle", "gp_code", "total_rkm")  # a row with these three is the header row
@@ -84,6 +85,36 @@ MASTER_BLOCK_COLUMNS: dict[str, tuple[str, ...]] = {
 MASTER_BLOCK_REQUIRED: tuple[str, ...] = ("state", "block_code")
 MASTER_BLOCK_HEADER_ANCHORS: tuple[str, ...] = ("state", "block_code", "total_gp_count")
 
+# Escalation Matrix (a separate workbook): the header row is the first one with all required columns.
+ESCALATION_COLUMNS: dict[str, tuple[str, ...]] = {
+    "circle": ("Circle", "State"),
+    "ba": ("BA", "Business Area"),
+    "district": ("District",),
+    "block_name": ("Block", "Block Name"),
+    "block_code": ("Block Code",),
+    "gp_name": ("GP", "GP Name"),
+    "gp_code": ("GP Code",),
+    "frt_code": ("FRT Code",),
+    "splicer_name": ("Name of splicer", "Splicer Name"),
+    "splicer_phone": ("Splicer Contact No.", "Splicer Contact No", "Splicer Contact Number", "Splicer number"),
+    "fe_name": ("FE Name",),
+    "fe_phone": ("FE Contact No", "FE Contact No.", "FE Contact Number", "FE Number"),
+    "fe_email": ("FE Email ID", "FE Email", "FE Mail ID", "FE E-mail ID"),
+    "am_name": ("AM Name",),
+    "am_phone": ("AM Contact No", "AM Contact No.", "AM Contact Number", "AM Number"),
+    "am_email": ("AM Email ID", "AM Email", "AM Mail ID"),
+    "shq_name": ("SHQ Spoc", "SHQ SPOC", "SME Name"),
+    "shq_phone": ("SHQ Spoc Contact No", "SHQ SPOC Contact No", "SHQ Spoc Contact No.", "SME Number"),
+    "shq_email": ("SME Email ID", "SME Email", "SHQ Spoc Email ID", "SHQ SPOC Email"),
+    "coh_name": ("COH",),
+    "coh_phone": ("COH Number", "COH Contact No", "COH No.", "COH No"),
+    "coh_email": ("COH Email ID", "COH Email"),
+    "cbh_name": ("CBH",),
+    "cbh_phone": ("CBH Number", "CBH Contact No", "CBH No.", "CBH No"),
+    "cbh_email": ("CBH Email ID", "CBH Email"),
+}
+ESCALATION_REQUIRED: tuple[str, ...] = ("circle", "gp_code", "frt_code", "fe_name")
+
 
 # ---------------------------------------------------------------- the file
 
@@ -97,6 +128,7 @@ class _File(BaseModel):
     sheets: dict[str, list[str]] = Field(default_factory=dict)
     gpColumns: dict[str, list[str]] = Field(default_factory=dict)
     masterBlockColumns: dict[str, list[str]] = Field(default_factory=dict)
+    escalationColumns: dict[str, list[str]] = Field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +136,7 @@ class ColumnMap:
     sheets: dict[str, tuple[str, ...]]
     gp: dict[str, tuple[str, ...]]  # field -> normalised names, preferred first
     master_block: dict[str, tuple[str, ...]]
+    escalation: dict[str, tuple[str, ...]]
     problems: list[str] = field(default_factory=list)  # file problems, recorded as import warnings
 
 
@@ -157,6 +190,7 @@ def _build(data: _File | None, problems: list[str]) -> ColumnMap:
         sheets=_merge(SHEETS, extra.sheets, "sheets", problems, check_conflicts=True),
         gp=_merge(GP_COLUMNS, extra.gpColumns, "gpColumns", problems, check_conflicts=True),
         master_block=_merge(MASTER_BLOCK_COLUMNS, extra.masterBlockColumns, "masterBlockColumns", problems, check_conflicts=True),
+        escalation=_merge(ESCALATION_COLUMNS, extra.escalationColumns, "escalationColumns", problems, check_conflicts=True),
         problems=problems,
     )
 
@@ -199,10 +233,14 @@ class Located:
 def locate(header: list[Any], fields: dict[str, tuple[str, ...]]) -> Located:
     """Column index of every field: the first listed name that appears wins; other matches are reported."""
     normalised = [norm(h) for h in header]
+    loosened = [_loose(h) for h in normalised]
     cols: dict[str, int] = {}
     dups: dict[str, list[str]] = {}
     for key, names in fields.items():
         hits = [(names.index(h), i) for i, h in enumerate(normalised) if h in names]
+        if not hits:  # same name with other punctuation ("AMC/Incremental" = "AMC / Incremental") – the upload check's rule
+            keys = [_loose(n) for n in names]
+            hits = [(keys.index(h), i) for i, h in enumerate(loosened) if h and h in keys]
         if not hits:
             continue
         hits.sort()
@@ -215,10 +253,17 @@ def locate(header: list[Any], fields: dict[str, tuple[str, ...]]) -> Located:
 def find_header_row(grid: list[list[Any]], fields: dict[str, tuple[str, ...]], anchors: tuple[str, ...], max_rows: int = 15) -> int | None:
     """First row (within max_rows) that contains a name of every anchor field."""
     for i, row in enumerate(grid[:max_rows]):
-        cells = {norm(c) for c in row}
-        if all(any(n in cells for n in fields[a]) for a in anchors):
+        cells = {_loose(c) for c in row}
+        if all(any(_loose(n) in cells for n in fields[a]) for a in anchors):
             return i
     return None
+
+
+def _loose(text: Any) -> str:
+    """Header key ignoring case, spaces and punctuation (same rule as ingestion.template.loose)."""
+    import re
+
+    return re.sub(r"[^0-9a-z%<]", "", norm(text))
 
 
 def resolve_sheet(sheet_names: list[str], key: str, cmap: ColumnMap) -> str | None:

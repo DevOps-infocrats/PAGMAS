@@ -89,12 +89,12 @@ function DateRangeFilter() {
 
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-muted-foreground">Reporting date range</span>
+      <span className="text-xs font-semibold text-foreground/75">Reporting date range</span>
       <div className="flex items-center gap-2">
         <Input
           type="date"
           aria-label="From date (comparison week)"
-          className="w-[150px]"
+          className="w-[9.375rem]"
           min={min}
           max={period.week.startDate}
           value={period.compareWeek.startDate}
@@ -107,7 +107,7 @@ function DateRangeFilter() {
         <Input
           type="date"
           aria-label="To date (reporting week)"
-          className="w-[150px]"
+          className="w-[9.375rem]"
           min={min}
           max={max}
           value={period.week.endDate}

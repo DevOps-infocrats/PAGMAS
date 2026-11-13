@@ -1,7 +1,7 @@
 """Reporting-period rules for the Management Review (reused by every page).
 
 Nothing here is hard-coded to a week or month: everything is derived from the active
-dataset's own weeks (W-nn columns, Fri–Thu) and its last data date.
+dataset's own weeks (W-nn columns, sheet's week) and its last data date.
 
 Rules
   * Completed week  = a source week whose end date is on or before the file's data-as-of date.

@@ -2,8 +2,9 @@
 
 The active dataset (~16k GPs) is loaded once into pandas/numpy and reused for
 every request. After a new import the next snapshot is built in the background
-and swapped in (requests keep using the previous one meanwhile). Computed API
-payloads are memoised on the snapshot, so they are dropped with it.
+and swapped in (requests keep using the previous one meanwhile). A dataset
+activated by another process (CLI import) is noticed within CHECK_EVERY_S.
+Computed API payloads are memoised on the snapshot, so they are dropped with it.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import insert, select, text
+from sqlalchemy import func, insert, select, text
 
 from ..db import SessionLocal, engine
 from ..ingestion.history import history_frame
@@ -31,6 +32,9 @@ from ..models import Dataset, DatasetWeek, GpAmcPlan, GpAvailabilityPack, Master
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 MEMO_MAX = 256  # computed payloads kept per snapshot (overview / circle / block pages, reconciliation …)
+WEEKS_PER_YEAR = 52
+CHECK_EVERY_S = 30.0  # how often a request checks whether another process activated a new dataset
+RETRY_AFTER_S = 10.0  # back-off after a failed snapshot load
 
 CIRCLE_CODES = {"RAJASTHAN": "RJ", "HARYANA": "HR", "ASSAM": "AS"}
 
@@ -84,10 +88,22 @@ class Store:
     weeks: list[Week]
     reported: pd.DataFrame
     master_blocks: pd.DataFrame
-    # GP-wise AMC conversion plan (index gp_code): category, planned_date, ach_date, current_status, letter_status, letter_date
+    # GP-wise AMC conversion plan (index gp_code): category, planned_date, ach_date, current_status, letter_status, letter_date, approval_status
     amc_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
     # days in `daily` that come from the upload history (earlier files), not from the active file
     history_days: list[dt.date] = field(default_factory=list)
+    # weeks ("W-44") and months ("2026-10") in weekly / monthly that come from earlier uploads (period_history), not
+    # from the active file – a file that starts at W-45 still shows W-40 … W-44
+    history_weeks: list[str] = field(default_factory=list)
+    history_months: list[str] = field(default_factory=list)
+    # last change of period_history when the snapshot was built: a history change by another process (CLI
+    # backfill-periods) is noticed like a newly activated dataset
+    history_stamp: Any = None
+    # Data access (see scoped_store): None = the whole dataset. Otherwise the viewer's areas, and the circles
+    # (upper-case names) given in full – state-level reference values (O&M numbers, plan targets, circle sheets)
+    # are kept only for those, never applied to part of a state.
+    scope_key: tuple[tuple[str, str], ...] | None = None
+    full_circles: frozenset[str] | None = None
     _week_cache: dict[str, pd.DataFrame] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _memo: OrderedDict[tuple, Any] = field(default_factory=OrderedDict)
@@ -115,15 +131,44 @@ class Store:
             return value
 
     # ---------------------------------------------------------------- periods
+    # `weeks` is in chronological order (start date). Never order by Week.number: numbers wrap W-52 -> W-1.
     def week(self, code: str) -> Week:
         for w in self.weeks:
             if w.code == code:
                 return w
         raise KeyError(code)
 
+    def week_index(self, code: str) -> int:
+        """Chronological position of a week (use this, not the number, to compare / order weeks)."""
+        for i, w in enumerate(self.weeks):
+            if w.code == code:
+                return i
+        raise KeyError(code)
+
     @property
     def latest_week(self) -> Week:
         return self.weeks[-1]
+
+    def week_containing(self, d: dt.date) -> Week:
+        """The file's week (as in the master data sheet) holding `d`; outside the file's weeks the 7-day rhythm continues (numbers 1..52)."""
+        for w in self.weeks:
+            if w.start <= d <= w.end:
+                return w
+        anchor = self.weeks[-1] if d > self.weeks[-1].end else self.weeks[0]
+        k = (d - anchor.start).days // 7
+        n = (anchor.number - 1 + k) % WEEKS_PER_YEAR + 1
+        start = anchor.start + dt.timedelta(days=7 * k)
+        return Week(f"W-{n}", n, start, start + dt.timedelta(days=6))
+
+    def week_by_number(self, n: int) -> Week:
+        """Week "W-n": the file's own week, else the nearest W-n (either side of the file's last week, across the
+        year end) on the file's 7-day rhythm."""
+        for w in self.weeks:
+            if w.number == n:
+                return w
+        last = self.weeks[-1]
+        k = (n - last.number + WEEKS_PER_YEAR // 2) % WEEKS_PER_YEAR - WEEKS_PER_YEAR // 2
+        return Week(f"W-{n}", n, last.start + dt.timedelta(days=7 * k), last.end + dt.timedelta(days=7 * k))
 
     # ---------------------------------------------------------------- availability
     def mtd(self, end: dt.date) -> pd.Series:
@@ -177,38 +222,53 @@ class Store:
 
     @cached_property
     def one_time_up_sept(self) -> pd.Series:
-        """GP had availability > 0 during September (all GPs, monthly column)."""
-        col = f"{self.data_as_of.year}-09"
-        if col not in self.monthly.columns:
+        """GP had availability > 0 during September (all GPs, monthly column) – the latest September column not after
+        the data date (in Jan 2027 that is 2026-09)."""
+        limit = f"{self.data_as_of:%Y-%m}"
+        cols = [c for c in self.monthly.columns if re.fullmatch(r"\d{4}-09", str(c)) and str(c) <= limit]
+        if not cols:
             return pd.Series(False, index=self.gps.index)
-        return self.monthly[col].fillna(0) > 0
+        return self.monthly[max(cols)].fillna(0) > 0
 
 
 _cache: Store | None = None
-_cache_lock = threading.Lock()
+_cache_lock = threading.Lock()  # guards the variables below; held only for quick reads / swaps, never during a load
+_load_lock = threading.Lock()  # single flight: at most one snapshot load at a time
+_generation = 0  # bumped on every swap / invalidation so a slower, older load never overwrites a newer state
+_checked_at = 0.0  # time.monotonic() of the last active-dataset check
+_failed_at = float("-inf")  # time.monotonic() of the last failed load
+_last_error: Exception | None = None
+
+
+def _swap(store: Store | None) -> None:
+    global _cache, _generation, _checked_at
+    with _cache_lock:
+        _cache = store
+        _generation += 1
+        _checked_at = time.monotonic()
 
 
 def invalidate_cache() -> None:
-    global _cache
+    global _failed_at
+    _swap(None)
     with _cache_lock:
-        _cache = None
+        _failed_at = float("-inf")
 
 
 def reload_store() -> None:
     """Build the snapshot of the (new) active dataset and swap it in. Requests keep being served from the
     previous snapshot while it loads. Falls back to a lazy load on the next request if it fails."""
-    global _cache
-    try:
-        fresh = _load()
-    except NoDataError:
-        invalidate_cache()
-        return
-    except Exception:
-        log.exception("Snapshot reload failed - next request will load it")
-        invalidate_cache()
-        return
-    with _cache_lock:
-        _cache = fresh
+    with _load_lock:
+        try:
+            fresh = _load()
+        except NoDataError:
+            invalidate_cache()
+            return
+        except Exception:
+            log.exception("Snapshot reload failed - next request will load it")
+            invalidate_cache()
+            return
+        _swap(fresh)
     warm(fresh)
 
 
@@ -229,11 +289,174 @@ def warm(store: Store) -> None:
 
 
 def get_store() -> Store:
-    global _cache
-    with _cache_lock:
-        if _cache is None:
-            _cache = _load()
-        return _cache
+    """The current snapshot. At most every CHECK_EVERY_S a request also checks (one cheap query) whether another
+    process – e.g. a CLI import – activated a different dataset; the new snapshot is then built in the background
+    while requests keep the current one."""
+    global _checked_at
+    cached = _cache
+    if cached is not None:
+        now = time.monotonic()
+        with _cache_lock:
+            due = now - _checked_at >= CHECK_EVERY_S and now - _failed_at >= RETRY_AFTER_S
+            if due:
+                _checked_at = now
+        if due:
+            _check_active(cached)
+        return _cache or cached
+    return _cold_load()
+
+
+def _active_dataset_id() -> int | None:
+    with SessionLocal() as db:
+        row = db.execute(select(Dataset.id, Dataset.data_as_of).where(Dataset.is_active.is_(True)).order_by(Dataset.id.desc()).limit(1)).first()
+    return row.id if row is not None and row.data_as_of is not None else None
+
+
+def _history_stamp() -> Any:
+    from ..models import PeriodHistory
+
+    try:
+        with SessionLocal() as db:
+            return db.scalar(select(func.max(PeriodHistory.updated_at)))
+    except Exception:  # the history is an addition – never a reason to fail
+        return None
+
+
+def _check_active(cached: Store) -> None:
+    try:
+        active = _active_dataset_id()
+        stamp = _history_stamp()
+    except Exception:
+        log.warning("Active dataset check failed", exc_info=True)
+        return
+    if (active == cached.dataset_id and stamp == cached.history_stamp) or not _load_lock.acquire(blocking=False):
+        return  # unchanged, or a load is already running
+    if active == cached.dataset_id:
+        log.info("Period history changed – reloading the snapshot in the background")
+    else:
+        log.info("Active dataset changed (%s -> %s) – reloading the snapshot in the background", cached.dataset_id, active)
+    try:
+        threading.Thread(target=_background_reload, args=(_generation,), name="snapshot-reload", daemon=True).start()
+    except Exception:
+        _load_lock.release()
+        raise
+
+
+def _background_reload(generation: int) -> None:
+    """Runs with _load_lock held (acquired by _check_active)."""
+    global _failed_at
+    fresh = None
+    try:
+        fresh = _load()
+    except NoDataError:
+        with _cache_lock:
+            stale = generation != _generation
+        if not stale:
+            _swap(None)
+    except Exception:
+        log.exception("Background snapshot reload failed – keeping the current snapshot, retrying later")
+        with _cache_lock:
+            _failed_at = time.monotonic()
+    finally:
+        _load_lock.release()
+    if fresh is not None:
+        with _cache_lock:
+            stale = generation != _generation
+        if not stale:
+            _swap(fresh)
+            warm(fresh)
+
+
+def _cold_load() -> Store:
+    """No snapshot yet: load it (single flight – concurrent requests wait for the same load; after a failure they
+    get the same error without retrying for RETRY_AFTER_S)."""
+    global _failed_at, _last_error
+    with _load_lock:
+        if _cache is not None:
+            return _cache
+        if _last_error is not None and time.monotonic() - _failed_at < RETRY_AFTER_S:
+            raise _last_error
+        try:
+            fresh = _load()
+        except NoDataError:
+            raise
+        except Exception as exc:
+            with _cache_lock:
+                _failed_at, _last_error = time.monotonic(), exc
+            raise
+        _swap(fresh)
+        with _cache_lock:
+            _failed_at, _last_error = float("-inf"), None
+        return fresh
+
+
+# ---------------------------------------------------------------- data access (viewer areas)
+
+SCOPED_MAX = 16  # scoped snapshots kept (one per distinct set of areas)
+_scoped: OrderedDict[tuple, tuple[Store, Store]] = OrderedDict()
+_scoped_lock = threading.Lock()
+
+
+def scoped_store(base: Store, areas: tuple[tuple[str, str], ...]) -> Store | None:
+    """The part of `base` a viewer may see: the GPs of their areas (level, id) – circle / district / block ids as in
+    User Management – with every GP-wise frame cut to those GPs. All figures are then computed by the same code as
+    for the whole dataset, so totals are exactly the sum of the viewer's GPs. Areas not in the data are ignored
+    (never widened); None when no area matches. Cached per snapshot + areas (dropped with a new snapshot)."""
+    key = (base.dataset_id, areas)
+    with _scoped_lock:
+        hit = _scoped.get(key)
+        if hit is not None and hit[0] is base:
+            _scoped.move_to_end(key)
+            return hit[1]
+    g = base.gps
+    ids = {lvl: {i for l, i in areas if l == lvl} for lvl in ("circle", "district", "block")}
+    mask = (g["circle_id"].isin(ids["circle"]) | g["district_id"].isin(ids["district"]) | g["block_id"].isin(ids["block"])).to_numpy()
+    if not mask.any():
+        return None
+    idx = g.index[mask]
+    sub = g[mask]
+    full = frozenset(str(c).upper() for c in g.loc[g["circle_id"].isin(ids["circle"]), "circle"].unique())
+    # State-level reference rows: kept for circles given in full; rows that are not about a circle (e.g. the
+    # "W-35 END DATE" row of the O&M sheet) stay.
+    all_circles = {str(c).upper() for c in g["circle"].unique()}
+    rep = base.reported
+    if not rep.empty:
+        st = rep["state"].astype(str).str.upper()
+        rep = rep[st.isin(full) | ~st.isin(all_circles)]
+    # Master Block rows: every block of a full circle, else the blocks that have GPs in the viewer's areas.
+    mb = base.master_blocks
+    if not mb.empty:
+        st = mb["state"].astype(str).str.upper()
+        pairs = set(zip(sub["circle"].astype(str).str.upper(), sub["block_code"].astype(str)))
+        mb = mb[st.isin(full) | pd.Series([(s, str(b)) in pairs for s, b in zip(st, mb["block_code"])], index=mb.index)]
+    plan = base.amc_plan
+    scoped = Store(
+        dataset_id=base.dataset_id,
+        file_name=base.file_name,
+        imported_at=base.imported_at,
+        data_as_of=base.data_as_of,
+        gps=sub,
+        daily=base.daily.loc[idx],
+        weekly=base.weekly.loc[idx],
+        monthly=base.monthly.loc[idx],
+        monthly_amc=base.monthly_amc.loc[idx],
+        weeks=base.weeks,
+        reported=rep,
+        master_blocks=mb,
+        amc_plan=plan[plan.index.isin(idx)] if not plan.empty else plan,
+        history_days=base.history_days,
+        history_weeks=base.history_weeks,
+        history_months=base.history_months,
+        history_stamp=base.history_stamp,
+        scope_key=areas,
+        full_circles=full,
+    )
+    with _scoped_lock:
+        _scoped[key] = (base, scoped)
+        _scoped.move_to_end(key)
+        while len(_scoped) > SCOPED_MAX:
+            _scoped.popitem(last=False)
+    return scoped
 
 
 def _wide(frame: pd.DataFrame, index: pd.Index, as_date: bool = False) -> pd.DataFrame:
@@ -271,7 +494,7 @@ def _load() -> Store:
             raise NoDataError("No dataset has been imported yet")
         weeks = [
             Week(w.code, w.number, w.start_date, w.end_date)
-            for w in db.scalars(select(DatasetWeek).where(DatasetWeek.dataset_id == ds.id).order_by(DatasetWeek.number))
+            for w in db.scalars(select(DatasetWeek).where(DatasetWeek.dataset_id == ds.id).order_by(DatasetWeek.start_date, DatasetWeek.number))
         ]
         reported = pd.DataFrame(
             [(r.state, r.metric, r.value_num, r.value_text) for r in db.scalars(select(ReportedNumber).where(ReportedNumber.dataset_id == ds.id))],
@@ -286,7 +509,11 @@ def _load() -> Store:
     with engine.connect() as conn:
         gps = pd.read_sql(text("SELECT * FROM gps WHERE dataset_id = :d"), conn, params={"d": meta[0]})
         avail = _availability(conn, meta[0])
-        amc_plan = pd.read_sql(text("SELECT gp_code, category, planned_date, ach_date, current_status, letter_status, letter_date FROM gp_amc_plan WHERE dataset_id = :d"), conn, params={"d": meta[0]})
+        amc_plan = pd.read_sql(
+            text("SELECT gp_code, category, planned_date, ach_date, current_status, letter_status, letter_date, approval_status FROM gp_amc_plan WHERE dataset_id = :d"),
+            conn,
+            params={"d": meta[0]},
+        )
 
     gps = gps.drop(columns=["dataset_id"]).set_index("gp_code").sort_index()
     for c in ("hoto_date", "amc_date", "lms_amc_date", "letter_date"):
@@ -312,6 +539,9 @@ def _load() -> Store:
             hist = hist.reindex(idx).astype(float)
             history_days = list(hist.columns)
             daily = pd.concat([hist, daily], axis=1).sort_index(axis=1)
+    weekly, monthly, monthly_amc = _wide(avail["W"], idx), _wide(avail["M"], idx), _wide(avail["MA"], idx)
+    stamp = _history_stamp()  # before reading the history: a change during the load triggers one more reload
+    weeks, weekly, monthly, monthly_amc, history_weeks, history_months = _with_period_history(weeks, weekly, monthly, monthly_amc, idx, meta[3])
     return Store(
         dataset_id=meta[0],
         file_name=meta[1],
@@ -320,20 +550,76 @@ def _load() -> Store:
         gps=gps,
         daily=daily,
         history_days=history_days,
-        weekly=_wide(avail["W"], idx),
-        monthly=_wide(avail["M"], idx),
-        monthly_amc=_wide(avail["MA"], idx),
+        history_weeks=history_weeks,
+        history_months=history_months,
+        history_stamp=stamp,
+        weekly=weekly,
+        monthly=monthly,
+        monthly_amc=monthly_amc,
         weeks=weeks,
         reported=reported,
         master_blocks=mblocks,
-        amc_plan=_amc_plan(amc_plan, idx),
+        amc_plan=_amc_plan(amc_plan, idx, weeks, meta[3]),
     )
 
 
-def _amc_plan(df: pd.DataFrame, index: pd.Index) -> pd.DataFrame:
-    """Plan rows of GPs in the GP list, dates as datetime.date (None when blank)."""
+def _with_period_history(weeks: list[Week], weekly: pd.DataFrame, monthly: pd.DataFrame, monthly_amc: pd.DataFrame, idx: pd.Index, as_of: dt.date):
+    """Weeks before the file's first week and months the file does not carry, from earlier uploads (period_history).
+    The file's own periods always win; a history week never overlaps the file's week calendar."""
+    from ..ingestion.history import earlier_periods
+
+    h_weeks: list[str] = []
+    h_months: list[str] = []
+    try:
+        with SessionLocal() as db:
+            first = min((w.start for w in weeks), default=None)
+            add_w = earlier_periods(db, "W", set(weekly.columns) | {w.code for w in weeks}, before=first, upto=as_of)
+            add_m = {k: earlier_periods(db, k, set(f.columns), upto=as_of) for k, f in (("M", monthly), ("MA", monthly_amc))}
+    except Exception:  # the history is an addition – the active file is always served
+        log.warning("Period history not available", exc_info=True)
+        return weeks, weekly, monthly, monthly_amc, h_weeks, h_months
+    extra: dict[str, pd.Series] = {}
+    for code, number, start, end, values, _src in add_w:
+        if start is None or end is None or number is None:
+            continue
+        weeks = [*weeks, Week(code, int(number), start, end)]
+        extra[code] = values.reindex(idx).astype(float)
+        h_weeks.append(code)
+    if extra:
+        weeks = sorted(weeks, key=lambda w: (w.start, w.number))
+        weekly = pd.concat([pd.DataFrame(extra, index=idx), weekly], axis=1)
+        weekly = weekly[[w.code for w in weeks if w.code in weekly.columns]]
+    frames = {"M": monthly, "MA": monthly_amc}
+    for kind, rows in add_m.items():
+        cols = {period: values.reindex(idx).astype(float) for period, _n, _s, _e, values, _src in rows}
+        if cols:
+            frames[kind] = pd.concat([frames[kind], pd.DataFrame(cols, index=idx)], axis=1).sort_index(axis=1)
+            h_months += [p for p in cols if p not in h_months]
+    return weeks, weekly, frames["M"], frames["MA"], h_weeks, sorted(h_months)
+
+
+PLAN_DATE_SLACK_BEFORE = 92  # days before the file's first week a Planned / Ach Date may still be (earlier plans)
+PLAN_DATE_SLACK_AFTER = 366  # days after the data date a Planned Date may be (plans of the coming year)
+
+
+def plan_date_range(weeks: list[Week], data_as_of: dt.date) -> tuple[dt.date, dt.date]:
+    """Dates a GP-wise plan date can be valid in: from 3 months before the file's first week to one year after the data
+    date. Anything else is a typing error (11-01-2026 for 01-11-2026) and is not counted as a target / ready GP."""
+    first = weeks[0].start if weeks else data_as_of
+    return first - dt.timedelta(days=PLAN_DATE_SLACK_BEFORE), data_as_of + dt.timedelta(days=PLAN_DATE_SLACK_AFTER)
+
+
+def _amc_plan(df: pd.DataFrame, index: pd.Index, weeks: list[Week] | None = None, data_as_of: dt.date | None = None) -> pd.DataFrame:
+    """Plan rows of GPs in the GP list, dates as datetime.date (None when blank). A Planned Date / Ach Date outside
+    plan_date_range is set to None (never counted) and kept in planned_date_invalid / ach_date_invalid for the warnings."""
     df = df.set_index("gp_code")
     df = df[df.index.isin(index)]
     for c in ("planned_date", "ach_date", "letter_date"):
         df[c] = pd.to_datetime(df[c], errors="coerce").dt.date.where(df[c].notna(), None)
+    if data_as_of is not None:
+        lo, hi = plan_date_range(weeks or [], data_as_of)
+        for c in ("planned_date", "ach_date"):
+            bad = [isinstance(v, dt.date) and not (lo <= v <= hi) for v in df[c]]
+            df[f"{c}_invalid"] = [v if b else None for v, b in zip(df[c], bad)]
+            df[c] = [None if b else v for v, b in zip(df[c], bad)]
     return df

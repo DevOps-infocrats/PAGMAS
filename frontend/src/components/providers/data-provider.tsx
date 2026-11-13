@@ -15,6 +15,20 @@ interface DataContextValue {
 
 const DataContext = createContext<DataContextValue | null>(null);
 
+/** One /meta request at a time: React's dev-mode double effect (and remounts) share it instead of asking twice. */
+let metaInFlight: Promise<MetaResponse> | null = null;
+function loadMeta(): Promise<MetaResponse> {
+  if (!metaInFlight) {
+    const p = api.getMeta();
+    metaInFlight = p;
+    const clear = () => {
+      if (metaInFlight === p) metaInFlight = null;
+    };
+    p.then(clear, clear);
+  }
+  return metaInFlight;
+}
+
 export function DataProvider({ children }: { children: React.ReactNode }) {
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [metaError, setMetaError] = useState<Error | null>(null);
@@ -24,8 +38,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     const done = track();
-    api
-      .getMeta()
+    loadMeta()
       .then(
         (m) => !cancelled && setMeta(m),
         (e: unknown) => !cancelled && setMetaError(e instanceof Error ? e : new Error(String(e))),

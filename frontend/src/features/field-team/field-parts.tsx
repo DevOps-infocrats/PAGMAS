@@ -35,18 +35,18 @@ export function FieldError({ error, onRetry }: { error: Error; onRetry: () => vo
 export function ChainCell({ step, compact = false }: { step: ChainStep | undefined; compact?: boolean }) {
   if (!step || !step.name) return <span className="text-xs font-medium text-critical-text">Missing</span>;
   return (
-    <span className={cn("block min-w-0", compact ? "max-w-[150px]" : "max-w-[190px]")}>
+    <span className={cn("block min-w-0", compact ? "max-w-[9.375rem]" : "max-w-[11.875rem]")}>
       <span className="block truncate font-medium" title={step.name}>
         {step.name}
       </span>
       {step.role !== "frt" &&
         (step.phone ? (
-          <span className={cn("tabular block text-[11px]", step.phoneValid ? "text-muted-foreground" : "text-warning-text")} title={step.phoneValid ? undefined : "Not a valid 10-digit mobile number"}>
+          <span className={cn("tabular block text-[0.6875rem]", step.phoneValid ? "text-muted-foreground" : "text-warning-text")} title={step.phoneValid ? undefined : "Not a valid 10-digit mobile number"}>
             {step.phone}
             {!step.phoneValid && " ⚠"}
           </span>
         ) : (
-          <span className="block text-[11px] text-subtle-foreground">no phone</span>
+          <span className="block text-[0.6875rem] text-subtle-foreground">no phone</span>
         ))}
     </span>
   );

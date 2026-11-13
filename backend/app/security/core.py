@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from ..config import get_settings
 
@@ -23,6 +24,7 @@ CSRF_HEADER = "x-csrf-token"
 _hasher = PasswordHasher()  # Argon2id with library defaults (memory-hard)
 # Pre-computed hash so unknown e-mails take the same time as wrong passwords.
 _DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(16))
+_EMAIL = TypeAdapter(EmailStr)
 
 
 # ---------------------------------------------------------------- passwords
@@ -41,6 +43,14 @@ def verify_password(password: str, password_hash: str | None) -> bool:
 
 def needs_rehash(password_hash: str) -> bool:
     return _hasher.check_needs_rehash(password_hash)
+
+
+def valid_email(value: str) -> str | None:
+    """Lower-cased address if it passes the same check as the login form (pydantic EmailStr), else None."""
+    try:
+        return _EMAIL.validate_python(value.strip()).lower()
+    except ValidationError:
+        return None
 
 
 def password_problems(password: str, email: str = "") -> list[str]:
@@ -63,7 +73,7 @@ def password_problems(password: str, email: str = "") -> list[str]:
 # ---------------------------------------------------------------- session tokens
 
 
-def create_session_token(user_id: int, role: str, token_version: int) -> tuple[str, datetime]:
+def create_session_token(user_id: int, role: str, token_version: int, remember: bool = False) -> tuple[str, datetime]:
     s = get_settings()
     now = datetime.now(UTC)
     exp = now + timedelta(minutes=s.session_ttl_minutes)
@@ -71,6 +81,7 @@ def create_session_token(user_id: int, role: str, token_version: int) -> tuple[s
         "sub": str(user_id),
         "role": role,
         "ver": token_version,
+        "rem": remember,  # persistent cookie ("remember me"), kept when the token is re-issued
         "iat": now,
         "nbf": now,
         "exp": exp,
@@ -156,6 +167,20 @@ class SlidingWindowLimiter:
                 return False
             q.append(now)
             return True
+
+    def count(self, key: str, window_seconds: int) -> int:
+        """Hits of `key` inside the window (nothing is recorded)."""
+        cutoff = time.monotonic() - window_seconds
+        with self._lock:
+            q = self._hits.get(key)
+            return sum(1 for t in q if t > cutoff) if q else 0
+
+    def refund(self, key: str) -> None:
+        """Take back the newest hit (an attempt that turned out not to count, e.g. a successful login)."""
+        with self._lock:
+            q = self._hits.get(key)
+            if q:
+                q.pop()
 
     def reset(self, key: str) -> None:
         with self._lock:

@@ -64,6 +64,7 @@ export function summarize(allGps: Gp[], w: number): SummaryMetricsShape {
   let amcGps = 0;
   let gpsAbove98 = 0;
   let gpsAtZero = 0;
+  let gpsBelowPenalty = 0;
   let naGps = 0;
   let oneTimeUp = 0;
   let revisedExisting = 0;
@@ -98,17 +99,22 @@ export function summarize(allGps: Gp[], w: number): SummaryMetricsShape {
         avail.push(v);
         if (v >= THRESHOLDS.healthy) gpsAbove98++;
         if (v === 0) gpsAtZero++;
+        if (v < THRESHOLDS.penalty) gpsBelowPenalty++;
       }
     }
   }
 
   let hotoDoneBlocks = 0;
   let penaltyBlocks = 0;
+  let blocksAbove98 = 0;
+  let reportingBlocks = 0;
   for (const blockGps of byBlock.values()) {
     const applicable = blockGps.filter((g) => g.hotoApplicable);
     if (applicable.length && applicable.every((g) => hotoAt(g, w) === "DONE")) hotoDoneBlocks++;
     const ba = blockAvailability(blockGps, w);
     if (ba != null && ba < THRESHOLDS.penalty) penaltyBlocks++;
+    if (ba != null) reportingBlocks++;
+    if (ba != null && ba > THRESHOLDS.healthy) blocksAbove98++;
   }
 
   return {
@@ -120,6 +126,11 @@ export function summarize(allGps: Gp[], w: number): SummaryMetricsShape {
     hotoDoneBlocks,
     hotoDoneGps,
     hotoPendingGps,
+    gpsBelowPenalty,
+    blocksAbove98,
+    reportingGps: avail.length,
+    reportingBlocks,
+    amcAtHotoGps: amcGps - incrementalGps, // same rule as the backend: AMC GPs not classified Incremental
     amcGps,
     nonAmcGps: gps.length - amcGps,
     amcPct: gps.length ? round((amcGps / gps.length) * 100, 2) : null,

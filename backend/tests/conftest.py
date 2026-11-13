@@ -14,6 +14,13 @@ os.environ.update(
         "DATABASE_URL": f"sqlite:///{(_TMP / 'test.db').as_posix()}",
         "DATA_DIR": str(_TMP / "data"),  # empty -> no automatic import on startup
         "CORS_ORIGINS": '["http://localhost:3000"]',
+        # Never reach the real mail server from tests: blank SMTP settings override backend/.env, the scheduler stays off.
+        "MAIL_SERVER": "",
+        "MAIL_PORT": "",
+        "MAIL_USERNAME": "",
+        "MAIL_PASSWORD": "",
+        "MAIL_DEFAULT_SENDER": "",
+        "AMC_REPORT_EMAILS_ENABLED": "false",
     }
 )
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -23,7 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import User  # noqa: E402
-from app.security.core import hash_password, login_limiter  # noqa: E402
+from app.security.core import api_limiter, hash_password, login_limiter  # noqa: E402
 
 ADMIN = ("admin@pratap-test.in", "Adm1n!Secure-Pass")
 VIEWER = ("viewer@pratap-test.in", "V1ewer!Secure-Pass")
@@ -42,6 +49,21 @@ def _users():
 @pytest.fixture(autouse=True)
 def _reset_limits():
     login_limiter._hits.clear()
+    api_limiter._hits.clear()  # 600 requests / minute per IP: every test starts with its own budget (all share one test IP)
+
+
+class _NoRealSmtp:
+    def __init__(self, *a, **k):
+        raise AssertionError("A test tried to open a real SMTP connection")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_smtp(monkeypatch):
+    """Guard for every test: opening a real SMTP connection fails the test. Mail tests replace this with a fake."""
+    import smtplib
+
+    monkeypatch.setattr(smtplib, "SMTP", _NoRealSmtp)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _NoRealSmtp)
 
 
 @pytest.fixture

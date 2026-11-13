@@ -142,12 +142,19 @@ def _conversion_cards(store: Store, p: ReportingPeriods, circles: list[dict]) ->
 # ---------------------------------------------------------------- targets
 
 
-def _target_month(label: str, year_hint: int) -> str | None:
+def _target_month(label: str, ref: dt.date) -> str | None:
+    """"Target for Operational GP (Oct-26Target)" -> "2026-10". Without a year: the year that puts the month closest
+    to `ref` (the data date), so "(Jan)" read in Dec 2026 is 2027-01 and "(Dec)" read in Jan 2027 is 2026-12."""
     m = re.search(r"\(\s*([A-Za-z]{3})[a-z]*[\s'-]*(\d{2,4})?", label)
     if not m or m.group(1).lower() not in _MONTHS:
         return None
-    year = int(m.group(2)) if m.group(2) else year_hint
-    return f"{year + 2000 if year < 100 else year}-{_MONTHS[m.group(1).lower()]:02d}"
+    month = _MONTHS[m.group(1).lower()]
+    if m.group(2):
+        year = int(m.group(2))
+        year = year + 2000 if year < 100 else year
+    else:
+        year = min((ref.year - 1, ref.year, ref.year + 1), key=lambda y: abs((y - ref.year) * 12 + month - ref.month))
+    return f"{year}-{month:02d}"
 
 
 def _targets(store: Store) -> dict[str, dict[str, Any]]:
@@ -160,17 +167,22 @@ def _targets(store: Store) -> dict[str, dict[str, Any]]:
         label = re.sub(r"\s+", " ", str(r.metric)).strip()
         if not re.match(r"target for operational gp", label, re.I) or r.value_num is None or pd.isna(r.value_num):
             continue
-        month = _target_month(label, store.data_as_of.year)
+        month = _target_month(label, store.data_as_of)
         if month:
             out.setdefault(month, {"label": label, "values": {}})["values"][str(r.state).upper()] = float(r.value_num)
     return out
 
 
-def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], cards: list[dict]) -> dict[str, Any]:
+def pick_target(store: Store, want: str) -> tuple[str | None, dict[str, Any] | None]:
+    """The O&M target of month `want` ("YYYY-MM"), else the latest available one: (month, {"label", "values"})."""
     targets = _targets(store)
-    want = f"{p.cutoff.year}-{p.cutoff.month:02d}"
     month = want if want in targets else (max(targets) if targets else None)
-    t = targets.get(month) if month else None
+    return month, (targets.get(month) if month else None)
+
+
+def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], cards: list[dict]) -> dict[str, Any]:
+    want = f"{p.cutoff.year}-{p.cutoff.month:02d}"
+    month, t = pick_target(store, want)
     label = dt.date(int(month[:4]), int(month[5:]), 1).strftime("%b-%y") if month else None
     amc_dt = pd.to_datetime(store.gps["amc_date"], errors="coerce")
     letter = pd.to_datetime(store.gps["letter_date"], errors="coerce")
@@ -184,7 +196,7 @@ def _highlight_table(store: Store, p: ReportingPeriods, circles: list[dict], car
     plan, _, _ = effective_plan(store)  # file Planned Dates where present, else review_plan.json
     month_plan = (plan.monthlyPlan.get(want) if plan else None) or {}
     # Weekly columns = GPs achieved in the week by Ach Date (GP-wise plan block of the master data file), counted
-    # exactly like AMC Conversion → week achieved: Ach Date in the Fri–Thu week, up to the plan cutoff
+    # exactly like AMC Conversion → week achieved: Ach Date in the week (as in the master data sheet), up to the plan cutoff
     # (amc_plan.windows). None when the file has no GP-wise plan.
     from .amc_plan import windows
 

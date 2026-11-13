@@ -22,7 +22,7 @@ export function EmptyState({
         <Icon className="size-5 text-muted-foreground" />
       </div>
       <p className="text-sm font-medium">{title}</p>
-      {description && <p className="max-w-sm text-[13px] text-muted-foreground">{description}</p>}
+      {description && <p className="max-w-sm text-[0.8125rem] text-muted-foreground">{description}</p>}
       {action}
     </div>
   );
@@ -43,7 +43,7 @@ export function ErrorState({
         <AlertTriangle className="size-5 text-critical-text" />
       </div>
       <p className="text-sm font-medium">Couldn&apos;t load this data</p>
-      <p className="max-w-sm text-[13px] text-muted-foreground">{typeof error === "string" ? error : error.message}</p>
+      <p className="max-w-sm text-[0.8125rem] text-muted-foreground">{typeof error === "string" ? error : error.message}</p>
       {onRetry && (
         <Button size="sm" onClick={onRetry} className="mt-1">
           <RotateCw /> Try again
@@ -65,7 +65,7 @@ export function LoadingLabel({ text = "Loading data…", className }: { text?: s
 
 export function ChartSkeleton({ height = 280, text = "Loading chart…" }: { height?: number; text?: string }) {
   return (
-    <div className="relative" style={{ height }} aria-label={text} role="status">
+    <div className="relative" style={{ height: `${height / 16}rem` }} aria-label={text} role="status">
       <div className="flex h-full items-end gap-3 px-2 pb-2 opacity-80">
         {[55, 80, 40, 90, 65, 75, 50, 85, 60, 70].map((h, i) => (
           <div key={i} className="skeleton flex-1 rounded-t" style={{ height: `${h}%` }} />
@@ -80,9 +80,9 @@ export function ChartSkeleton({ height = 280, text = "Loading chart…" }: { hei
 
 export function KpiSkeleton() {
   return (
-    <div className="space-y-3 p-5" role="status" aria-label="Loading metric">
+    <div className="space-y-2.5 px-4 py-3.5" role="status" aria-label="Loading metric">
       <Skeleton className="h-3.5 w-28" />
-      <Skeleton className="h-8 w-24" />
+      <Skeleton className="h-7 w-24" />
       <LoadingLabel />
     </div>
   );

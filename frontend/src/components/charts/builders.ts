@@ -23,6 +23,23 @@ export interface LineSeries {
 
 const axisLabel = (t: ChartTheme) => ({ color: t.muted, fontSize: 11, fontFamily: t.font });
 
+/** `#rrggbb` + alpha; other colour formats are returned unchanged. */
+const alpha = (c: string, a: number) => (/^#[0-9a-f]{6}$/i.test(c) ? `${c}${Math.round(a * 255).toString(16).padStart(2, "0")}` : c);
+
+/** Bar fill: full colour at the value end, slightly lighter at the base. */
+function barFill(c: string, horizontal: boolean) {
+  const strong = { color: c };
+  const soft = { color: alpha(c, 0.62) };
+  return {
+    type: "linear" as const,
+    x: 0,
+    y: 0,
+    x2: horizontal ? 1 : 0,
+    y2: horizontal ? 0 : 1,
+    colorStops: horizontal ? [{ offset: 0, ...soft }, { offset: 1, ...strong }] : [{ offset: 0, ...strong }, { offset: 1, ...soft }],
+  };
+}
+
 interface AxisParam {
   axisValue: string;
   marker: string;
@@ -50,9 +67,9 @@ function tooltip(t: ChartTheme, unit: MetricUnit, header: (axisValue: string) =>
     backgroundColor: t.surface,
     borderColor: t.border,
     borderWidth: 1,
-    padding: [8, 12],
+    padding: [10, 14],
     textStyle: { color: t.text, fontSize: 12, fontFamily: t.font },
-    extraCssText: "box-shadow:0 8px 24px rgba(15,23,42,.12);border-radius:8px;",
+    extraCssText: "box-shadow:0 10px 30px -8px rgba(16,24,40,.18);border-radius:10px;",
     axisPointer: { type: "shadow", shadowStyle: { color: "rgba(127,127,127,0.08)" } },
   };
 }
@@ -66,7 +83,7 @@ function legend(t: ChartTheme, show: boolean) {
     itemWidth: 10,
     itemHeight: 10,
     itemGap: 16,
-    textStyle: { color: t.muted, fontSize: 12, fontFamily: t.font },
+    textStyle: { color: t.text, fontSize: 12, fontWeight: 500, fontFamily: t.font },
   };
 }
 
@@ -105,7 +122,7 @@ export function barOption({
   const valueAxis = {
     type: "value",
     max: maxValue,
-    splitLine: { lineStyle: { color: t.grid } },
+    splitLine: { lineStyle: { color: t.grid, type: [4, 4] } },
     axisLabel: { ...axisLabel(t), formatter: compactAxis(unit) },
   };
   const categoryAxis = {
@@ -113,7 +130,11 @@ export function barOption({
     data: categories,
     axisTick: { show: false },
     axisLine: { lineStyle: { color: t.axis } },
-    axisLabel: { ...axisLabel(t), hideOverlap: true, width: horizontal ? 110 : 80, overflow: "truncate", interval: horizontal ? 0 : "auto" },
+    // Up to 12 columns every name is shown (wrapped onto two lines) so no category goes unlabeled.
+    axisLabel:
+      horizontal || categories.length > 12
+        ? { ...axisLabel(t), hideOverlap: true, width: horizontal ? 110 : 80, overflow: "truncate", interval: horizontal ? 0 : "auto" }
+        : { ...axisLabel(t), width: 84, overflow: "break", lineHeight: 14, interval: 0 },
     inverse: horizontal,
   };
   const radius = horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0];
@@ -149,12 +170,12 @@ export function barOption({
           }
         : undefined,
       itemStyle: {
-        color: s.color ?? t.series[i % t.series.length],
+        color: stacked ? (s.color ?? t.series[i % t.series.length]) : barFill(s.color ?? t.series[i % t.series.length], horizontal),
         borderRadius: !stacked || i === series.length - 1 ? radius : 0,
         borderColor: stacked ? t.surface : undefined,
         borderWidth: stacked ? 1 : 0,
       },
-      emphasis: { focus: "series" },
+      emphasis: { focus: "series", itemStyle: { shadowBlur: 10, shadowColor: "rgba(10,120,176,0.28)" } },
       markLine:
         threshold && i === 0
           ? {
@@ -208,7 +229,7 @@ export function lineOption({
       // Percent: 100% ceiling. Counts: tight padded range so week-to-week movement is visible.
       min: unit === "percent" ? yMin : (v: { min: number; max: number }) => Math.max(0, Math.floor(v.min - Math.max((v.max - v.min) * 0.5, v.max * 0.02, 1))),
       max: unit === "percent" ? 100 : (v: { min: number; max: number }) => Math.ceil(v.max + Math.max((v.max - v.min) * 0.5, v.max * 0.02, 1)),
-      splitLine: { lineStyle: { color: t.grid } },
+      splitLine: { lineStyle: { color: t.grid, type: [4, 4] } },
       axisLabel: { ...axisLabel(t), formatter: compactAxis(unit) },
     },
     series: series.map((s, i) => ({
@@ -219,8 +240,25 @@ export function lineOption({
       symbol: "circle",
       symbolSize: 8,
       showSymbol: dates.length <= 12,
-      lineStyle: { width: 2, cap: "round", join: "round" },
+      smooth: 0.25,
+      lineStyle: { width: 2.5, cap: "round", join: "round" },
       itemStyle: { color: s.color ?? t.series[i % t.series.length], borderColor: t.surface, borderWidth: 2 },
+      areaStyle:
+        series.length === 1
+          ? {
+              color: {
+                type: "linear",
+                x: 0,
+                y: 0,
+                x2: 0,
+                y2: 1,
+                colorStops: [
+                  { offset: 0, color: alpha(s.color ?? t.series[i % t.series.length], 0.22) },
+                  { offset: 1, color: alpha(s.color ?? t.series[i % t.series.length], 0) },
+                ],
+              },
+            }
+          : undefined,
       emphasis: { focus: "series" },
       markLine:
         threshold && i === 0
@@ -265,7 +303,7 @@ export function categoryLineOption({
       axisLine: { lineStyle: { color: t.axis } },
       axisLabel: { ...axisLabel(t), interval: 0, rotate: categories.length > 8 ? 40 : 0, width: 90, overflow: "truncate" },
     },
-    yAxis: { type: "value", splitLine: { lineStyle: { color: t.grid } }, axisLabel: { ...axisLabel(t), formatter: compactAxis(unit) } },
+    yAxis: { type: "value", splitLine: { lineStyle: { color: t.grid, type: [4, 4] } }, axisLabel: { ...axisLabel(t), formatter: compactAxis(unit) } },
     series: series.map((s, i) => ({
       type: "line",
       name: s.name,
@@ -325,7 +363,7 @@ export function bandStackOption({
     },
     legend: { ...legend(t, true), itemGap: 10, textStyle: { color: t.muted, fontSize: 11, fontFamily: t.font } },
     xAxis: { type: "category", data: periods, axisTick: { show: false }, axisLine: { lineStyle: { color: t.axis } }, axisLabel: axisLabel(t) },
-    yAxis: { type: "value", splitLine: { lineStyle: { color: t.grid } }, axisLabel: { ...axisLabel(t), formatter: compactAxis("count") } },
+    yAxis: { type: "value", splitLine: { lineStyle: { color: t.grid, type: [4, 4] } }, axisLabel: { ...axisLabel(t), formatter: compactAxis("count") } },
     series: bands.map((b, i) => ({
       type: "bar",
       name: b,
@@ -379,7 +417,7 @@ export function trendLineOption({
       boundaryGap: unit === "percent" ? undefined : [0, "20%"],
       // Counts are whole GPs / blocks: never draw fractional ticks.
       minInterval: unit === "percent" ? undefined : 1,
-      splitLine: { lineStyle: { color: t.grid } },
+      splitLine: { lineStyle: { color: t.grid, type: [4, 4] } },
       axisLabel: { ...axisLabel(t), formatter: compactAxis(unit) },
     },
     series: [
@@ -411,8 +449,8 @@ export function trendLineOption({
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: `${c}33` },
-              { offset: 1, color: `${c}00` },
+              { offset: 0, color: alpha(c, 0.28) },
+              { offset: 1, color: alpha(c, 0) },
             ],
           },
         },

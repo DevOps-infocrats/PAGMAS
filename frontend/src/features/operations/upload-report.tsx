@@ -78,7 +78,7 @@ function ReportBody({ r }: { r: Report }) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="space-y-3 p-5">
-          <h3 className="text-[15px] font-semibold">Columns & sheets</h3>
+          <h3 className="text-[0.9375rem] font-bold text-subheading">Columns & sheets</h3>
           <Changes label="New columns" items={r.columns.added} tone="good" compared={r.columns.compared} empty="none" />
           <Changes label="Columns missing (were in the previous file)" items={r.columns.removed} tone="critical" compared={r.columns.compared} empty="none" />
           <Changes label="Optional fields not found (shown as NA)" items={r.columns.missingOptional} tone="warning" compared empty="none – every field was found" />
@@ -91,10 +91,11 @@ function ReportBody({ r }: { r: Report }) {
         </Card>
 
         <Card className="space-y-3 p-5">
-          <h3 className="text-[15px] font-semibold">Weeks, states & data quality</h3>
+          <h3 className="text-[0.9375rem] font-bold text-subheading">Weeks, states & data quality</h3>
           <Changes label="New weeks" items={r.weeks.added} tone="good" compared={r.weeks.compared} empty="none" />
           <p className="text-sm text-muted-foreground">Weeks in the file: {r.weeks.current.join(", ") || "—"}</p>
-          <table className="w-full text-[13px]">
+          <div className="overflow-x-auto">
+          <table className="w-full text-[0.8125rem]">
             <caption className="sr-only">GPs per state</caption>
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -115,6 +116,7 @@ function ReportBody({ r }: { r: Report }) {
               ))}
             </tbody>
           </table>
+          </div>
           <p className="text-sm">
             Data-quality issues:{" "}
             {(["critical", "warning", "info"] as const).map((s) => (
@@ -142,7 +144,7 @@ function ReportBody({ r }: { r: Report }) {
 function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="space-y-1 p-5 lg:border-l lg:border-border lg:first:border-l-0">
-      <p className="text-[13px] text-muted-foreground">{label}</p>
+      <p className="text-[0.8125rem] text-muted-foreground">{label}</p>
       <p className="text-lg font-semibold tabular">{value}</p>
       {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
     </div>
@@ -173,8 +175,9 @@ function Changes({ label, items, tone, compared, empty }: { label: string; items
 function GpList({ title, rows, total, dates }: { title: string; rows: (UploadReportGp & { from?: string | null; to?: string | null })[]; total: number; dates?: boolean }) {
   return (
     <Card className="space-y-2 p-5">
-      <h3 className="text-[15px] font-semibold">{title}</h3>
-      <table className="w-full text-[13px]">
+      <h3 className="text-[0.9375rem] font-bold text-subheading">{title}</h3>
+      <div className="overflow-x-auto">
+      <table className="w-full text-[0.8125rem]">
         <caption className="sr-only">{title}</caption>
         <thead>
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -199,6 +202,7 @@ function GpList({ title, rows, total, dates }: { title: string; rows: (UploadRep
           ))}
         </tbody>
       </table>
+      </div>
       {total > rows.length && <p className="text-xs text-muted-foreground">Showing {rows.length} of {formatCount(total)}.</p>}
     </Card>
   );

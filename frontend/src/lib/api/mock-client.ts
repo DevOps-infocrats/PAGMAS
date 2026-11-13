@@ -166,6 +166,7 @@ function overviewDetail(s: SummaryMetricsShape): OverviewDetail {
     hotoPendingBlocks: s.totalBlocks - s.hotoDoneBlocks,
     hotoDoneGps: s.hotoDoneGps,
     hotoPendingGps: s.hotoPendingGps,
+    amcAtHotoGps: s.amcAtHotoGps,
     amcGps: s.amcGps,
     amcOriginalGps: s.amcGps - s.incrementalGps,
     incrementalGps: s.incrementalGps,
@@ -176,6 +177,10 @@ function overviewDetail(s: SummaryMetricsShape): OverviewDetail {
     gpsAtZero: s.gpsAtZero,
     naGps: s.naGps,
     penaltyBlocks: s.penaltyBlocks,
+    gpsBelowPenalty: s.gpsBelowPenalty,
+    blocksAbove98: s.blocksAbove98,
+    reportingGps: s.reportingGps,
+    reportingBlocks: s.reportingBlocks,
     oneTimeUp: s.oneTimeUp,
     totalRkm: s.totalRkm,
     bsnlRkm: s.bsnlRkm,
@@ -443,6 +448,21 @@ export const mockApi: DashboardApi = {
   },
   async getFieldGaps() {
     throw new ApiError(501, "Field Team & Escalation needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async getEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async saveEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async replaceInEscalationSheet() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  async getEscalationSheetEdits() {
+    throw new ApiError(501, "The Escalation Sheet needs the live backend (NEXT_PUBLIC_API_MODE=live).");
+  },
+  escalationSheetExportUrl() {
+    return "#";
   },
 
   async getAmcPlanTimeline() {

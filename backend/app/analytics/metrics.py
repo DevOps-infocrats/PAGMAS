@@ -82,6 +82,9 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
     revised = g["revised"]
     amc_count = int(amc.sum())
     revised_count = int(revised.sum())
+    # "AMC at HOTO" = AMC GPs not classified Incremental in the source column (same as amcOriginalGps),
+    # so AMC at HOTO + Incremental + Non-AMC = revised existing GPs on every page.
+    amc_original = int((amc & (g["amc_category"] != "INCREMENTAL")).sum())
     return {
         "totalStates": int(g["circle"].nunique()),
         "totalDistricts": int(g["district_id"].nunique()),
@@ -91,6 +94,7 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "hotoDoneGps": int(wf["hoto_done"].sum()),
         "hotoPendingGps": int((revised & ~wf["hoto_done"]).sum()),
         "hotoDoneBlocks": int(hoto_blocks.sum()),
+        "amcAtHotoGps": amc_original,
         "amcGps": amc_count,
         "nonAmcGps": int((revised & ~amc).sum()),
         "amcPct": r2(amc_count / revised_count * 100) if revised_count else None,
@@ -99,17 +103,26 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "gpsAtZero": int((mtd == 0).sum()),
         "naGps": int((amc & mtd.isna()).sum()),
         "penaltyBlocks": int((block_avail < s.penalty_threshold).sum()),
+        # State Performance Comparison: GPs below the penalty threshold (0% included), blocks above the healthy
+        # threshold (block mean of AMC GPs, like penaltyBlocks) and the reporting bases of the percentages.
+        # Workbook rule (O&M "GP Uptime Performance (AMC GPs)": the bands below 90% added up): the MTD value is
+        # rounded to 2 decimals first, so 89.996% counts as 90.00% (not below).
+        "gpsBelowPenalty": int((mtd.round(2) < s.penalty_threshold).sum()),
+        "blocksAbove98": int((block_avail > s.healthy_threshold).sum()),
+        "reportingGps": int(mtd.notna().sum()),
+        "reportingBlocks": int(block_avail.notna().sum()),
         "availabilityWeek": r2(weekly.mean()) if weekly.notna().any() else None,
         "gpsAbove98Week": int((weekly > s.healthy_threshold).sum()),
         "gpsAtZeroWeek": int((weekly == 0).sum()),
         "penaltyBlocksWeek": int((block_week < s.penalty_threshold).sum()),
         "oneTimeUp": int(store.one_time_up_sept.loc[g.index].sum()),
         "totalRkm": r2(g["total_rkm"].sum()),
-        "bsnlRkm": r2(g["bsnl_km"].fillna(0).sum()),
-        "bbnlRkm": r2(g["bbnl_km"].fillna(0).sum()),
+        # Blank is never 0: a file without the (optional) BSNL / BBNL Live KM column gives NA, not 0 km
+        "bsnlRkm": r2(pd.to_numeric(g["bsnl_km"], errors="coerce").sum(min_count=1)),
+        "bbnlRkm": r2(pd.to_numeric(g["bbnl_km"], errors="coerce").sum(min_count=1)),
         "amcRkm": r2(g.loc[amc[amc].index, "total_rkm"].sum()),
         "incrementalGps": int((amc & (g["amc_category"] == "INCREMENTAL")).sum()),
-        "amcOriginalGps": int((amc & (g["amc_category"] != "INCREMENTAL")).sum()),
+        "amcOriginalGps": amc_original,
         "convertedNp": int((g["lifecycle"] == "CONVERTED_NP").sum()),
         "permanentlyClosed": int((g["lifecycle"] == "PERMANENTLY_CLOSED").sum()),
         "deductedGps": int((g["lifecycle"] == "DEDUCTED").sum()),

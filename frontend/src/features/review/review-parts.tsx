@@ -85,11 +85,11 @@ export interface PeriodRow {
 export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey }: { periods: ReviewPeriod[]; rows: PeriodRow[]; firstHeader: string; caption: string; highlightKey?: string }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="w-full min-w-[760px] text-[13px]">
+      <table className="w-full min-w-[47.5rem] text-[0.8125rem]">
         <caption className="sr-only">{caption}</caption>
         <thead>
           <tr className="border-b border-border bg-muted/60">
-            <th scope="col" className="sticky left-0 z-10 bg-muted px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <th scope="col" className="sticky left-0 z-10 bg-muted px-3 py-2 text-left text-[0.71875rem] font-bold uppercase tracking-wide text-subheading">
               {firstHeader}
             </th>
             {periods.map((p) => (
@@ -97,14 +97,14 @@ export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey 
                 key={p.key}
                 scope="col"
                 className={cn(
-                  "whitespace-nowrap px-2 py-2 text-right text-[11px] font-semibold uppercase tracking-normal text-muted-foreground",
+                  "whitespace-nowrap px-2 py-2 text-right text-[0.6875rem] font-semibold uppercase tracking-normal text-muted-foreground",
                   p.kind === "mtd" && "bg-primary-soft/60 text-primary",
                   p.key === highlightKey && "bg-primary-soft text-primary",
                 )}
               >
                 {p.label}
                 {/* month-to-date columns: the days they cover (e.g. Sep-26 MTD = 1–21 Sep) */}
-                {(p.kind === "mtd" || p.kind === "ptd") && <span className="block text-[10px] font-normal normal-case tracking-normal opacity-80">{mtdRange(p.endDate)}</span>}
+                {(p.kind === "mtd" || p.kind === "ptd") && <span className="block text-[0.625rem] font-normal normal-case tracking-normal opacity-80">{mtdRange(p.endDate)}</span>}
               </th>
             ))}
           </tr>
@@ -132,7 +132,7 @@ export function PeriodTable({ periods, rows, firstHeader, caption, highlightKey 
 export function CircleSelect({ circles, value, onChange }: { circles: { id: string; name: string; code: string }[]; value: string; onChange: (id: string) => void }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs font-medium text-muted-foreground">Circle</span>
+      <span className="text-xs font-semibold text-foreground/75">Circle</span>
       <Select ariaLabel="Circle" className="w-full sm:w-52" value={value} onValueChange={onChange} options={circles.map((c) => ({ value: c.id, label: `${c.name} (${c.code})` }))} />
     </div>
   );
@@ -141,11 +141,11 @@ export function CircleSelect({ circles, value, onChange }: { circles: { id: stri
 /** Small bordered panel with a heading – the page's equivalent of a deck table block. */
 export function Panel({ title, description, actions, children, className }: { title: string; description?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <section className={cn("min-w-0 space-y-3 rounded-xl border border-border bg-card p-4 sm:p-5", className)}>
+    <section className={cn("min-w-0 space-y-3 rounded-lg border border-border bg-card p-4 shadow-xs sm:p-5", className)}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold">{title}</h3>
-          {description && <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>}
+          <h3 className="text-[0.9375rem] font-bold text-subheading">{title}</h3>
+          {description && <p className="mt-0.5 text-[0.8125rem] text-muted-foreground">{description}</p>}
         </div>
         {actions}
       </div>

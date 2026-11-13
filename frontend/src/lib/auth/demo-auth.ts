@@ -61,4 +61,4 @@ export function readSessionCookie(): DemoSession | null {
   return decodeSession(match?.slice(SESSION_COOKIE.length + 1));
 }
 
-export const ADMIN_PATHS = ["/dashboard/operations", "/dashboard/settings"];
+export const ADMIN_PATHS = ["/dashboard/operations", "/dashboard/settings", "/dashboard/users", "/dashboard/mail"];

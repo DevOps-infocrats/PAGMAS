@@ -11,18 +11,18 @@ import { SearchableSelect } from "./searchable-select";
 /** Horizontal filter row shown above page content (single row, wraps on mobile). */
 export function FilterBar({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex flex-col gap-3 rounded-lg border border-border bg-card p-3 sm:flex-row sm:flex-wrap sm:items-end", className)}>
+    <div className={cn("flex flex-col gap-3 rounded-lg border border-border bg-card p-3 shadow-xs sm:flex-row sm:flex-wrap sm:items-end", className)}>
       {children}
     </div>
   );
 }
 
-export function CircleFilter({ required, className, hideLabel }: { required?: boolean; className?: string; hideLabel?: boolean }) {
+export function CircleFilter({ required, className, hideLabel, label = "Circle / State" }: { required?: boolean; className?: string; hideLabel?: boolean; label?: string }) {
   const meta = useMeta();
   const { filters, setFilters } = useFilters();
   return (
     <SearchableSelect
-      label="Circle / State"
+      label={label}
       hideLabel={hideLabel}
       className={cn("sm:w-56", className)}
       value={filters.circle}
@@ -103,7 +103,7 @@ export function PeriodFilter({
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", fill && "w-full", className)}>
       {showWeek && (
       <div className="flex flex-col gap-1">
-        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+        <span className="flex items-center gap-1 text-xs font-semibold text-foreground/75">
           <CalendarDays className="size-3.5" /> Reporting week
         </span>
         <Select
@@ -122,7 +122,7 @@ export function PeriodFilter({
       )}
       {showCompare && (
         <div className={cn("flex flex-col gap-1", fill && "w-full")}>
-          <span className="text-xs font-medium text-muted-foreground">Compare with</span>
+          <span className="text-xs font-semibold text-foreground/75">Compare with</span>
           <Select
             ariaLabel="Comparison week"
             className={cn("w-full", fill ? "min-w-0 whitespace-nowrap [&>span]:truncate" : "sm:w-60")}

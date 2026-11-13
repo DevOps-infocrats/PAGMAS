@@ -4,6 +4,7 @@
   python -m app.cli import-file "../data/raw/Master Data V8.2 Daily track 09-10-26.xlsb"
   python -m app.cli reconcile
   python -m app.cli backfill-daily "../data/raw/Master Data V8.2 Daily track 14-10-26.xlsb"
+  python -m app.cli backfill-periods            (weekly / monthly history from the kept imports)
 """
 
 from __future__ import annotations
@@ -17,11 +18,14 @@ from sqlalchemy import func, select
 
 from .db import SessionLocal, init_db
 from .models import User
-from .security.core import hash_password, password_problems
+from .security.core import hash_password, password_problems, valid_email
 
 
 def create_user(args: argparse.Namespace) -> int:
-    email = args.email.strip().lower()
+    email = valid_email(args.email)
+    if email is None:
+        print(f"{args.email!r} is not a valid e-mail address (the account could never sign in).", file=sys.stderr)
+        return 2
     password = args.password or getpass.getpass("Password (input hidden): ")
     if not args.password and password != getpass.getpass("Repeat password: "):
         print("Passwords do not match.")
@@ -70,6 +74,36 @@ def backfill_daily_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def backfill_periods_cmd(args: argparse.Namespace) -> int:
+    """Fill the weekly / monthly period history (period_history) from workbooks – no dataset is created and the active
+    data is untouched. Without paths: the stored files of the imports still kept. Newer data always wins."""
+    from sqlalchemy import select
+
+    from .ingestion.history import merge_periods, period_history_summary
+    from .ingestion.parser import parse_workbook
+    from .models import Dataset
+
+    paths = [Path(a).resolve() for a in args.paths]
+    if not paths:
+        with SessionLocal() as db:
+            rows = db.execute(select(Dataset.stored_path, Dataset.data_as_of).where(Dataset.status.in_(("SUCCESS", "PARTIAL"))).order_by(Dataset.data_as_of)).all()
+        paths = [Path(r.stored_path) for r in rows if r.stored_path and Path(r.stored_path).exists()]
+    for path in paths:
+        parsed = parse_workbook(path)
+        with SessionLocal() as db:
+            got = merge_periods(db, parsed, path.name)
+            db.commit()
+        print(f"{path.name}: data as of {parsed.data_as_of} - {len(got['added'])} added, {len(got['updated'])} updated, {len(got['kept'])} kept (newer data)")
+    with SessionLocal() as db:
+        rows = period_history_summary(db)
+    kinds: dict[str, list[str]] = {}
+    for r in rows:
+        kinds.setdefault(r["kind"], []).append(r["period"])
+    for k, v in kinds.items():
+        print(f"  {k}: {len(v)} periods ({v[0]} … {v[-1]})")
+    return 0
+
+
 def reconcile_cmd(_: argparse.Namespace) -> int:
     from .analytics.reconcile import reconcile
     from .analytics.store import get_store
@@ -94,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("import-file")
     i.add_argument("path")
     i.set_defaults(fn=import_cmd)
+    bp = sub.add_parser("backfill-periods")
+    bp.add_argument("paths", nargs="*")
+    bp.set_defaults(fn=backfill_periods_cmd)
     b = sub.add_parser("backfill-daily")
     b.add_argument("path")
     b.set_defaults(fn=backfill_daily_cmd)

@@ -30,9 +30,9 @@ function Preview({ names, unit }: { names: string[] | undefined; unit: string })
   if (!names || names.length === 0) return <span className="text-subtle-foreground">—</span>;
   const shown = names.slice(0, 2).join(", ");
   return (
-    <span className="block max-w-[200px]">
+    <span className="block max-w-[12.5rem]">
       <span className="font-semibold">{formatCount(names.length)}</span> <span className="text-muted-foreground">{unit}</span>
-      <span className="block truncate text-[11px] text-muted-foreground" title={names.join(", ")}>
+      <span className="block truncate text-[0.6875rem] text-muted-foreground" title={names.join(", ")}>
         {shown}
         {names.length > 2 && ` +${names.length - 2} more`}
       </span>
@@ -44,10 +44,10 @@ function Names({ title, names }: { title: string; names: string[] | undefined })
   if (!names || names.length === 0) return null;
   return (
     <div className="min-w-0">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
         {title} ({formatCount(names.length)})
       </p>
-      <p className="mt-1 text-[13px] leading-relaxed">{names.join(" · ")}</p>
+      <p className="mt-1 text-[0.8125rem] leading-relaxed">{names.join(" · ")}</p>
     </div>
   );
 }
@@ -57,12 +57,12 @@ function Detail({ p }: { p: FieldPerson }) {
   return (
     <div className="grid gap-4 bg-muted/30 px-4 py-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
       <div className="min-w-0">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
           Districts ({formatCount(p.districtCount)}) and blocks ({formatCount(p.blockCount)})
         </p>
-        <dl className="mt-1.5 space-y-1.5 text-[13px]">
+        <dl className="mt-1.5 space-y-1.5 text-[0.8125rem]">
           {p.districts.map((d) => (
-            <div key={d.name} className="grid grid-cols-[150px_minmax(0,1fr)] gap-3">
+            <div key={d.name} className="grid grid-cols-[9.375rem_minmax(0,1fr)] gap-3">
               <dt className="font-medium">
                 {d.name} <span className="font-normal text-muted-foreground">({d.blocks.length})</span>
               </dt>
@@ -134,7 +134,7 @@ export function TeamDirectory() {
           actions={<Segmented<FieldRole> ariaLabel="Role" value={role} onChange={setRole} options={ROLE_TABS.map((t) => ({ value: t.value, label: t.plural }))} />}
         >
           <div className={cn("overflow-x-auto rounded-lg border border-border", q.loading && "opacity-60")}>
-            <table className="w-full min-w-[1000px] text-[13px]">
+            <table className="w-full min-w-[62.5rem] text-[0.8125rem]">
               <caption className="sr-only">{tab.plural}</caption>
               <thead>
                 <tr className={HEAD_ROW}>
@@ -173,10 +173,10 @@ export function TeamDirectory() {
                           <span className="flex items-start gap-1.5">
                             {isOpen ? <ChevronDown className="mt-0.5 size-3.5 shrink-0 text-primary" /> : <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
                             <span className="min-w-0">
-                              <span className={cn("block max-w-[200px] truncate", p.vacant && "italic")} title={p.name}>
+                              <span className={cn("block max-w-[12.5rem] truncate", p.vacant && "italic")} title={p.name}>
                                 {p.name}
                               </span>
-                              {p.vacant && <span className="mt-0.5 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold uppercase text-warning-text">Vacant post</span>}
+                              {p.vacant && <span className="mt-0.5 inline-block rounded bg-warning-soft px-1.5 text-[0.625rem] font-semibold uppercase text-warning-text">Vacant post</span>}
                             </span>
                           </span>
                         </RowHead>
