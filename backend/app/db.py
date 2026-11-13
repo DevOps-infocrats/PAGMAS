@@ -59,6 +59,25 @@ def init_db() -> None:
     Base.metadata.create_all(engine)
     _add_missing_columns()
     _relax_not_null()
+    _gp_forward_unique_per_step()
+
+
+def _gp_forward_unique_per_step() -> None:
+    """ticket_gp_forwards first shipped unique on (GP, recipient, action), which blocks forwarding a GP to the same SME /
+    COH again after a send-back. Swap it for (review step, recipient) – only the constraint changes, no row does."""
+    if not is_postgres():  # SQLite test databases are created from the current models
+        return
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if not insp.has_table("ticket_gp_forwards"):
+        return
+    names = {u["name"] for u in insp.get_unique_constraints("ticket_gp_forwards")}
+    with engine.begin() as conn:
+        if "uq_gp_forward" in names:
+            conn.execute(text("ALTER TABLE ticket_gp_forwards DROP CONSTRAINT uq_gp_forward"))
+        if "uq_gp_forward_step" not in names:
+            conn.execute(text("ALTER TABLE ticket_gp_forwards ADD CONSTRAINT uq_gp_forward_step UNIQUE (review_id, recipient_id)"))
 
 
 # Nullable columns added after a table first shipped: create_all does not alter existing tables.

@@ -233,10 +233,14 @@ class Located:
 def locate(header: list[Any], fields: dict[str, tuple[str, ...]]) -> Located:
     """Column index of every field: the first listed name that appears wins; other matches are reported."""
     normalised = [norm(h) for h in header]
+    loosened = [_loose(h) for h in normalised]
     cols: dict[str, int] = {}
     dups: dict[str, list[str]] = {}
     for key, names in fields.items():
         hits = [(names.index(h), i) for i, h in enumerate(normalised) if h in names]
+        if not hits:  # same name with other punctuation ("AMC/Incremental" = "AMC / Incremental") – the upload check's rule
+            keys = [_loose(n) for n in names]
+            hits = [(keys.index(h), i) for i, h in enumerate(loosened) if h and h in keys]
         if not hits:
             continue
         hits.sort()
@@ -249,10 +253,17 @@ def locate(header: list[Any], fields: dict[str, tuple[str, ...]]) -> Located:
 def find_header_row(grid: list[list[Any]], fields: dict[str, tuple[str, ...]], anchors: tuple[str, ...], max_rows: int = 15) -> int | None:
     """First row (within max_rows) that contains a name of every anchor field."""
     for i, row in enumerate(grid[:max_rows]):
-        cells = {norm(c) for c in row}
-        if all(any(n in cells for n in fields[a]) for a in anchors):
+        cells = {_loose(c) for c in row}
+        if all(any(_loose(n) in cells for n in fields[a]) for a in anchors):
             return i
     return None
+
+
+def _loose(text: Any) -> str:
+    """Header key ignoring case, spaces and punctuation (same rule as ingestion.template.loose)."""
+    import re
+
+    return re.sub(r"[^0-9a-z%<]", "", norm(text))
 
 
 def resolve_sheet(sheet_names: list[str], key: str, cmap: ColumnMap) -> str | None:

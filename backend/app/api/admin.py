@@ -217,14 +217,12 @@ def upload(
             )
         if kind is not None and found != kind:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{display}: you selected '{preview.KINDS[kind]}', but this file is the {preview.KINDS[found]}.")
-        if found == "master":  # the fixed PAGMAS template – the same check as the preview
+        if found == "master":  # required sheets / columns – the same check as the preview
             from ..ingestion import template
 
             chk = template.validate_master(staged)
             if not chk.ok:
-                listed = "; ".join(f"{p.sheet}{f' row {p.row}' if p.row else ''}: {p.message}" for p in chk.errors[:15])
-                more = f" (+{chk.error_count - 15} more)" if chk.error_count > 15 else ""
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{template.TEMPLATE_MESSAGE} {listed}{more}")
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{display}: {chk.message()} {template.TEMPLATE_HINT}")
         target = staging.promote(staging.Staged(token, found, display, suffix, size, sha, user.id, 0.0))
         stored = True
         return _start_import(db, request, background, user, target, display, sha, size, found)
@@ -292,14 +290,16 @@ def upload_confirm(body: ConfirmIn, request: Request, background: BackgroundTask
         raise
 
 
-@router.get("/ingestion/template/master.xlsx")
-def master_template(request: Request, sample: bool = False, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> Response:
-    """The PAGMAS master data template (every mandatory column; period columns of the current weeks / days / months)
-    – generated from the same spec the upload check uses, so the two can never disagree. sample = 2 example rows."""
+@router.get("/ingestion/template/{kind}.xlsx")
+def master_template(kind: Literal["gp", "block", "master"], request: Request, sample: bool = True, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> Response:
+    """Upload templates – generated on download from the same column rules the upload check uses, so they can never
+    disagree: gp = GP Wise Data, block = Master Block, master = both sheets in one workbook (ready to fill and upload).
+    Section A = required columns with two example rows; Section B = example day / week / month columns (flexible).
+    `sample` is accepted for old links (the examples are always included)."""
     from ..ingestion import template
 
-    data = template.build_template(sample=sample)
-    name = "PAGMAS Master Data Sample.xlsx" if sample else "PAGMAS Master Data Template.xlsx"
+    data = template.build_template(kind, sample=sample)
+    name = template.TEMPLATE_FILES[kind]
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 

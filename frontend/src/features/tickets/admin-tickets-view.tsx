@@ -11,7 +11,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, Input } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { IS_LIVE, ticketApi, type TicketDetail, type TicketKpis, type TicketSummary } from "@/lib/api";
+import { IS_LIVE, ticketApi, type GpReviewState, type TicketDetail, type TicketKpis, type TicketSummary } from "@/lib/api";
 import { formatCount } from "@/lib/utils/format";
 import {
   ActivityLog,
@@ -40,6 +40,9 @@ import { CategoryKpiCards, GpMonitorView, categoryFrom } from "./gp-monitor";
 import { CATEGORY } from "./gp-category";
 import { RecipientsCard } from "./ticket-recipients";
 import { TaskPanel } from "./ticket-task";
+
+/** GP review states that count as reviewed by the Area Manager (backend: review.AM_REVIEWED – not one the SME sent back). */
+const REVIEWED: GpReviewState[] = ["AM_APPROVED", "SME_FORWARDED", "COH_RETURNED", "LETTER_SUBMITTED", "AMC_CONVERTED", "ND_APPROVED"];
 
 const COLUMNS: TicketColumn[] = [
   CODE_COL,
@@ -335,12 +338,15 @@ function AdminTicketDetail({ id, tick, onChanged }: { id: number; tick: number; 
   if (q.error) return <Card><ErrorState error={q.error} onRetry={q.reload} /></Card>;
   if (!t || t.id !== id) return <PageSkeleton />;
   const latest = t.submissions[0];
+  // SOP rule 4: GPs the Area Manager has not reviewed / approved yet (an achieved GP needs no review) – the backend
+  // refuses the closure unless the admin writes a reason (force)
+  const unreviewed = (t.task?.gps ?? []).filter((g) => !(g.review && REVIEWED.includes(g.review)) && g.cumulative < g.target).length;
 
   const act = async (kind: "close" | "changes", comment: string) => {
     setBusy(true);
     setError(null);
     try {
-      const next = kind === "close" ? await ticketApi.close(t.id, comment) : await ticketApi.requestChanges(t.id, comment);
+      const next = kind === "close" ? await ticketApi.close(t.id, comment, unreviewed > 0) : await ticketApi.requestChanges(t.id, comment);
       setLocal(next);
       setDialog(null);
       onChanged({
@@ -448,16 +454,23 @@ function AdminTicketDetail({ id, tick, onChanged }: { id: number; tick: number; 
       <ConfirmDialog
         open={dialog === "close"}
         onOpenChange={(o) => setDialog(o ? "close" : null)}
-        title={`Close ${t.code}?`}
+        title={unreviewed > 0 ? `Close ${t.code} without the Area Manager's approval?` : `Close ${t.code}?`}
         description={
-          latest && latest.review === "PENDING"
-            ? `You approve submission ${latest.version} of ${t.assignee.name}. The ticket becomes read-only and the user is notified.`
-            : `You close the ticket of ${t.assignee.name}. Daily progress stops; all reports and remarks are kept, and every recipient with a dashboard account sees it as Closed and is notified.`
+          unreviewed > 0
+            ? `${unreviewed} GP${unreviewed === 1 ? " is" : "s are"} not yet reviewed and approved by the Area Manager (SOP: no ticket is closed without AM review and approval). Close only after the AM review – or close anyway with a written reason, which is kept in the ticket history.`
+            : latest && latest.review === "PENDING"
+              ? `You approve submission ${latest.version} of ${t.assignee.name}. The ticket becomes read-only and the user is notified.`
+              : `You close the ticket of ${t.assignee.name}. Daily progress stops; all reports and remarks are kept, and every recipient with a dashboard account sees it as Closed and is notified.`
         }
-        confirmLabel="Close Ticket"
+        confirmLabel={unreviewed > 0 ? "Close anyway" : "Close Ticket"}
         busy={busy}
         onConfirm={(c) => act("close", c)}
-        comment={{ label: "Comment for the user (optional)", placeholder: "e.g. Thank you – the report is complete.", required: false }}
+        comment={
+          unreviewed > 0
+            ? { label: "Reason for closing without the Area Manager's approval", placeholder: "e.g. Week ended – the remaining GPs are carried to next week's ticket.", required: true, minLength: 10, hint: "Write the reason" }
+            : { label: "Comment for the user (optional)", placeholder: "e.g. Thank you – the report is complete.", required: false }
+        }
+        danger={unreviewed > 0}
       />
       <ConfirmDialog
         open={dialog === "changes"}

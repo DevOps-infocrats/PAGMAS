@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import (
-    NdCase, NdEvent, NdFile, NdMggMember, NdRecord, Ticket, TicketProgress, TicketProgressLine, TicketRecipient, TicketTask, TicketTaskGp, User,
+    NdCase, NdEvent, NdFile, NdForward, NdMggMember, NdRecord, Ticket, TicketProgress, TicketProgressLine, TicketRecipient, TicketTask, TicketTaskGp, User,
 )
 from ..security.deps import CurrentUser
 from . import files
@@ -153,15 +153,42 @@ def _ams(db: Session, t: Ticket) -> list[tuple[int | None, str, str]]:
     return out
 
 
-def _people(db: Session, t: Ticket, g: TicketTaskGp, role: str) -> list[tuple[int | None, str, str]]:
-    """(user id, name, e-mail) of the people of a role for this case (FE: the GP's FE, else the Area Manager)."""
+# the step that hands a case to each reviewer role (the people chosen in it are kept in nd_forwards)
+HANDED_BY = {"SME": "AM_FORWARD", "COH": "SME_RECOMMEND"}
+
+
+def _current(db: Session, c: NdCase, role: str) -> set[int] | None:
+    """Recipient ids the case is with for SME / COH: the people chosen in its LATEST handing step. Empty set = not
+    handed to that role yet; None = handed before the choice was recorded (every SME / COH of the ticket, as before)."""
+    ev = db.scalar(select(NdEvent.id).where(NdEvent.case_id == c.id, NdEvent.action == HANDED_BY[role]).order_by(NdEvent.id.desc()).limit(1))
+    if ev is None:
+        return set()
+    return set(db.scalars(select(NdForward.recipient_id).where(NdForward.event_id == ev))) or None
+
+
+def _holds(db: Session, c: NdCase, t: Ticket, user: CurrentUser, role: str) -> bool:
+    """The user is the SME / COH this case was handed to (an old case: any SME / COH of the ticket)."""
+    cur = _current(db, c, role)
+    if cur == set():
+        return False
+    rows = db.execute(select(TicketRecipient.id, TicketRecipient.role).where(TicketRecipient.ticket_id == t.id, TicketRecipient.user_id == user.id)).all()
+    if cur is None:
+        return any(r.role == role for r in rows)
+    return any(r.id in cur for r in rows)  # the person explicitly chosen (whatever their other role on the ticket)
+
+
+def _people(db: Session, t: Ticket, g: TicketTaskGp, role: str, c: NdCase | None = None) -> list[tuple[int | None, str, str]]:
+    """(user id, name, e-mail) of the people of a role for this case (FE: the GP's FE, else the Area Manager; SME / COH:
+    only the people the case was handed to – for an old case every SME / COH of the ticket)."""
     if role == "FE":
         fes = [(r.user_id, r.name, r.email) for r in _fe_recipients(db, t, g)]
         return fes or _ams(db, t)
     if role == "AM":
         return _ams(db, t)
     if role in ("SME", "COH"):
-        return [(r.user_id, r.name, r.email) for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == role))]
+        cur = _current(db, c, role) if c is not None else None
+        rows = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.id.in_(cur)) if cur else select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == role))
+        return [] if cur == set() else [(r.user_id, r.name, r.email) for r in rows]
     if role == "MGG":
         return [(u.id, u.name, u.email) for u in mgg_people(db)]
     return []
@@ -196,9 +223,10 @@ def roles_for(db: Session, c: NdCase, t: Ticket, g: TicketTaskGp, user: CurrentU
         out.add("FE")
     if "AM" in on:
         out.add("AM")
-    if "SME" in on and _reached(db, c.id, ("AM_FORWARD",)):
+    # SME / COH: only the person the case was handed to (AM forward / SME recommendation), not every SME / COH of the ticket
+    if _holds(db, c, t, user, "SME"):
         out.add("SME")
-    if "COH" in on and _reached(db, c.id, ("SME_RECOMMEND",)):
+    if _holds(db, c, t, user, "COH"):
         out.add("COH")
     if is_mgg(db, user) and _reached(db, c.id, ("COH_FORWARD",)):
         out.add("MGG")
@@ -333,7 +361,7 @@ def _announce(db: Session, c: NdCase, t: Ticket, g: TicketTaskGp, user: CurrentU
     ids: set[int] = set()
     mail: dict[str, str] = {}
     for role in roles:
-        for uid, name, email in _people(db, t, g, role):
+        for uid, name, email in _people(db, t, g, role, c):
             if uid is not None and uid != user.id:
                 ids.add(uid)
             if email and uid != user.id and email.lower() != (user.email or "").lower():
@@ -534,6 +562,12 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
             ticket_event(db, t, user, "NONDOABLE", t.status, t.status, f"{c.ref} · GP {g.gp_code}: {ACTION_LABEL[action]}" + (f" · {why or recommendation or text}" if (why or recommendation or text) else ""))
         ev = _event(db, c, user, step.stage, action, step.role, frm, c.status, remark=text, recommendation=recommendation, reason=why,
                     decision={"MGG_APPROVE": "APPROVED", "MGG_REJECT": "REJECTED"}.get(action), at=at)
+        if nxt:  # who the case now goes to: the people chosen now, else every SME / COH already on the ticket (as before)
+            pool = sent or list(db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == nxt).order_by(TicketRecipient.id)))
+            db.flush()
+            for r in {r.id: r for r in pool}.values():
+                db.add(NdForward(case_id=c.id, event_id=ev.id, recipient_id=r.id, role=nxt, at=at))
+            db.flush()  # the e-mail / notification list below reads them
         if sent:
             ev.remark = ((ev.remark + " · ") if ev.remark else "") + "Sent to " + ", ".join(f"{nxt} {r.name} <{r.email}>" for r in sent)
         detail = why or recommendation or text
@@ -574,8 +608,29 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
     tickets = {t.id: t for t in db.scalars(select(Ticket).where(Ticket.id.in_({c.ticket_id for c in cases})))}
     gps = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_({c.task_gp_id for c in cases})))}
     reached: dict[int, set[str]] = {}
-    for cid, a in db.execute(select(NdEvent.case_id, NdEvent.action).where(NdEvent.case_id.in_([c.id for c in cases]), NdEvent.action.in_(("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD")))):
+    latest: dict[tuple[int, str], int] = {}  # (case, SME / COH) -> its latest handing step (the same rule as _current)
+    role_of = {a: r for r, a in HANDED_BY.items()}
+    for eid, cid, a in db.execute(
+        select(NdEvent.id, NdEvent.case_id, NdEvent.action).where(NdEvent.case_id.in_([c.id for c in cases]), NdEvent.action.in_(("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD"))).order_by(NdEvent.id)
+    ):
         reached.setdefault(cid, set()).add(a)
+        if a in role_of:
+            latest[(cid, role_of[a])] = eid
+    handed: dict[int, set[int]] = {}  # handing step -> recipient ids
+    for eid, rid in db.execute(select(NdForward.event_id, NdForward.recipient_id).where(NdForward.event_id.in_(list(latest.values())))) if latest else []:
+        handed.setdefault(eid, set()).add(rid)
+    my_rows: dict[int, dict[int, str]] = {}  # ticket -> the user's recipient rows (id -> role)
+    for rid, tid, role in db.execute(select(TicketRecipient.id, TicketRecipient.ticket_id, TicketRecipient.role).where(TicketRecipient.ticket_id.in_({c.ticket_id for c in cases}), TicketRecipient.user_id == user.id)):
+        my_rows.setdefault(tid, {})[rid] = role
+
+    def holds(c: NdCase, role: str) -> bool:
+        eid = latest.get((c.id, role))
+        if eid is None:
+            return False
+        rows = my_rows.get(c.ticket_id, {})
+        sent = handed.get(eid)
+        return any(r == role for r in rows.values()) if sent is None else bool(sent & rows.keys())
+
     on_cache: dict[int, set[str]] = {}
     fe_cache: dict[int, list[TicketRecipient]] = {}
     from .task import FeScope
@@ -596,9 +651,9 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
         if "AM" in on:
             roles.add("AM")
         got = reached.get(c.id, set())
-        if "SME" in on and "AM_FORWARD" in got:
+        if holds(c, "SME"):  # only the SME / COH the case was handed to
             roles.add("SME")
-        if "COH" in on and "SME_RECOMMEND" in got:
+        if holds(c, "COH"):
             roles.add("COH")
         if mgg and "COH_FORWARD" in got:
             roles.add("MGG")

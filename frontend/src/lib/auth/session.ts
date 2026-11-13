@@ -31,8 +31,22 @@ export async function signIn(email: string, password: string, remember: boolean)
   return s;
 }
 
-export async function fetchCurrentUser(): Promise<SessionUser | null> {
-  if (!IS_LIVE) return readSessionCookie();
+/** One /auth/me request at a time: callers that ask together (and React's dev-mode double effect) share it. */
+let meInFlight: Promise<SessionUser | null> | null = null;
+
+export function fetchCurrentUser(): Promise<SessionUser | null> {
+  if (!IS_LIVE) return Promise.resolve(readSessionCookie());
+  if (!meInFlight) {
+    const p = loadCurrentUser();
+    meInFlight = p;
+    p.finally(() => {
+      if (meInFlight === p) meInFlight = null;
+    });
+  }
+  return meInFlight;
+}
+
+async function loadCurrentUser(): Promise<SessionUser | null> {
   try {
     const res = await request<{ user: SessionUser; access?: SessionUser["access"] }>("/auth/me");
     return { ...res.user, access: res.access };

@@ -130,7 +130,7 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     # GP detail: current category and the classified history
     det = client.get(f"/api/v1/tickets/gp-monitor/gps/{g['gpCode']}").json()
     assert det["gpCategory"] == "E" and {"A", "B", "C", "E"} <= {h_["gpCategory"] for h_ in det["history"] if h_["source"] == "progress"}
-    assert tasks.CATEGORIES["B"] == "Ready for Letter Submitted"
+    assert tasks.CATEGORIES["B"] == "Ready for Letter Submission"
 
 
 def test_last_updated_by_and_fe_wise_categories(client, fe_org):

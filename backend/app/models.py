@@ -394,6 +394,30 @@ class GpDailyHistory(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class PeriodHistory(Base):
+    """Weekly and monthly availability kept across uploads – the companion of GpDailyHistory for the other periods.
+
+    A new file may start later than the previous one (W-45 onwards, only November): the weeks and months it no longer
+    has stay here, so the dashboard keeps showing them. One row per (kind, period), one compressed code × 1 matrix:
+      W / M / MA      GP Wise Data: weekly (W-46), monthly (2026-11), monthly AMC GPs ("Nov'26 (AMC)")
+      BW / BM / BMA / BD   Master Block: weekly, monthly ALL GPs, monthly AMC GPs, daily (by Block Code)
+    A period present in both keeps the values of the file with the later data date; an older file only fills
+    periods the history does not have. Not tied to a dataset, so pruning old datasets never removes it."""
+
+    __tablename__ = "period_history"
+
+    kind: Mapped[str] = mapped_column(String(4), primary_key=True)
+    period: Mapped[str] = mapped_column(String(10), primary_key=True)  # "W-46" · "2026-11" · "2026-11-07"
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # week start / 1st of the month / the day
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    number: Mapped[int | None] = mapped_column(Integer, nullable=True)  # week number (W kinds)
+    codes: Mapped[str] = mapped_column(Text)  # GP / Block codes (JSON) of the values
+    values: Mapped[bytes] = mapped_column(LargeBinary)
+    data_as_of: Mapped[date] = mapped_column(Date)  # data date of the file the values come from
+    source_file: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # ---------------------------------------------------------------- Ticket Management
 # Work tickets an admin assigns to a dashboard user. Separate records for the ticket, each work submission, the files
 # of a submission, the activity / status history and the in-app notifications. Users are never deleted (only
@@ -578,7 +602,8 @@ class TicketTaskGp(Base):
     # yet). One value per GP of the ticket – a later choice replaces it; every choice stays in the progress lines.
     gp_category: Mapped[str | None] = mapped_column(String(1), nullable=True)
     # Review chain of the GP (app.tickets.review): None = with the FE / Area Manager · RETURNED (to the FE) ·
-    # AM_APPROVED · SME_FORWARDED · LETTER_SUBMITTED · AMC_CONVERTED; each step is a TicketGpReview row
+    # AM_APPROVED · SME_RETURNED (SME sent it back to the AM) · SME_FORWARDED · COH_RETURNED (COH sent it back to the
+    # SME) · LETTER_SUBMITTED · AMC_CONVERTED; each step is a TicketGpReview row
     review: Mapped[str | None] = mapped_column(String(20), nullable=True)
     review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     letter_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # COH: letter submitted on
@@ -605,6 +630,26 @@ class TicketGpReview(Base):
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     actor_name: Mapped[str] = mapped_column(String(120))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class TicketGpForward(Base):
+    """Who a GP was handed to in the review chain: the SME(s) the Area Manager approved it for (AM_APPROVE) and the
+    COH(s) the SME forwarded it to (SME_FORWARD) – one row per GP and recipient, linked to the review step. An SME sees
+    only the GPs forwarded to them (app.tickets.task.sme_view). Rows are only added, never changed. Approvals made
+    before this table existed have no row (they stay visible to the ticket's SMEs, as before)."""
+
+    __tablename__ = "ticket_gp_forwards"
+    # once per review step and recipient (a GP can be forwarded to the same person again after a send-back)
+    __table_args__ = (UniqueConstraint("review_id", "recipient_id", name="uq_gp_forward_step"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    task_gp_id: Mapped[int] = mapped_column(ForeignKey("ticket_task_gps.id", ondelete="CASCADE"), index=True)
+    review_id: Mapped[int] = mapped_column(ForeignKey("ticket_gp_reviews.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[int] = mapped_column(ForeignKey("ticket_recipients.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(20))  # AM_APPROVE | SME_FORWARD
+    role: Mapped[str] = mapped_column(String(10))  # SME | COH – the role the GP was sent to
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TicketProgress(Base):
@@ -738,6 +783,23 @@ class NdEvent(Base):
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     actor_name: Mapped[str] = mapped_column(String(120))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class NdForward(Base):
+    """Who a Non-Doable case was handed to: the SME(s) the Area Manager forwarded it to (AM_FORWARD) and the COH(s) the
+    SME recommended it to (SME_RECOMMEND) – one row per step and recipient. Only the people of the LATEST such step see
+    the case, act on it and get its e-mails (app.tickets.nondoable). Steps from before this table existed have no row:
+    those cases stay with every SME / COH of the ticket, as before. Rows are only added, never changed."""
+
+    __tablename__ = "nd_forwards"
+    __table_args__ = (UniqueConstraint("event_id", "recipient_id", name="uq_nd_forward_step"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("nd_cases.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("nd_events.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[int] = mapped_column(ForeignKey("ticket_recipients.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(10))  # SME | COH – the role the case was sent to
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class NdFile(Base):

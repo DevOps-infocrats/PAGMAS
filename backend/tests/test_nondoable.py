@@ -302,3 +302,67 @@ def test_tc5_audit_trail_and_no_duplicates(client, nd, mail):  # noqa: F811
         # one notification per person and action: proposed, E1, E2, SME recommend, COH forward, MGG decision
         n = db.scalar(select(func.count()).select_from(TicketNotification).where(TicketNotification.user_id == am, TicketNotification.ticket_id == tid, TicketNotification.kind == "NONDOABLE"))
         assert n == 6
+
+
+SME2 = ("nd.sme2@pratap-test.in", "NdSme2!Secure-Pass-84")
+COH2 = ("nd.coh2@pratap-test.in", "NdCoh2!Secure-Pass-85")
+
+
+def test_tc6_only_the_chosen_sme_and_coh(client, nd, mail):  # noqa: F811
+    """A ticket with TWO SMEs and TWO COHs: the case, its actions and its e-mails reach only the SME the Area Manager
+    chose (later: the one chosen when it is forwarded again) and only the COH the SME chose. Cases from before the
+    choice was recorded stay with every SME / COH of the ticket."""
+    from app.models import NdForward, TicketRecipient
+
+    tid, g = nd["tid"], nd["gps"][0]
+    ha = _h(client)
+    for email, pw in (SME2, COH2):
+        assert client.post("/api/v1/users", json={"email": email, "name": email.split("@")[0].replace(".", " ").title(), "password": pw}, headers=ha).status_code in (201, 409)
+    with SessionLocal() as db:  # the second SME / COH are already on the ticket (e.g. chosen for other GPs)
+        for email, role in ((SME2[0], "SME"), (COH2[0], "COH")):
+            uid = db.scalar(select(User.id).where(User.email == email))
+            db.add(TicketRecipient(ticket_id=tid, role=role, name=email.split("@")[0], email=email, user_id=uid, can_work=False, attach_workbook=False, email_status="NONE"))
+        db.commit()
+    _propose(client, tid, g["id"])
+    login(client, FE1)
+    cid = _case_of(client, g["id"])["id"]
+    h1 = _h(client, FE1)
+    assert _form(client, h1, cid, "verification", E1, evidence=[("survey.pdf", PDF, "application/pdf")]).status_code == 200
+    assert _form(client, h1, cid, "justification", E2).status_code == 200
+
+    def sees(creds):
+        login(client, creds)
+        return any(c["id"] == cid for c in client.get("/api/v1/nondoable/cases").json()["items"])
+
+    # the AM forwards to SME One only
+    mail.sent.clear()
+    assert _act(client, _h(client, VIEWER), cid, "AM_FORWARD", remark="Verified", to=[{"name": "Nd Sme", "email": SME[0]}]).status_code == 200
+    assert SME[0] in [m["To"] for m in mail.sent] and SME2[0] not in [m["To"] for m in mail.sent]
+    assert sees(SME) and not sees(SME2)
+    login(client, SME2)
+    assert client.get(f"/api/v1/nondoable/cases/{cid}").status_code == 404
+    assert _act(client, _h(client, SME2), cid, "SME_RECOMMEND", remark="Not mine", to=[{"name": "Nd Coh", "email": COH[0]}]).status_code == 404
+    login(client, SME2)
+    assert not any(n["ticketId"] == tid and "ND-" in n["title"] for n in client.get("/api/v1/tickets/notifications").json()["items"])
+
+    # SME One sends it back; the AM now forwards it to SME Two: SME One no longer has it
+    assert _act(client, _h(client, SME), cid, "SME_RETURN", reason="Check with another SME").status_code == 200
+    assert _act(client, _h(client, VIEWER), cid, "AM_FORWARD", remark="For SME Two", to=[{"name": "Nd Sme Two", "email": SME2[0]}]).status_code == 200
+    assert sees(SME2) and not sees(SME)
+    # SME Two recommends to COH One only
+    mail.sent.clear()
+    assert _act(client, _h(client, SME2), cid, "SME_RECOMMEND", remark="Recommend Non-Doable", to=[{"name": "Nd Coh", "email": COH[0]}]).status_code == 200
+    assert COH[0] in [m["To"] for m in mail.sent] and COH2[0] not in [m["To"] for m in mail.sent]
+    assert sees(COH) and not sees(COH2)
+    assert _act(client, _h(client, COH2), cid, "COH_RETURN", reason="Not mine", target="SME").status_code == 404
+    # COH One returns it to the SME: the e-mail goes to SME Two only (the SME it is with), not SME One
+    mail.sent.clear()
+    assert _act(client, _h(client, COH), cid, "COH_RETURN", reason="Add the letter", target="SME").status_code == 200
+    to = [m["To"] for m in mail.sent]
+    assert SME2[0] in to and SME[0] not in to and COH2[0] not in to
+    with SessionLocal() as db:
+        assert {(f.role) for f in db.scalars(select(NdForward).where(NdForward.case_id == cid))} == {"SME", "COH"}
+        # a case from before the choice was recorded (no forward rows): every SME of the ticket, as before
+        db.execute(delete(NdForward).where(NdForward.case_id == cid))
+        db.commit()
+    assert sees(SME) and sees(SME2)

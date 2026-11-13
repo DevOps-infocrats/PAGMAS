@@ -176,7 +176,8 @@ def test_am_gets_all_gps_each_fe_only_their_own(client, fe_org):
     row = next(x for x in client.get("/api/v1/tickets/gp-monitor", params={"status": "DONE", "ticket": code, "fe": "Test FE One"}).json()["items"] if x["gpCode"] == own["gpCode"])
     assert row["fieldEngineer"] == "Test FE One" and row["completedBy"].startswith("Marked Done by")
     assert client.get(f"/api/v1/tickets/{tid}").json()["status"] != "CLOSED"
-    assert client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week reviewed"}, headers=ha).status_code == 200
+    assert client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week reviewed"}, headers=ha).status_code == 409  # GPs not AM-approved (SOP rule 4)
+    assert client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week reviewed by the admin", "force": True}, headers=ha).status_code == 200
 
 
 def test_fe_only_ticket_has_only_that_fes_gps(client, fe_org):

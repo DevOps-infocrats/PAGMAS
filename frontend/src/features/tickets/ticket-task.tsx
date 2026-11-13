@@ -5,13 +5,14 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/overlays";
 import { Card, Input } from "@/components/ui/primitives";
-import { ticketApi, type GpCategory, type GpReviewState, type NewTaskGp, type TicketDetail, type TicketTask } from "@/lib/api";
+import { ticketApi, type GpCategory, type GpStage, type NewTaskGp, type TicketDetail, type TicketTask } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 import { TEXTAREA, fileSize, ticketDay, ticketTime, type Notice } from "./ticket-parts";
 import { CATEGORY, GP_CATEGORIES, GpCategoryBadge, GpCategorySelect } from "./gp-category";
+import { GpDetailDialog, SmeGpTable } from "./gp-detail";
 import { GpStatusBadge, PROOF_ACCEPT, ProofList } from "./ticket-proof";
-import { REVIEW_STAGE, ReviewBar, ReviewCell, reviewable } from "./ticket-review";
+import { REVIEW_STAGE, ReviewBar, ReviewCell, reviewable, stageOf } from "./ticket-review";
 
 const dm = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" });
 const MAX_GP_FILES = 5; // per GP and submission (backend: task.MAX_GP_FILES)
@@ -45,16 +46,21 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const scoped = task.scope ?? null;
+  // FE view = only their GPs; SME view = only the GPs the Area Manager forwarded to this SME (both cut by the backend)
+  const reviewer = task.scope && task.scope.kind !== "FE" ? task.scope.kind : null; // "SME" | "COH" view
+  const kpis = task.scope && task.scope.kind !== "FE" ? task.scope.kpis : undefined;
+  const smeView = reviewer !== null;
+  const scoped = task.scope && task.scope.kind === "FE" ? task.scope : null;
   const fes = task.fes ?? [];
-  const showFe = !scoped && task.gps.some((g) => g.feName);
+  const showFe = !scoped && !smeView && task.gps.some((g) => g.feName);
   const [feFilter, setFeFilter] = useState(ALL_FES);
   const [stage, setStage] = useState(ALL_STAGES);
   const roles = t.can.reviewAs ?? [];
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [rows, setRows] = useState<NewRow[]>([]);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const shown = task.gps.filter(
-    (g) => (feFilter === ALL_FES || (feFilter === NO_FE ? !g.feName : g.feName === feFilter)) && (stage === ALL_STAGES || (g.review ?? "NONE") === stage),
+    (g) => (feFilter === ALL_FES || (feFilter === NO_FE ? !g.feName : g.feName === feFilter)) && (stage === ALL_STAGES || stageOf(g) === stage),
   );
   const selected = task.gps.filter((g) => picked.has(g.id));
   const canPick = shown.filter((g) => reviewable(g, roles));
@@ -133,6 +139,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           <h3 className="flex items-center gap-2 text-base font-bold text-subheading">
             <ListChecks className="size-4 text-primary" aria-hidden /> GP-wise Weekly Task
             {scoped && <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">Your GPs only</span>}
+            {smeView && (
+              <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">
+                GPs forwarded to you by the {reviewer === "COH" ? "SME" : "Area Manager"}
+              </span>
+            )}
           </h3>
           <p className="text-[0.8125rem] text-muted-foreground">
             {scoped && (
@@ -140,6 +151,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                 FE <b className="font-semibold text-foreground">{scoped.fieldEngineer}</b> · Area Manager{" "}
               </>
             )}
+            {smeView && <>Ticket {t.code} · Area Manager </>}
             <b className="font-semibold text-foreground">{task.areaManager}</b>
             {task.circle && <> · {task.circle}</>}
             {task.cbhName && <> · CBH {task.cbhName}</>} · {task.week.id.replace("W-", "Week ")} ({dm(task.week.start)} – {dm(task.week.end)}) · targets from {task.sourceFile}, data as of {ticketDay(task.dataAsOf)}
@@ -148,18 +160,38 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
         <div className="flex flex-wrap gap-2">
           <Button asChild size="sm" variant="outline">
             <a href={ticketApi.taskWorkbookUrl(t.id, "assignment")} download>
-              <FileSpreadsheet /> {scoped ? "My Assignment Excel" : "Assignment Excel"}
+              <FileSpreadsheet /> {scoped || smeView ? "My Assignment Excel" : "Assignment Excel"}
             </a>
           </Button>
           <Button asChild size="sm" variant="outline">
             <a href={ticketApi.taskWorkbookUrl(t.id, "progress")} download>
-              <Download /> {scoped ? "My latest Excel" : "Download latest Excel"}
+              <Download /> {scoped || smeView ? "My latest Excel" : "Download latest Excel"}
             </a>
           </Button>
         </div>
       </div>
 
+      {/* SME / COH: the ticket's GPs against the GPs handed to them */}
+      {kpis && reviewer && (
+        <div className="grid grid-cols-2 gap-3 border-b border-border px-5 py-3 sm:grid-cols-3 lg:grid-cols-6">
+          <Stat label="Total GPs in Ticket" value={kpis.ticketGps} sub="all GPs of the Area Manager's ticket" />
+          <Stat label="Assigned to You" value={kpis.assigned} cls="text-[var(--series-1)]" sub={reviewer === "SME" ? "approved & forwarded by the AM" : "reviewed & forwarded by the SME"} />
+          <Stat label={reviewer === "SME" ? "Pending Your Review" : "Pending Letter Submission"} value={kpis.pending} cls={kpis.pending ? "text-warning-text" : undefined}
+            sub={reviewer === "SME" && kpis.returnedToYou ? `${kpis.returnedToYou} sent back by the COH` : undefined} />
+          {reviewer === "SME" ? (
+            <Stat label="Forwarded to COH" value={kpis.forwarded ?? 0} cls="text-good-text" />
+          ) : (
+            <>
+              <Stat label="Letter Submitted" value={kpis.letterSubmitted ?? 0} cls="text-good-text" />
+              <Stat label="AMC Converted" value={kpis.amcConverted ?? 0} cls="text-good-text" />
+            </>
+          )}
+          <Stat label={reviewer === "SME" ? "Sent Back to AM" : "Sent Back to SME"} value={kpis.sentBack} cls={kpis.sentBack ? "text-critical-text" : undefined} />
+        </div>
+      )}
+
       {/* totals + progress */}
+      {!(kpis && reviewer) && (
       <div className="grid grid-cols-2 gap-3 border-b border-border px-5 py-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Assigned GPs" value={T.gps} sub={`${T.weekGps} this week · ${T.pendingGps} pending`} />
         <Stat label="Weekly Target" value={T.target} cls="text-[var(--series-1)]" />
@@ -176,6 +208,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           <p className="mt-1 text-[0.6875rem] text-muted-foreground">Latest submission: {task.latestSubmission ? ticketTime(task.latestSubmission) : "none yet"}</p>
         </div>
       </div>
+      )}
 
       {/* admin: block-wise performance */}
       {admin && task.blocks.length > 1 && (
@@ -197,13 +230,15 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           <span className="font-semibold uppercase tracking-wide text-muted-foreground">Review</span>
           {(
             [
-              ["Awaiting AM approval", T.review.awaiting, "NONE"],
+              ["Pending AM Verification", T.review.awaiting, "PENDING_AM"],
               ["Returned to FE", T.review.returned, "RETURNED"],
-              ["Approved by AM", T.review.amApproved, "AM_APPROVED"],
-              ["Forwarded by SME", T.review.smeForwarded, "SME_FORWARDED"],
+              ["AM Approved – Pending SME Review", T.review.amApproved, "AM_APPROVED"],
+              ["Returned to AM by SME", T.review.smeReturned ?? 0, "SME_RETURNED"],
+              ["SME Reviewed – Forwarded to COH", T.review.smeForwarded, "SME_FORWARDED"],
+              ["Returned to SME by COH", T.review.cohReturned ?? 0, "COH_RETURNED"],
               ["Letter Submitted", T.review.letterSubmitted, "LETTER_SUBMITTED"],
               ["AMC Converted", T.review.amcConverted, "AMC_CONVERTED"],
-            ] as [string, number, "NONE" | GpReviewState][]
+            ] as [string, number, GpStage][]
           ).map(([label, n, key]) => (
             <span key={label} className={cn("rounded-full px-2 py-0.5 font-semibold", REVIEW_STAGE[key].cls)}>
               {label} {n}
@@ -218,6 +253,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       {/* Area Manager / admin: FE-wise allocation and progress */}
       {showFe && <FeSplit fes={fes} />}
 
+      {!smeView && (
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2.5 text-[0.78125rem]">
         <span className="font-medium text-muted-foreground">Show GPs</span>
         {showFe && (
@@ -237,17 +273,21 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           ariaLabel="Review stage"
           value={stage}
           onValueChange={(v) => v && setStage(v)}
-          options={[{ value: ALL_STAGES, label: "All review stages" }, ...Object.entries(REVIEW_STAGE).map(([k, v]) => ({ value: k, label: v.label }))]}
-          className="w-52"
+          options={[{ value: ALL_STAGES, label: "All review stages" }, ...Object.entries(REVIEW_STAGE).map(([k, v]) => ({ value: k, label: v.label }))]}          className="w-52"
         />
         <span className="text-muted-foreground">
           {shown.length} of {task.gps.length} GPs
         </span>
       </div>
+      )}
 
       {roles.length > 0 && t.status !== "CLOSED" && <ReviewBar t={t} roles={roles} selected={selected} onClear={() => setPicked(new Set())} onChanged={onChanged} />}
 
+      {/* SME: only the GPs forwarded to them, FE submission and AM approval side by side */}
+      {reviewer && <SmeGpTable t={t} kind={reviewer} roles={roles} picked={picked} setPicked={setPicked} onChanged={onChanged} />}
+
       {/* GP-wise progress table (scrolls inside the card; the header stays visible) */}
+      {!smeView && (
       <div className="max-h-[35rem] overflow-auto">
         <table className="w-full min-w-[90rem] text-[0.8125rem]">
           <caption className="sr-only">GP-wise task progress</caption>
@@ -302,7 +342,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       />
                     </td>
                   )}
-                  <td className="px-3 py-2 font-semibold text-primary">{g.gpCode}</td>
+                  <td className="px-3 py-2">
+                    <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details (FE submission, AM approval, review history)">
+                      {g.gpCode}
+                    </button>
+                  </td>
                   <td className="min-w-[10.625rem] px-3 py-1.5">
                     {rowEdit ? (
                       <Input value={d?.gpName ?? g.gpName} maxLength={160} disabled={busy} onChange={(e) => set(g.id, { gpName: e.target.value })} className="h-8 text-[0.8125rem]" aria-label={`GP name of ${g.gpCode}`} />
@@ -410,6 +454,8 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           </tbody>
         </table>
       </div>
+      )}
+      {!smeView && <GpDetailDialog t={t} g={task.gps.find((g) => g.id === detailId) ?? null} roles={roles} onClose={() => setDetailId(null)} onChanged={onChanged} />}
 
       {/* GP rows added by the FE / Area Manager (target 1 each, sent with the submission) */}
       {editable && (

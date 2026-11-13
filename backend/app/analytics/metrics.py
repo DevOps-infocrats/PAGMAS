@@ -117,8 +117,9 @@ def summarize(store: Store, mask: np.ndarray | pd.Series, week_code: str) -> dic
         "penaltyBlocksWeek": int((block_week < s.penalty_threshold).sum()),
         "oneTimeUp": int(store.one_time_up_sept.loc[g.index].sum()),
         "totalRkm": r2(g["total_rkm"].sum()),
-        "bsnlRkm": r2(g["bsnl_km"].fillna(0).sum()),
-        "bbnlRkm": r2(g["bbnl_km"].fillna(0).sum()),
+        # Blank is never 0: a file without the (optional) BSNL / BBNL Live KM column gives NA, not 0 km
+        "bsnlRkm": r2(pd.to_numeric(g["bsnl_km"], errors="coerce").sum(min_count=1)),
+        "bbnlRkm": r2(pd.to_numeric(g["bbnl_km"], errors="coerce").sum(min_count=1)),
         "amcRkm": r2(g.loc[amc[amc].index, "total_rkm"].sum()),
         "incrementalGps": int((amc & (g["amc_category"] == "INCREMENTAL")).sum()),
         "amcOriginalGps": amc_original,

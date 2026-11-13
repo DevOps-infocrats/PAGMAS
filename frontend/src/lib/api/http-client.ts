@@ -229,7 +229,7 @@ export const httpTicketApi: TicketApi = {
     for (const f of files) body.append("attachments", f, f.name);
     return upload(`/tickets/${id}/submit`, body, onProgress);
   },
-  close: (id, comment) => request(`/tickets/${id}/close`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
+  close: (id, comment, force) => request(`/tickets/${id}/close`, { method: "POST", body: JSON.stringify({ comment: comment || null, force: !!force }) }),
   remove: (id, reason) => request(`/tickets/${id}`, { method: "DELETE", body: JSON.stringify({ reason: reason || null }) }),
   getShareContacts: (id) => request(`/tickets/${id}/share-contacts`),
   share: (id, recipients, remark) => request(`/tickets/${id}/share`, { method: "POST", body: JSON.stringify({ recipients, remark }) }),

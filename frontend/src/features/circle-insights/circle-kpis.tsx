@@ -155,7 +155,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
           }
           value={rkm(s?.totalRkm)}
           unit="RKM"
-          total={s ? s.bsnlRkm + s.bbnlRkm : null}
+          total={s && s.bsnlRkm != null && s.bbnlRkm != null ? s.bsnlRkm + s.bbnlRkm : null}
           bar={[
             { label: "BSNL", value: s?.bsnlRkm ?? 0, color: "var(--series-1)" },
             { label: "BBNL", value: s?.bbnlRkm ?? 0, color: "var(--series-3)" },

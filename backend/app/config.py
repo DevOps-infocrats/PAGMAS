@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     zip_max_ratio: int = Field(200, ge=10, le=10_000)
     # Successful imports kept (data rows + file) besides the active one; older ones are pruned
     keep_datasets: int = Field(3, ge=1, le=50)
+    # Weekly / monthly availability of earlier uploads kept for this many months before the newest data date, so a file
+    # that starts later (only the current week / month) still shows the earlier weeks and months (period_history)
+    period_history_months: int = Field(6, ge=1, le=36)
     # Temporary password of users created by the bulk import on User Management (they change it after signing in)
     user_import_password: str = Field("bsnl@1234567", min_length=8, max_length=128)
     # Ticket Management: files of one work submission (PDF, Office, images)

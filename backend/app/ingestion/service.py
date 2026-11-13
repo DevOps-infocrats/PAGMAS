@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import SessionLocal, is_postgres
 from ..models import CircleSheetValue, Dataset, DatasetWeek, Gp, GpAmcPlan, GpAvailability, GpAvailabilityPack, MasterBlock, ReportedNumber, ValidationIssue
-from .history import merge_daily
+from .history import merge_daily, merge_periods
 from .packs import pack, wide_frames
 from .parser import ParsedWorkbook, parse_workbook
 from .workbook import WorkbookError
@@ -70,6 +70,9 @@ def _write(db: Session, ds_id: int, parsed: ParsedWorkbook, file_name: str = "")
     # Daily values also go into the cross-upload history (previous month to date needs days later files drop).
     if parsed.data_as_of is not None:
         merge_daily(db, frames.get("D"), parsed.data_as_of, file_name)
+        # Weekly / monthly (and Master Block) periods too: a later file that starts at W-45 keeps W-40 … W-44.
+        merged = merge_periods(db, parsed, file_name)
+        log.info("Period history: %d added, %d updated, %d kept (newer data)", len(merged["added"]), len(merged["updated"]), len(merged["kept"]))
     _bulk_insert(db, GpAmcPlan, [{**r, "dataset_id": ds_id} for r in parsed.amc_plan])
     if parsed.circle_sheets:
         db.execute(insert(CircleSheetValue), [{**c, "dataset_id": ds_id} for c in parsed.circle_sheets])

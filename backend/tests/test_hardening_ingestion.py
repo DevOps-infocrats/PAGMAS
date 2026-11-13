@@ -147,20 +147,30 @@ def test_no_daily_values_is_rejected():
         parse(gp_grid(daily=None))
 
 
+def test_a_future_day_is_a_workbook_error():
+    with pytest.raises(WorkbookError, match=r"is in the future"):
+        parse(gp_grid(days=[*OCT, dt.date.today() + dt.timedelta(days=5)]))
+
+
 @pytest.mark.parametrize(
-    ("grid", "message"),
+    ("grid", "code", "message"),
     [
-        (gp_grid(weeks=(("W-40", "25-1 Oct"), ("W-40", "2-8 Oct"))), r"Duplicate weekly availability columns: W-40 \(columns L, M\)"),
-        (gp_grid(days=[*OCT, OCT[-1]]), r"Duplicate daily availability columns: 2026-10-09"),
-        (gp_grid(weeks=(("W-40", "31-6 Oct"),)), r"Week label '31-6 Oct' is not a valid date range"),
-        (gp_grid(extra=("Remarks", dt.date(2026, 10, 12))), r"Daily date columns must be contiguous: column \w+ \('Remarks'\)"),
-        (gp_grid(days=[*OCT, dt.date.today() + dt.timedelta(days=5)]), r"is in the future"),
+        (gp_grid(weeks=(("W-40", "25-1 Oct"), ("W-40", "2-8 Oct"))), "PERIOD_DUPLICATE", r"Duplicate weekly column W-40: columns L and M - the first \(L\) is read"),
+        (gp_grid(days=[*OCT, OCT[-1]]), "PERIOD_DUPLICATE", r"Duplicate daily column 2026-10-09"),
+        (gp_grid(weeks=(("W-40", "31-6 Oct"),)), "WEEK_LABEL", r"W-40 \(column \w+\): the dates above it \('31-6 Oct'\) are not a 7-day range"),
+        (gp_grid(extra=("Remarks", dt.date(2026, 10, 12))), "DATE_COLUMN_IGNORED", r"Date column\(s\) not next to the daily block \(column \w+ interrupts it\) were not read"),
     ],
-    ids=["duplicate-week", "duplicate-day", "invalid-week-label", "non-contiguous-days", "future-day"],
+    ids=["duplicate-week", "duplicate-day", "invalid-week-label", "non-contiguous-days"],
 )
-def test_bad_period_columns_are_workbook_errors(grid, message):
-    with pytest.raises(WorkbookError, match=message):
-        parse(grid)
+def test_bad_period_columns_are_warnings_never_a_reject(grid, code, message):
+    """Day / week / month columns are never a reason to reject: the problem is a warning naming the columns, the
+    first of a duplicate is read, and the weeks are still there (built from the daily dates where needed)."""
+    import re
+
+    p = parse(grid)
+    hit = [i for i in p.issues if i.code == code]
+    assert hit and any(re.search(message, i.message) for i in hit), [i.message for i in hit]
+    assert all(i.severity == "warning" for i in hit) and p.weeks and p.data_as_of
 
 
 # ---------------------------------------------------------------- activation, failure, pruning (1, 2a, 4, 7)

@@ -137,8 +137,9 @@ def test_missing_required_column_stops_the_preview(client):
     header = ["Circle", "BA", "District", "Block", "Block Code", "GP", "GP Code", "TOTAL RKM", "HOTO Date"]  # no AMC Date
     rows = [["HARYANA", "Ambala", "Ambala", "Barara", "501", "Gp One", "910001", 12.5, D(2026, 3, 1), 99.0, *[100.0] * 7]]
     rep = _preview(client, csrf, master_xlsx(rows, header)).json()
-    assert rep["canImport"] is False and rep["stage"] == "template"  # the fixed PAGMAS template (test_template_validation.py)
-    assert any(e["message"] == "Missing column: AMC Date" for e in rep["templateErrors"])
+    assert rep["canImport"] is False and rep["stage"] == "template"  # required columns (test_template_validation.py)
+    assert any(e["message"] == "Missing required column: AMC Date" for e in rep["templateErrors"])
+    assert rep["error"].startswith("Missing required column(s) – GP Wise Data:") and "AMC Date" in rep["error"]
 
 
 # ---------------------------------------------------------------- layer 5: row rules (parser)

@@ -140,7 +140,8 @@ def test_task_workflow(imported, client, am_week):
     h = {"X-CSRF-Token": login(client, ADMIN)}
     d = client.get(f"/api/v1/tickets/{tid}").json()
     assert d["can"]["close"] is True and d["task"]["latestSubmission"]
-    r = client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week done"}, headers=h)
+    assert client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week done"}, headers=h).status_code == 409  # GPs not AM-approved (SOP rule 4)
+    r = client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Week done – closed by the admin", "force": True}, headers=h)
     assert r.json()["status"] == "CLOSED" and r.json()["closedBy"]["name"] == "Admin"
     h = {"X-CSRF-Token": login(client, VIEWER)}
     d = client.get(f"/api/v1/tickets/{tid}").json()

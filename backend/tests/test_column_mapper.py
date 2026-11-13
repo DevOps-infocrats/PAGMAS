@@ -86,13 +86,16 @@ def test_renamed_column_is_suggested_never_applied(tmp_path):
 
 def test_renamed_anchor_and_sheet_are_found(tmp_path):
     """A renamed header-row anchor (GP Code) and a renamed GP sheet: the file is still read, with suggestions."""
-    r = mapper.check(_master(tmp_path, {"GP Code": "GP_Code"}, sheet="GP Data"))
+    r = mapper.check(_master(tmp_path, {"GP Code": "GP Cd"}, sheet="GP Data"))
     assert r["kind"] == "master"
     gp_sheet = next(x for x in r["sheetMap"] if x["key"] == "gp")
     assert gp_sheet["sheet"] is None and gp_sheet["suggestion"] == "GP Data"
     sec = r["sections"][0]
     assert sec["headerFound"] and sec["headerRow"] == 3 and sec["headerExact"] is False
-    assert _field(r, "gp", "gp_code")["suggestion"] == "GP_Code"
+    assert _field(r, "gp", "gp_code")["suggestion"] == "GP Cd"
+    # only punctuation differs ("GP_Code"): the same column name – found as it is, nothing to add
+    r = mapper.check(_master(tmp_path, {"GP Code": "GP_Code"}))
+    assert r["sections"][0]["headerExact"] is True and _field(r, "gp", "gp_code")["status"] == "found"
 
 
 def test_adding_names_makes_the_file_ready(tmp_path):

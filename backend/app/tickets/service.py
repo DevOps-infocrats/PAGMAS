@@ -30,7 +30,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import Ticket, TicketAttachment, TicketEvent, TicketNotification, TicketProgress, TicketRecipient, TicketSubmission, TicketTask, TicketTaskGp, User
+from ..models import Ticket, TicketAttachment, TicketEvent, TicketGpForward, TicketNotification, TicketProgress, TicketRecipient, TicketSubmission, TicketTask, TicketTaskGp, User
 from ..security.deps import CurrentUser
 from . import files, review
 
@@ -97,9 +97,15 @@ def link_recipients(db: Session, user_id: int, email: str) -> int:
         if t is None:
             continue
         roles = {r.role for r in rows if r.ticket_id == tid}
-        waiting = db.scalar(
-            select(func.count()).select_from(TicketTaskGp).where(TicketTaskGp.ticket_id == tid, TicketTaskGp.review == ("AM_APPROVED" if "SME" in roles else "SME_FORWARDED"))
-        ) if roles & {"SME", "COH"} else 0
+        state = "AM_APPROVED" if "SME" in roles else "SME_FORWARDED"
+        waiting = 0
+        if roles & {"SME", "COH"}:
+            # only the GPs forwarded to this person (approvals from before GP-level forwarding: the ticket's count)
+            mine = [r.id for r in rows if r.ticket_id == tid]
+            q = select(func.count(func.distinct(TicketTaskGp.id))).select_from(TicketTaskGp).where(TicketTaskGp.ticket_id == tid, TicketTaskGp.review == state)
+            if db.scalar(select(TicketGpForward.id).where(TicketGpForward.ticket_id == tid).limit(1)) is not None:
+                q = q.join(TicketGpForward, TicketGpForward.task_gp_id == TicketTaskGp.id).where(TicketGpForward.recipient_id.in_(mine))
+            waiting = db.scalar(q) or 0
         if "SME" in roles:
             title, body = f"{t.code}: GPs approved by the Area Manager – your review", f"{waiting} GP{'s' if waiting != 1 else ''} wait for your review (SME): check and forward them to the COH."
         elif "COH" in roles:
@@ -267,6 +273,10 @@ def summary_json(t: Ticket) -> dict[str, Any]:
     }
 
 
+# Ticket activity whose notes list GP codes of the whole task (hidden from an SME, who sees only their GPs)
+SME_HIDDEN_EVENTS = frozenset({"PROGRESS", "REVIEW", "NONDOABLE"})
+
+
 def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
     subs = db.scalars(select(TicketSubmission).where(TicketSubmission.ticket_id == t.id).order_by(TicketSubmission.version.desc())).all()
     atts = db.scalars(select(TicketAttachment).where(TicketAttachment.ticket_id == t.id).order_by(TicketAttachment.id)).all()
@@ -279,16 +289,19 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
     assignee = db.get(User, t.assignee_id) if t.assignee_id else None
     latest_change = next((s for s in subs if s.review == "CHANGES_REQUESTED"), None)
     is_assignee = is_worker(db, t, user)
-    from .task import task_json
+    from .task import ReviewerView, task_json, view_of
 
-    from .task import scope_of
-
-    scope = scope_of(db, t, user)
+    scope = view_of(db, t, user)  # FE: their GPs · SME / COH: the GPs forwarded to them · else the whole task
     task_block = task_json(db, t, scope)
     recs = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id).order_by(TicketRecipient.id)).all()
     mine = next((r for r in recs if r.user_id == user.id), None)
     if scope is not None:  # a Field Engineer does not see the other FEs of the ticket
         recs = [r for r in recs if r.role != "FE" or r.user_id == user.id]
+    if isinstance(scope, ReviewerView):
+        # nor does an SME / COH see the other SMEs / COHs, or the ticket activity naming other GPs (daily progress /
+        # review steps – each of their own GPs carries its full review history instead)
+        recs = [r for r in recs if r.role not in ("SME", "COH") or r.user_id == user.id]
+        events = [e for e in events if e.action not in SME_HIDDEN_EVENTS]
     return {
         **summary_json(t),
         "description": t.description,
@@ -693,13 +706,29 @@ def _check_reviewer(db: Session, t: Ticket, admin: CurrentUser) -> None:
         raise TicketError(403, "You cannot review a ticket assigned to yourself")
 
 
-def close(db: Session, t: Ticket, admin: CurrentUser, comment: str | None) -> Ticket:
+def close(db: Session, t: Ticket, admin: CurrentUser, comment: str | None, force: bool = False) -> Ticket:
     """Normal ticket: closes an approved submission (Pending Review). Ticket with a GP-wise task: the admin closes it
     from any open status once satisfied with the daily progress (never automatically); a waiting submission is approved."""
     _check_reviewer(db, t, admin)
     has_task = db.get(TicketTask, t.id) is not None
     note = (comment or "").strip() or None
     if has_task:
+        # SOP compliance rule 4: no ticket is closed without the Area Manager's review and approval of its GPs. A GP
+        # counts as reviewed once approved by the AM (or later steps) or closed Non-Doable; a GP already achieved in the
+        # master data at assignment needs no review. The admin may still close with a written reason (kept in history).
+        from .task import cumulative
+
+        gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id)))
+        unreviewed = [g for g in gps if g.review not in review.AM_REVIEWED and cumulative(g) < g.target]
+        if unreviewed:
+            pending_am = sum(1 for g in unreviewed if (g.review is None and g.gp_category == "A") or g.review == "SME_RETURNED")
+            what = f"{len(unreviewed)} GP{'s' if len(unreviewed) != 1 else ''} of this ticket {'are' if len(unreviewed) != 1 else 'is'} not yet reviewed and approved by the Area Manager"
+            detail = f"{pending_am} Pending AM Verification, {len(unreviewed) - pending_am} with the FE / returned / in a Non-Doable case"
+            if not force:
+                raise TicketError(409, f"{what} ({detail}). Close only after the AM review, or close anyway with a written reason.")
+            if note is None or len(note) < 10:
+                raise TicketError(422, "Write the reason for closing without the Area Manager's approval (at least 10 characters)")
+            note = f"Closed without AM approval of {len(unreviewed)} GP{'s' if len(unreviewed) != 1 else ''} ({detail}) – reason: {note}"
         last = db.scalars(select(TicketSubmission).where(TicketSubmission.ticket_id == t.id).order_by(TicketSubmission.version.desc()).limit(1)).first()
         sub = last if last is not None and last.review == "PENDING" else None
         frm = _move(db, t, ("OPEN", "IN_PROGRESS", "PENDING_REVIEW", "CHANGES_REQUESTED"), "CLOSED", closed_at=now(), closed_by_id=admin.id, closed_by_name=admin.name)

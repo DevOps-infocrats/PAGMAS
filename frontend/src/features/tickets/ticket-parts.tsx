@@ -530,8 +530,8 @@ export function ConfirmDialog({
   confirmLabel: string;
   busy: boolean;
   onConfirm: (comment: string) => void;
-  /** Comment field: required = must be filled in */
-  comment?: { label: string; placeholder: string; required: boolean };
+  /** Comment field: required = must be filled in (minLength characters, default 5; hint = the error text) */
+  comment?: { label: string; placeholder: string; required: boolean; minLength?: number; hint?: string };
   /** red confirm button (Delete) */
   danger?: boolean;
 }) {
@@ -559,12 +559,13 @@ function ConfirmForm({
   busy: boolean;
   onConfirm: (comment: string) => void;
   onCancel: () => void;
-  comment?: { label: string; placeholder: string; required: boolean };
+  comment?: { label: string; placeholder: string; required: boolean; minLength?: number; hint?: string };
   danger?: boolean;
 }) {
   const [text, setText] = useState("");
   const [touched, setTouched] = useState(false);
-  const missing = !!comment?.required && text.trim().length < 5;
+  const min = comment?.minLength ?? 5;
+  const missing = !!comment?.required && text.trim().length < min;
   return (
     <form
       className="space-y-4 p-6"
@@ -593,7 +594,11 @@ function ConfirmForm({
             aria-invalid={touched && missing}
             className={TEXTAREA}
           />
-          {touched && missing && <span className="text-xs text-critical-text">Explain what needs to be corrected (at least 5 characters).</span>}
+          {touched && missing && (
+            <span className="text-xs text-critical-text">
+              {comment.hint ?? "Explain what needs to be corrected"} (at least {min} characters).
+            </span>
+          )}
         </label>
       )}
       <div className="flex justify-end gap-2">

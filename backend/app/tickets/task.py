@@ -54,7 +54,7 @@ MAX_PROGRESS_FILES = 50  # proof documents in one daily submission (all GPs)
 # GP classification of the daily progress (code -> label); only ACHIEVED_CATEGORY counts as achieved
 CATEGORIES: dict[str, str] = {
     "A": "Rectification Done",
-    "B": "Ready for Letter Submitted",
+    "B": "Ready for Letter Submission",
     "C": "Revisit Required",
     "D": "Non-Doable – Proposed",
     "E": "Letter Submission Done",
@@ -137,6 +137,72 @@ def scope_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | None:
 
     r = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.user_id == user.id).limit(1)).first()
     return FeScope(r.name, r.fe_mail) if r is not None and r.role == "FE" else None
+
+
+@dataclass(frozen=True)
+class ReviewerView:
+    """An SME's / COH's part of a task: only the GPs handed to them in the review chain (ticket_gp_forwards) – the SME
+    the GPs the Area Manager approved and forwarded to them, the COH the GPs the SME reviewed and forwarded to them.
+    Steps made before forwards were recorded (no forward row for that step at all) stay visible to the ticket's
+    SMEs / COHs, as before. kind = SME | COH (SME when the user is both)."""
+
+    ids: frozenset[int]
+    kind: str = "SME"
+
+    def owns(self, g: Any) -> bool:
+        return g is not None and g.id in self.ids
+
+
+SmeView = ReviewerView  # the SME view came first; same class
+
+# the review step that hands a GP to each reviewer role, and the GP's review states from that step on (a GP moved to
+# the Non-Doable workflow afterwards has its review reset – it is then handled on the Non-Doable Cases page, not here)
+HANDED_BY = {"SME": "AM_APPROVE", "COH": "SME_FORWARD"}
+STAGES_FROM = {
+    # SME_RETURNED / COH_RETURNED: sent back (by them / to them) – still shown, read-only resp. to act on again
+    "SME": ("AM_APPROVED", "SME_RETURNED", "SME_FORWARDED", "COH_RETURNED", "LETTER_SUBMITTED", "AMC_CONVERTED"),
+    "COH": ("SME_FORWARDED", "COH_RETURNED", "LETTER_SUBMITTED", "AMC_CONVERTED"),
+}
+
+
+def reviewer_view(db: Session, t: Ticket, user: CurrentUser) -> ReviewerView | None:
+    """The GP filter of a user who is on this ticket ONLY as SME and / or COH (None = not such a user: admins, the
+    assigned Area Manager and anybody with another role on the ticket keep their existing view)."""
+    if user.is_admin or t.assignee_id == user.id:
+        return None
+    from ..models import TicketGpForward, TicketGpReview, TicketRecipient
+
+    recs = db.execute(select(TicketRecipient.id, TicketRecipient.role).where(TicketRecipient.ticket_id == t.id, TicketRecipient.user_id == user.id)).all()
+    roles = {r.role for r in recs}
+    if not recs or not roles <= set(HANDED_BY):
+        return None
+    mine = {r.id for r in recs}
+    state = dict(db.execute(select(TicketTaskGp.id, TicketTaskGp.review).where(TicketTaskGp.ticket_id == t.id)).all())
+    ids: set[int] = set()
+    for role in roles:
+        # only the LATEST handing step of each GP counts: a GP the AM approves again for another SME (after the SME
+        # sent it back) is that SME's, no longer the first one's
+        latest: dict[int, int] = {}
+        for rid, gp in db.execute(select(TicketGpReview.id, TicketGpReview.task_gp_id).where(TicketGpReview.ticket_id == t.id, TicketGpReview.action == HANDED_BY[role]).order_by(TicketGpReview.id)):
+            latest[gp] = rid
+        to: dict[int, set[int]] = {}  # handing step -> recipient ids
+        for rid, rec in db.execute(select(TicketGpForward.review_id, TicketGpForward.recipient_id).where(TicketGpForward.ticket_id == t.id, TicketGpForward.role == role)):
+            to.setdefault(rid, set()).add(rec)
+        for gp, rid in latest.items():
+            sent = to.get(rid)
+            mine_now = (sent is None) or bool(sent & mine)  # no forward row = handed on before forwards were recorded
+            if mine_now and state.get(gp) in STAGES_FROM[role]:  # only while the GP is (still) at / past that stage
+                ids.add(gp)
+    return ReviewerView(frozenset(ids), "SME" if "SME" in roles else "COH")
+
+
+sme_view = reviewer_view  # used by review.apply: an SME / COH acts only on the GPs handed to them
+
+
+def view_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | ReviewerView | None:
+    """What a user may SEE of a task (detail, proof documents, workbooks): a Field Engineer their GPs, an SME / COH the
+    GPs forwarded to them, everyone else the whole task. (Daily progress keeps using scope_of – FE or Area Manager.)"""
+    return scope_of(db, t, user) or reviewer_view(db, t, user)
 
 
 def area_managers(db: Session, store: Store, week_code: str) -> dict[str, Any]:
@@ -454,8 +520,13 @@ def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last
     return [r | {"gap": r["target"] - r["achieved"], "lastUpdated": iso(r["lastUpdated"])} for r in rows]
 
 
-def task_json(db: Session, t: Ticket, scope: FeScope | None = None) -> dict[str, Any] | None:
-    """The task as one viewer sees it: `scope` = a Field Engineer – only their GPs, proof files and history lines."""
+def _utc(v: dt.datetime | None) -> dt.datetime | None:
+    return None if v is None else (v if v.tzinfo else v.replace(tzinfo=dt.UTC))  # SQLite: naive UTC
+
+
+def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) -> dict[str, Any] | None:
+    """The task as one viewer sees it: `scope` = a Field Engineer (only their GPs, proof files and history lines) or an
+    SME (only the GPs the Area Manager forwarded to them)."""
     task = db.get(TicketTask, t.id)
     if task is None:
         return None
@@ -509,15 +580,67 @@ def task_json(db: Session, t: Ticket, scope: FeScope | None = None) -> dict[str,
     from . import review as rv
 
     trail = rv.trails(db, t, mine, iso)
+    records, review_keys = rv.records(db, t, mine, iso)
     from . import nondoable as nd
 
     nd_refs = nd.case_refs(db, t.id)
     reviewed = [g.review for g in gps]
+
+    # FE original submission of each GP, from the daily progress lines (never overwritten): the latest line that set
+    # an FE category (A / C / D) up to the Area Manager's approval, with the latest remark / submitter after it.
+    # Lines written by the review steps themselves (same user and time as a review row) are not the FE's.
+    sub_of = {s.id: s for s in subs}
+    review_subs = {s.id for s in subs if (s.submitted_by_id, _utc(s.submitted_at)) in review_keys}
+    fe_users = set(db.scalars(select(TicketRecipient.user_id).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE", TicketRecipient.user_id.is_not(None))))
+    lines_of_gp: dict[int, list[TicketProgressLine]] = {}
+    for ln in lines:
+        if ln.progress_id not in review_subs:
+            lines_of_gp.setdefault(ln.task_gp_id, []).append(ln)
+    epoch = dt.datetime.min.replace(tzinfo=dt.UTC)
+
+    def fe_submission(g: TicketTaskGp) -> dict[str, Any] | None:
+        cut = records.get(g.id, {}).get("_amAt")
+        own = sorted(
+            (ln for ln in lines_of_gp.get(g.id, []) if cut is None or (at.get(ln.progress_id) or epoch) <= cut),
+            key=lambda ln: (at.get(ln.progress_id) or epoch, ln.id),
+        )
+        idx = next((i for i in range(len(own) - 1, -1, -1) if own[i].category in rv.FE_CATEGORIES), None)
+        if idx is None:
+            return None
+        window = own[idx:]
+        last = sub_of[window[-1].progress_id]
+        return {
+            "feName": g.fe_name,
+            "submittedBy": last.submitted_by_name,
+            "submittedByRole": "FE" if last.submitted_by_id in fe_users else "AM",
+            "category": own[idx].category,
+            "remark": next((ln.remark for ln in reversed(window) if ln.remark), None),
+            "submittedAt": iso(last.submitted_at),
+            "files": [f for ln in own for f in files_of_line.get(ln.id, [])],
+        }
+
+    def public(r: dict[str, Any] | None) -> dict[str, Any] | None:
+        return {k: v for k, v in r.items() if not k.startswith("_")} if r else None
+
+    if isinstance(scope, FeScope):
+        scope_out: dict[str, Any] | None = {"kind": "FE", "fieldEngineer": scope.name, "email": scope.mail}
+    elif isinstance(scope, ReviewerView):
+        # the reviewer's KPIs: the ticket's GP count (a number only – no GP of others) against the GPs handed to them
+        ticket_gps = db.scalar(select(func.count()).select_from(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id)) or 0
+        rs = [g.review for g in gps]
+        if scope.kind == "SME":
+            kpis = {"pending": rs.count("AM_APPROVED") + rs.count("COH_RETURNED"), "forwarded": sum(r in ("SME_FORWARDED", "LETTER_SUBMITTED", "AMC_CONVERTED") for r in rs),
+                    "sentBack": rs.count("SME_RETURNED"), "returnedToYou": rs.count("COH_RETURNED")}
+        else:
+            kpis = {"pending": rs.count("SME_FORWARDED"), "letterSubmitted": rs.count("LETTER_SUBMITTED"), "amcConverted": rs.count("AMC_CONVERTED"), "sentBack": rs.count("COH_RETURNED")}
+        scope_out = {"kind": scope.kind, "fieldEngineer": None, "email": None, "kpis": {"ticketGps": ticket_gps, "assigned": len(gps), **kpis}}
+    else:
+        scope_out = None
     return {
         "areaManager": task.am_name,
         "amEmail": task.am_email,
-        # a Field Engineer's view: only their GPs; everyone else sees the whole task with the FE-wise split
-        "scope": {"fieldEngineer": scope.name, "email": scope.mail} if scope is not None else None,
+        # a Field Engineer's / SME's view: only their GPs; everyone else sees the whole task with the FE-wise split
+        "scope": scope_out,
         "fes": [] if scope is not None else _fe_summary(gps, files_of_gp, last_update, fe_recipients, iso),
         "circle": task.circle,
         "cbhName": task.cbh_name,
@@ -534,6 +657,7 @@ def task_json(db: Session, t: Ticket, scope: FeScope | None = None) -> dict[str,
             "review": {
                 "awaiting": sum(g.review is None and g.gp_category == "A" for g in gps), "returned": reviewed.count("RETURNED"),
                 "amApproved": reviewed.count("AM_APPROVED"), "smeForwarded": reviewed.count("SME_FORWARDED"),
+                "smeReturned": reviewed.count("SME_RETURNED"), "cohReturned": reviewed.count("COH_RETURNED"),
                 "letterSubmitted": reviewed.count("LETTER_SUBMITTED"), "amcConverted": reviewed.count("AMC_CONVERTED"),
                 "ndOpen": sum(1 for g in gps if nd_refs.get(g.id, {}).get("open")), "ndApproved": reviewed.count(nd.ND_REVIEW),
             },
@@ -546,9 +670,12 @@ def task_json(db: Session, t: Ticket, scope: FeScope | None = None) -> dict[str,
                 "amcDate": g.amc_date.isoformat() if g.amc_date else None, "target": g.target, "baseAchieved": g.base_achieved, "reported": g.reported,
                 "cumulative": cumulative(g), "gap": g.target - cumulative(g), "remarks": g.remarks,
                 "status": gp_status(g), "gpCategory": g.gp_category, "files": files_of_gp.get(g.id, []), "lastUpdated": iso(last_update.get(g.id)), "lastUpdatedBy": last_by.get(g.id), "feName": g.fe_name,
-                "review": g.review, "reviewLabel": rv.REVIEW_LABEL.get(g.review) if g.review else None, "reviewAt": iso(g.review_at), "locked": g.review in rv.LOCKED,
+                "review": g.review, "reviewAt": iso(g.review_at), "locked": g.review in rv.LOCKED,
+                "stage": rv.stage_of(g, bool((nd_refs.get(g.id) or {}).get("open"))), "reviewLabel": rv.stage_label(rv.stage_of(g, bool((nd_refs.get(g.id) or {}).get("open")))),
                 "letterDate": g.letter_date.isoformat() if g.letter_date else None, "amcOn": g.amc_on.isoformat() if g.amc_on else None, "addedBy": g.added_by,
                 "trail": trail.get(g.id, []), "ndCase": nd_refs.get(g.id),
+                "feSubmission": fe_submission(g), "amApproval": public(records.get(g.id, {}).get("amApproval")), "smeReview": public(records.get(g.id, {}).get("smeReview")),
+                "sentBack": public(records.get(g.id, {}).get("sentBack")),
             }
             for g in gps
         ],
@@ -819,10 +946,11 @@ def submit_progress(
     return sub
 
 
-def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: FeScope | None = None) -> bytes:
+def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: FeScope | SmeView | None = None) -> bytes:
     """GP-wise workbook: the original assignment (achieved as at creation) or the latest progress report (cumulative,
     latest remarks, proof documents, plus the daily history). Identification and target columns are protected; Remarks
-    are editable. `scope` = one Field Engineer's workbook: only the GPs mapped to them (and only their history lines)."""
+    are editable. `scope` = one Field Engineer's workbook (only the GPs mapped to them and only their history lines) or
+    an SME's (only the GPs forwarded to them)."""
     import xlsxwriter
 
     gps = [g for g in _gps(db, t.id) if scope is None or scope.owns(g)]
@@ -843,9 +971,10 @@ def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: Fe
     kind = "Assignment (original)" if original else f"Progress report – {dt.datetime.now():%d %b %Y %H:%M}"
     target_total = sum(g.target for g in gps)
     gap_total = sum(g.target - (g.base_achieved if original else cumulative(g)) for g in gps)
-    who = f"FE {scope.name} ({task.am_name})" if scope is not None else task.am_name
+    fe = scope if isinstance(scope, FeScope) else None
+    who = f"FE {fe.name} ({task.am_name})" if fe is not None else (f"{scope.kind} – GPs forwarded to you ({task.am_name})" if isinstance(scope, ReviewerView) else task.am_name)
     ws.write_string(0, 0, f"{t.code} · {who} · Week {task.week_code[2:]} ({task.week_start:%d %b} – {task.week_end:%d %b %Y}) · {kind}", title)
-    fe_part = f" · Field Engineer: {scope.name}{f' ({scope.mail})' if scope.mail else ''}" if scope is not None else ""
+    fe_part = f" · Field Engineer: {fe.name}{f' ({fe.mail})' if fe.mail else ''}" if fe is not None else ""
     ws.write_string(1, 0, f"Circle: {task.circle or '—'} · CBH: {task.cbh_name or '—'} · Area Manager: {task.am_name}{fe_part} · {len(gps)} GPs · total weekly target {target_total} · remaining gap {gap_total}", note)
     ws.write_string(
         2, 0,
@@ -930,11 +1059,16 @@ def assignment_path(t: Ticket, task: TicketTask):
         return None
 
 
-def file_name(task: TicketTask, original: bool, scope: FeScope | None = None) -> str:
+def file_name(task: TicketTask, original: bool, scope: FeScope | SmeView | None = None) -> str:
     def safe(v: str, fallback: str) -> str:
         return "".join(ch if ch.isalnum() else "_" for ch in v).strip("_")[:40] or fallback
 
-    who = f"FE_{safe(scope.name, 'FieldEngineer')}" if scope is not None else safe(task.am_name, "AreaManager")
+    if isinstance(scope, FeScope):
+        who = f"FE_{safe(scope.name, 'FieldEngineer')}"
+    elif isinstance(scope, ReviewerView):
+        who = f"{scope.kind}_{safe(task.am_name, 'AreaManager')}"
+    else:
+        who = safe(task.am_name, "AreaManager")
     return f"{who}_Weekly_GP_Assignment_Week_{task.week_code[2:]}{'' if original else '_Progress'}.xlsx"
 
 

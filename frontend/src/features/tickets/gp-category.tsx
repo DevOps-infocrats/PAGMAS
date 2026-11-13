@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils/cn";
  */
 export const GP_CATEGORIES: { code: GpCategory; label: string; color: string; info: string }[] = [
   { code: "A", label: "Rectification Done", color: "var(--good)", info: "Rectification of the GP is completed." },
-  { code: "B", label: "Ready for Letter Submitted", color: "var(--series-1)", info: "The GP is ready and its letter can be submitted." },
+  { code: "B", label: "Ready for Letter Submission", color: "var(--series-1)", info: "The GP is ready and its letter can be submitted (confirmed by the Area Manager / SME)." },
   { code: "C", label: "Revisit Required", color: "var(--warning)", info: "The GP has to be visited again." },
   { code: "D", label: "Non-Doable – Proposed", color: "var(--critical)", info: "The GP is proposed as not doable." },
   { code: "E", label: "Letter Submission Done", color: "var(--series-7)", info: "The letter of the GP is submitted – the only category counted as Achieved." },

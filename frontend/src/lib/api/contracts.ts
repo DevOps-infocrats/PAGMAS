@@ -83,8 +83,9 @@ export interface OverviewDetail {
   reportingBlocks: number;
   oneTimeUp: number;
   totalRkm: number;
-  bsnlRkm: number;
-  bbnlRkm: number;
+  /** null = the file has no BSNL / BBNL Live KM column (NA, never 0) */
+  bsnlRkm: number | null;
+  bbnlRkm: number | null;
   amcRkm: number;
   rkmPartsDifference: number | null;
 }
@@ -1364,15 +1365,45 @@ export interface UploadPreview {
   /** first failing layer: file | kind | duplicate | template | structure; ok = can be imported */
   stage: "ok" | "file" | "kind" | "duplicate" | "template" | "structure";
   error: string | null;
-  /** stage "template": every difference from the PAGMAS template (first 500), with sheet / row / column */
+  /** stage "template": why the file is refused (missing required sheet / column …, first 500), with sheet / column */
   templateErrors?: { sheet: string; row: number | null; column: string | null; severity: string; message: string }[];
   templateErrorCount?: number;
+  /** master data: required / optional / not-used columns of each sheet (also when the file is refused) */
+  columnCheck?: { sheets: UploadColumnSheet[]; templateHint: string };
+  /** master data: the day / week / month columns found, gaps, and earlier weeks / months kept from earlier uploads */
+  periods?: UploadPeriods;
   counts?: { rows: number; accepted: number; rejected: number; critical: number; warning: number; info: number };
   facts?: { label: string; value: string }[];
   columns?: { missingOptional: string[]; unknown: string[]; mapProblems: string[] };
   crossCheck?: { state: string; metric: string; reported: number; computed: number; difference: number; match: boolean }[];
   issues?: UploadIssue[];
   issueSummary?: { code: string; severity: string; count: number }[];
+}
+
+export interface UploadColumnSheet {
+  sheet: string;
+  found: boolean;
+  headerRow: number | null;
+  required: { name: string; header: string | null; hint: string | null }[];
+  requiredOk: boolean;
+  optionalPresent: string[];
+  optionalAbsent: string[];
+  /** columns of the file the dashboard does not use – ignored */
+  unused: string[];
+  /** time-varying columns by kind (date, week, amcMonth, month, status, target) */
+  periods: Record<string, number>;
+}
+export interface UploadPeriods {
+  days: { count: number; first: string | null; last: string | null };
+  weeks: string[];
+  weekRange: string | null;
+  months: string[];
+  amcMonths: string[];
+  blockPeriodCount: number;
+  /** warnings about the day / week / month columns (gaps, duplicates, labels) – never a reason to reject */
+  gaps: string[];
+  /** earlier weeks / months the file does not have – they stay on the dashboard from earlier uploads */
+  fromHistory: { weeks: string[]; months: string[] };
 }
 
 /** Field Team & Escalation → Escalation Sheet */
@@ -1863,11 +1894,23 @@ export interface TicketTaskGp {
   trail?: GpReviewStep[];
   /** latest Non-Doable case of the GP (open = still in the Non-Doable workflow) */
   ndCase?: { id: number; ref: string; status: NdStatus; label: string; revisit: NdRevisit | null; open: boolean } | null;
+  /** workflow stage for display: PENDING_AM = Rectification Done, waiting for the Area Manager's verification */
+  stage?: GpStage;
+  /** the Rectification Done submission the Area Manager verified (from the daily progress history, never overwritten) */
+  feSubmission?: GpFeSubmission | null;
+  /** the Area Manager's verification / approval and the SME(s) it was forwarded to */
+  amApproval?: GpReviewRecord | null;
+  /** the SME's review and the COH(s) it was forwarded to */
+  smeReview?: GpReviewRecord | null;
+  /** the latest send-back while it is the GP's last step: SME → AM (SME_RETURN) or COH → SME (COH_RETURN) */
+  sentBack?: (GpReviewRecord & { action: "SME_RETURN" | "COH_RETURN" }) | null;
 }
 
 export type GpReviewRole = "AM" | "SME" | "COH";
-export type GpReviewState = "RETURNED" | "AM_APPROVED" | "SME_FORWARDED" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
-export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "COH_LETTER" | "COH_AMC";
+/** SME_RETURNED = the SME sent it back to the Area Manager · COH_RETURNED = the COH sent it back to the SME */
+export type GpReviewState = "RETURNED" | "AM_APPROVED" | "SME_RETURNED" | "SME_FORWARDED" | "COH_RETURNED" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
+export type GpStage = "NONE" | "PENDING_AM" | GpReviewState;
+export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "SME_RETURN" | "COH_LETTER" | "COH_AMC" | "COH_RETURN";
 export interface GpReviewStep {
   role: "FE" | "AM" | "SME" | "COH" | "ADMIN";
   action: GpReviewAction | "EDIT" | "ADD";
@@ -1877,6 +1920,47 @@ export interface GpReviewStep {
   remark: string | null;
   by: string | null;
   at: string | null;
+  /** workflow status before / after a review step (null for edits / additions) */
+  fromStatus?: string | null;
+  toStatus?: string | null;
+}
+
+/** SME / COH ticket KPIs: the ticket's GP count against the GPs handed to this reviewer */
+export interface ReviewerKpis {
+  ticketGps: number;
+  assigned: number;
+  /** SME: waiting for their review (AM approved + back from the COH) · COH: waiting for the letter */
+  pending: number;
+  /** sent back by them (SME → AM, COH → SME) */
+  sentBack: number;
+  forwarded?: number; // SME: forwarded to the COH (and later steps)
+  returnedToYou?: number; // SME: sent back by the COH
+  letterSubmitted?: number; // COH
+  amcConverted?: number; // COH
+}
+
+export interface GpFeSubmission {
+  /** Field Engineer of the GP in the Escalation Matrix */
+  feName: string | null;
+  /** who submitted the line (FE, or the Area Manager on the FE's behalf) */
+  submittedBy: string | null;
+  submittedByRole: "FE" | "AM";
+  category: GpCategory | null;
+  remark: string | null;
+  submittedAt: string | null;
+  /** proof documents uploaded up to the Area Manager's approval */
+  files: TicketProofFile[];
+}
+
+export interface GpReviewRecord {
+  by: string;
+  role: "AM" | "SME" | "COH" | "ADMIN";
+  remark: string | null;
+  at: string | null;
+  category: GpCategory | null;
+  /** who the GP was forwarded to (empty = not recorded: approved before GP-level forwarding existed) */
+  forwardedTo: { name: string; email: string }[];
+  forwardedAt: string | null;
 }
 
 export interface ReviewContacts {
@@ -1898,7 +1982,7 @@ export interface NewTaskGp {
 }
 
 export type GpStatus = "DONE" | "PENDING";
-/** GP classification of the daily progress: A Rectification Done · B Ready for Letter Submitted · C Revisit Required ·
+/** GP classification of the daily progress: A Rectification Done · B Ready for Letter Submission · C Revisit Required ·
  * D Non-Doable – Proposed · E Letter Submission Done (the only one counted as achieved) */
 export type GpCategory = "A" | "B" | "C" | "D" | "E";
 
@@ -2044,8 +2128,9 @@ export interface TicketTaskFe {
 export interface TicketTask {
   areaManager: string;
   amEmail: string | null;
-  /** a Field Engineer's view: only their GPs (null = the whole task) */
-  scope?: { fieldEngineer: string; email: string | null } | null;
+  /** FE = a Field Engineer's view (only their GPs) · SME / COH = a reviewer's view (only the GPs the Area Manager /
+   * the SME forwarded to them) · null = the whole task */
+  scope?: { kind: "FE"; fieldEngineer: string; email: string | null } | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis } | null;
   /** FE-wise split (empty in a Field Engineer's view) */
   fes?: TicketTaskFe[];
   circle: string | null;
@@ -2054,7 +2139,8 @@ export interface TicketTask {
   dataAsOf: string;
   sourceFile: string;
   totals: { gps: number; target: number; achieved: number; gap: number; pct: number | null; weekGps: number; pendingGps: number; doneGps: number; openGps: number; proofFiles: number; categories?: Record<GpCategory, number>; notClassified?: number;
-    addedGps?: number; review?: { awaiting: number; returned: number; amApproved: number; smeForwarded: number; letterSubmitted: number; amcConverted: number; ndOpen?: number; ndApproved?: number } };
+    addedGps?: number; review?: { awaiting: number; returned: number; amApproved: number; smeForwarded: number; letterSubmitted: number; amcConverted: number; ndOpen?: number; ndApproved?: number;
+      smeReturned?: number; cohReturned?: number } };
   blocks: { block: string; gps: number; target: number; achieved: number; gap: number }[];
   gps: TicketTaskGp[];
   latestSubmission: string | null;
@@ -2222,7 +2308,8 @@ export interface TicketApi {
   start(id: number): Promise<TicketDetail>;
   /** Work submission (description + files) with upload progress (0–1) */
   submit(id: number, description: string, files: File[], onProgress?: (fraction: number) => void): Promise<TicketDetail>;
-  close(id: number, comment?: string): Promise<TicketDetail>;
+  /** force = close a GP-wise task although GPs are not approved by the Area Manager (comment = the reason) */
+  close(id: number, comment?: string, force?: boolean): Promise<TicketDetail>;
   /** admin only: soft delete (the ticket leaves every list; its records stay as history) */
   remove(id: number, reason?: string): Promise<{ deleted: boolean; id: number; code: string }>;
   /** Area Manager: CBH / SME of the ticket's circle (Escalation Matrix) to share the ticket with */

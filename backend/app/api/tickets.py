@@ -107,7 +107,8 @@ class ReviewTo(BaseModel):
 
 class ReviewIn(BaseModel):
     taskGpIds: list[int] = Field(min_length=1, max_length=500)
-    action: Literal["AM_APPROVE", "AM_RETURN", "SME_FORWARD", "COH_LETTER", "COH_AMC"]
+    # SME_RETURN = SME sends back to the Area Manager · COH_RETURN = COH sends back to the SME (reason = remark)
+    action: Literal["AM_APPROVE", "AM_RETURN", "SME_FORWARD", "SME_RETURN", "COH_LETTER", "COH_AMC", "COH_RETURN"]
     remark: str | None = Field(default=None, max_length=1000)
     category: Literal["B", "D"] | None = None
     date: dt.date | None = None
@@ -122,6 +123,8 @@ def _week_ok(store: Store, week: str) -> None:
 
 class CloseIn(BaseModel):
     comment: str | None = Field(default=None, max_length=5_000)
+    # GP-wise task with GPs the Area Manager has not approved yet: close anyway (comment = the reason, recorded)
+    force: bool = False
 
 
 class ChangesIn(BaseModel):
@@ -346,14 +349,15 @@ def gp_monitor_detail(gp_code: Annotated[str, Path(min_length=1, max_length=40)]
 
 @router.get("/progress-files/{file_id}")
 def progress_file(file_id: int, inline: bool = False, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> FileResponse:
-    """A proof document of a GP (daily progress) – same permission rule as the ticket (admin or a recipient of it)."""
+    """A proof document of a GP (daily progress) – same permission rule as the ticket (admin or a recipient of it); an
+    FE only of their GPs, an SME only of the GPs forwarded to them."""
     f = db.get(TicketProgressFile, file_id)
     if f is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
     try:
         t = service.visible(db, f.ticket_id, user)
-        scope = tasks.scope_of(db, t, user)
-        if scope is not None and not scope.owns(db.get(TicketTaskGp, f.task_gp_id)):  # another FE's GP
+        scope = tasks.view_of(db, t, user)
+        if scope is not None and not scope.owns(db.get(TicketTaskGp, f.task_gp_id)):  # another FE's GP / not forwarded to this SME
             raise TicketError(404, "File not found")
         path = files.path_of(f.ticket_id, f.stored_name)
     except TicketError as exc:
@@ -514,7 +518,7 @@ def task_workbook(ticket_id: int, kind: Literal["assignment", "progress"], user:
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "This ticket has no GP-wise task")
     original = kind == "assignment"
-    scope = tasks.scope_of(db, t, user)  # a Field Engineer downloads only their own GPs
+    scope = tasks.view_of(db, t, user)  # a Field Engineer downloads only their own GPs, an SME only the GPs forwarded to them
     path = tasks.assignment_path(t, task) if original and scope is None else None
     data = path.read_bytes() if path is not None and path.is_file() else tasks.workbook(db, t, task, original=original, scope=scope)
     name = tasks.file_name(task, original, scope)
@@ -593,7 +597,7 @@ def delete_ticket(ticket_id: int, request: Request, body: DeleteIn | None = None
 @router.post("/{ticket_id}/close")
 def close(ticket_id: int, body: CloseIn, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     try:
-        t = service.close(db, service.visible(db, ticket_id, admin), admin, body.comment)
+        t = service.close(db, service.visible(db, ticket_id, admin), admin, body.comment, body.force)
     except TicketError as exc:
         raise _fail(exc) from None
     audit(db, "ticket_close", request, admin.id, t.code)

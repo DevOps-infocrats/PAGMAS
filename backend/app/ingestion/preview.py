@@ -4,11 +4,14 @@ Layered checks, strict order, the first failing layer stops the report (fail fas
   1 file       type (.xlsx / .xlsb only), not empty, genuine workbook package, zip-bomb guard   (workbook.check_file_signature)
   2 kind       the content is the file the admin chose (master data workbook / Escalation Matrix)
   3 duplicate  the exact same file (SHA-256) was imported successfully before
-  4 template   master data: the fixed PAGMAS template (template.py) – every column by its exact name (any order), no
-               missing / unknown / duplicate column, valid dates / numbers / % and required values, week ↔ date
-  4 structure  required sheet + required columns + at least one period of data                  (parser / escalation)
+  4 template   master data (template.py): both sheets, every REQUIRED column by name (any order, case / spaces /
+               punctuation ignored), at least one day / week / month column. Optional columns may be absent, other
+               columns are ignored ("not used"), day / week / month columns are never a reason to reject.
+  4 structure  what the importer itself needs to read the sheet (parser / escalation)
   5 rows       business rules per row: rejected rows (critical), warnings, info – each with its Excel row number
-A report with layers 1–4 passed can be imported (rows rejected in layer 5 are skipped and listed).
+A report with layers 1–4 passed can be imported (rows rejected in layer 5 are skipped and listed). The report also says
+which required / optional columns were found, which periods the file has, its gaps, and which earlier weeks / months
+stay on the dashboard from earlier uploads.
 The master data's own O&M key numbers are cross-checked against what the rows contain (warning only, never blocks).
 """
 
@@ -55,20 +58,21 @@ def build(path: Path, kind: str, base: dict[str, Any], already: str | None) -> d
             chk = template.validate_master(path)
         except WorkbookError as exc:
             return _fail("file", str(exc), base)
+        columns = {"sheets": [sh.json() for sh in chk.sheets], "templateHint": template.TEMPLATE_HINT}
         if not chk.ok:
-            return _fail("template", template.TEMPLATE_MESSAGE, base) | {
+            return _fail("template", chk.message(), base) | {
                 "templateErrors": [p.json() for p in chk.errors],
                 "templateErrorCount": chk.error_count,
+                "columnCheck": columns,
             }
-        # warnings the importer does not report itself (it reads these values the same way)
-        tpl_warnings = [
-            {"row": p.row, "severity": "warning", "code": "TEMPLATE", "column": p.column, "gpCode": None, "message": p.message, "sheet": p.sheet}
-            for p in chk.warnings if p.column in ("GP Code", "Target Week", "Penalty Date")
-        ]
+        # duplicate optional columns: the importer reads the first one – listed so the admin knows
+        tpl_warnings = [{"row": p.row, "severity": "warning", "code": "TEMPLATE", "column": p.column, "gpCode": None, "message": p.message, "sheet": p.sheet} for p in chk.warnings]
     try:
         body = _master(path) if kind == "master" else _escalation(path)
     except WorkbookError as exc:
         return _fail("structure", str(exc), base)
+    if kind == "master":
+        body["columnCheck"] = columns
     if tpl_warnings:
         body["issues"] = (body.get("issues") or []) + tpl_warnings[: max(0, MAX_ISSUES - len(body.get("issues") or []))]
         body["counts"]["warning"] += len(tpl_warnings)
@@ -106,9 +110,42 @@ def _master(path: Path) -> dict[str, Any]:
         "facts": facts,
         "columns": {"missingOptional": [labels.get(k, k) for k in p.missing_optional], "unknown": list(p.unknown_columns), "mapProblems": load_column_map().problems},
         "crossCheck": cross_check(p),
+        "periods": periods_report(p),
         "issues": listed,
         "issueSummary": summary,
     }
+
+
+def periods_report(p: Any) -> dict[str, Any]:
+    """Which days / weeks / months the file has, its gaps, and which earlier weeks / months stay on the dashboard from
+    earlier uploads (period_history) – the file may start later than the previous one (only the current week / month)."""
+    from .packs import wide_frames
+
+    frames = wide_frames(p.availability)
+    days = sorted(frames["D"].columns)
+    weeks = sorted(p.weeks, key=lambda w: w["start_date"])
+    months = sorted(frames["M"].columns)
+    out: dict[str, Any] = {
+        "days": {"count": len(days), "first": days[0] if days else None, "last": days[-1] if days else None},
+        "weeks": [w["code"] for w in weeks],
+        "weekRange": f"{weeks[0]['start_date']:%d %b} – {weeks[-1]['end_date']:%d %b %Y}" if weeks else None,
+        "months": list(months),
+        "amcMonths": sorted(frames["MA"].columns),
+        "blockPeriodCount": len({(k, per) for _c, k, per, _v in getattr(p, "block_availability", [])}),
+        "gaps": [i.message for i in p.issues if i.code in ("PERIOD_GAP", "WEEK_LABEL", "PERIOD_DUPLICATE", "DATE_COLUMN_IGNORED", "NO_WEEK_COLUMNS")][:20],
+        "fromHistory": {"weeks": [], "months": []},
+    }
+    try:
+        from ..db import SessionLocal
+        from .history import earlier_periods
+
+        with SessionLocal() as db:
+            first = weeks[0]["start_date"] if weeks else None
+            out["fromHistory"]["weeks"] = [per for per, *_ in earlier_periods(db, "W", {w["code"] for w in weeks}, before=first, upto=p.data_as_of)]
+            out["fromHistory"]["months"] = [per for per, *_ in earlier_periods(db, "M", set(months), upto=p.data_as_of)]
+    except Exception:  # noqa: BLE001 - a fact, never a reason to fail the report
+        pass
+    return out
 
 
 # O&M key number -> how it is counted from the GP rows (only metrics with an unambiguous row rule)

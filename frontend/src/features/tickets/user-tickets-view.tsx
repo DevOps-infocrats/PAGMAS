@@ -209,8 +209,8 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
       {reviewer && t.status !== "CLOSED" && (
         <p role="note" className="rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-[0.8125rem] text-muted-foreground">
           {t.myRole === "SME"
-            ? "Review the GPs the Area Manager approved (details, FE remarks, photos, AM remarks and approval date), then forward them to the COH with your remarks and the confirmed category."
-            : "Record the letter submission and the AMC conversion of the GPs the SME forwarded."}
+            ? "Review the GPs the Area Manager approved (details, FE remarks, photos, AM remarks and approval date), then forward them to the COH with your remarks and the confirmed category – or send a GP back to the AM with the reason if you find an issue."
+            : "Record the letter submission and the AMC conversion of the GPs the SME forwarded – or send a GP back to the SME with the reason if you find an issue."}
         </p>
       )}
       {(t.myRole === "CBH" || t.myRole === "USER" || ((t.myRole === "SME" || t.myRole === "COH") && !reviewer)) && !t.can.start && !t.can.submit && !t.can.progress && t.status !== "CLOSED" && (

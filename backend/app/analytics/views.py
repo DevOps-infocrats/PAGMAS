@@ -206,7 +206,7 @@ def _detail(store: Store, mask: np.ndarray | None, week: str, circle: str | None
         "bsnlRkm": s["bsnlRkm"],
         "bbnlRkm": s["bbnlRkm"],
         "amcRkm": s["amcRkm"],
-        "rkmPartsDifference": r2(s["bsnlRkm"] + s["bbnlRkm"] - s["totalRkm"]),
+        "rkmPartsDifference": r2(s["bsnlRkm"] + s["bbnlRkm"] - s["totalRkm"]) if None not in (s["bsnlRkm"], s["bbnlRkm"], s["totalRkm"]) else None,
     }
 
 

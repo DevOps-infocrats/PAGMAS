@@ -220,12 +220,14 @@ def test_task_one_ticket_per_area_manager(client, org, mail):
     hs = {"X-CSRF-Token": login(client, SME)}
     d = client.get(f"/api/v1/tickets/{tid}").json()
     assert d["can"]["progress"] is False and d["can"]["start"] is False and d["myRole"] == "SME"
-    gp = d["task"]["gps"][0]
+    # an SME sees only the GPs the Area Manager approved and forwarded to them – none yet
+    assert d["task"]["scope"]["kind"] == "SME" and d["task"]["gps"] == []
+    gp = first["task"]["gps"][0]
     assert client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": gp["id"], "achievedToday": 0, "remark": "x"}]}, headers=hs).status_code == 403
     ha = {"X-CSRF-Token": login(client, VIEWER)}
     assert client.get(f"/api/v1/tickets/{tid}").json()["can"]["progress"] is True
     assert client.get(f"/api/v1/tickets/{second['id']}").status_code == 404  # another AM's task
-    open_gp = next(g for g in d["task"]["gps"] if g["gap"] > 0)
+    open_gp = next(g for g in first["task"]["gps"] if g["gap"] > 0)
     r = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": open_gp["id"], "achievedToday": 1, "remark": "Done"}]}, headers=ha)
     assert r.status_code == 200 and r.json()["status"] == "IN_PROGRESS"
     assert client.post(f"/api/v1/tickets/{tid}/close", json={}, headers=ha).status_code == 403
@@ -239,6 +241,7 @@ def test_task_one_ticket_per_area_manager(client, org, mail):
     assert org["circle"] in opts["circles"] and org["am"] in opts["areaManagers"] and org["week"] in opts["weeks"]
 
     # admin closes: the closed status reaches every recipient with an account
+    # (every GP of this ticket is achieved by now – nothing waits for the AM, so no reason is needed)
     assert client.post(f"/api/v1/tickets/{tid}/close", json={"comment": "Reviewed"}, headers=h).json()["status"] == "CLOSED"
     login(client, SME)
     assert client.get(f"/api/v1/tickets/{tid}").json()["status"] == "CLOSED"

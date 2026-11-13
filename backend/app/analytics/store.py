@@ -22,7 +22,7 @@ from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import insert, select, text
+from sqlalchemy import func, insert, select, text
 
 from ..db import SessionLocal, engine
 from ..ingestion.history import history_frame
@@ -92,6 +92,13 @@ class Store:
     amc_plan: pd.DataFrame = field(default_factory=pd.DataFrame)
     # days in `daily` that come from the upload history (earlier files), not from the active file
     history_days: list[dt.date] = field(default_factory=list)
+    # weeks ("W-44") and months ("2026-10") in weekly / monthly that come from earlier uploads (period_history), not
+    # from the active file – a file that starts at W-45 still shows W-40 … W-44
+    history_weeks: list[str] = field(default_factory=list)
+    history_months: list[str] = field(default_factory=list)
+    # last change of period_history when the snapshot was built: a history change by another process (CLI
+    # backfill-periods) is noticed like a newly activated dataset
+    history_stamp: Any = None
     # Data access (see scoped_store): None = the whole dataset. Otherwise the viewer's areas, and the circles
     # (upper-case names) given in full – state-level reference values (O&M numbers, plan targets, circle sheets)
     # are kept only for those, never applied to part of a state.
@@ -305,15 +312,29 @@ def _active_dataset_id() -> int | None:
     return row.id if row is not None and row.data_as_of is not None else None
 
 
+def _history_stamp() -> Any:
+    from ..models import PeriodHistory
+
+    try:
+        with SessionLocal() as db:
+            return db.scalar(select(func.max(PeriodHistory.updated_at)))
+    except Exception:  # the history is an addition – never a reason to fail
+        return None
+
+
 def _check_active(cached: Store) -> None:
     try:
         active = _active_dataset_id()
+        stamp = _history_stamp()
     except Exception:
         log.warning("Active dataset check failed", exc_info=True)
         return
-    if active == cached.dataset_id or not _load_lock.acquire(blocking=False):
+    if (active == cached.dataset_id and stamp == cached.history_stamp) or not _load_lock.acquire(blocking=False):
         return  # unchanged, or a load is already running
-    log.info("Active dataset changed (%s -> %s) – reloading the snapshot in the background", cached.dataset_id, active)
+    if active == cached.dataset_id:
+        log.info("Period history changed – reloading the snapshot in the background")
+    else:
+        log.info("Active dataset changed (%s -> %s) – reloading the snapshot in the background", cached.dataset_id, active)
     try:
         threading.Thread(target=_background_reload, args=(_generation,), name="snapshot-reload", daemon=True).start()
     except Exception:
@@ -424,6 +445,9 @@ def scoped_store(base: Store, areas: tuple[tuple[str, str], ...]) -> Store | Non
         master_blocks=mb,
         amc_plan=plan[plan.index.isin(idx)] if not plan.empty else plan,
         history_days=base.history_days,
+        history_weeks=base.history_weeks,
+        history_months=base.history_months,
+        history_stamp=base.history_stamp,
         scope_key=areas,
         full_circles=full,
     )
@@ -515,6 +539,9 @@ def _load() -> Store:
             hist = hist.reindex(idx).astype(float)
             history_days = list(hist.columns)
             daily = pd.concat([hist, daily], axis=1).sort_index(axis=1)
+    weekly, monthly, monthly_amc = _wide(avail["W"], idx), _wide(avail["M"], idx), _wide(avail["MA"], idx)
+    stamp = _history_stamp()  # before reading the history: a change during the load triggers one more reload
+    weeks, weekly, monthly, monthly_amc, history_weeks, history_months = _with_period_history(weeks, weekly, monthly, monthly_amc, idx, meta[3])
     return Store(
         dataset_id=meta[0],
         file_name=meta[1],
@@ -523,14 +550,52 @@ def _load() -> Store:
         gps=gps,
         daily=daily,
         history_days=history_days,
-        weekly=_wide(avail["W"], idx),
-        monthly=_wide(avail["M"], idx),
-        monthly_amc=_wide(avail["MA"], idx),
+        history_weeks=history_weeks,
+        history_months=history_months,
+        history_stamp=stamp,
+        weekly=weekly,
+        monthly=monthly,
+        monthly_amc=monthly_amc,
         weeks=weeks,
         reported=reported,
         master_blocks=mblocks,
         amc_plan=_amc_plan(amc_plan, idx, weeks, meta[3]),
     )
+
+
+def _with_period_history(weeks: list[Week], weekly: pd.DataFrame, monthly: pd.DataFrame, monthly_amc: pd.DataFrame, idx: pd.Index, as_of: dt.date):
+    """Weeks before the file's first week and months the file does not carry, from earlier uploads (period_history).
+    The file's own periods always win; a history week never overlaps the file's week calendar."""
+    from ..ingestion.history import earlier_periods
+
+    h_weeks: list[str] = []
+    h_months: list[str] = []
+    try:
+        with SessionLocal() as db:
+            first = min((w.start for w in weeks), default=None)
+            add_w = earlier_periods(db, "W", set(weekly.columns) | {w.code for w in weeks}, before=first, upto=as_of)
+            add_m = {k: earlier_periods(db, k, set(f.columns), upto=as_of) for k, f in (("M", monthly), ("MA", monthly_amc))}
+    except Exception:  # the history is an addition – the active file is always served
+        log.warning("Period history not available", exc_info=True)
+        return weeks, weekly, monthly, monthly_amc, h_weeks, h_months
+    extra: dict[str, pd.Series] = {}
+    for code, number, start, end, values, _src in add_w:
+        if start is None or end is None or number is None:
+            continue
+        weeks = [*weeks, Week(code, int(number), start, end)]
+        extra[code] = values.reindex(idx).astype(float)
+        h_weeks.append(code)
+    if extra:
+        weeks = sorted(weeks, key=lambda w: (w.start, w.number))
+        weekly = pd.concat([pd.DataFrame(extra, index=idx), weekly], axis=1)
+        weekly = weekly[[w.code for w in weeks if w.code in weekly.columns]]
+    frames = {"M": monthly, "MA": monthly_amc}
+    for kind, rows in add_m.items():
+        cols = {period: values.reindex(idx).astype(float) for period, _n, _s, _e, values, _src in rows}
+        if cols:
+            frames[kind] = pd.concat([frames[kind], pd.DataFrame(cols, index=idx)], axis=1).sort_index(axis=1)
+            h_months += [p for p in cols if p not in h_months]
+    return weeks, weekly, frames["M"], frames["MA"], h_weeks, sorted(h_months)
 
 
 PLAN_DATE_SLACK_BEFORE = 92  # days before the file's first week a Planned / Ach Date may still be (earlier plans)

@@ -16,8 +16,8 @@ const rkm = (v: number | null | undefined) =>
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       });
-const pct = (a: number, b: number) =>
-  b ? `${((a / b) * 100).toFixed(1)}%` : "NA";
+const pct = (a: number | null, b: number) =>
+  b && a != null ? `${((a / b) * 100).toFixed(1)}%` : "NA";
 
 /**
  * Five headline KPIs of one block, 3 per row:
@@ -218,7 +218,7 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
           value={rkm(s?.totalRkm)}
           unit="RKM"
           caption={s ? `AMC fibre: ${rkm(s.amcRkm)} RKM` : undefined}
-          total={s ? s.bsnlRkm + s.bbnlRkm : null}
+          total={s && s.bsnlRkm != null && s.bbnlRkm != null ? s.bsnlRkm + s.bbnlRkm : null}
           bar={[
             { label: "BSNL", value: s?.bsnlRkm ?? 0, color: "var(--series-1)" },
             { label: "BBNL", value: s?.bbnlRkm ?? 0, color: "var(--series-3)" },
@@ -227,13 +227,13 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
             {
               label: "BSNL RKM",
               value: s?.bsnlRkm ?? null,
-              display: `${rkm(s?.bsnlRkm)} · ${s ? pct(s.bsnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
+              display: `${rkm(s?.bsnlRkm)} · ${s ? pct(s.bsnlRkm, (s.bsnlRkm ?? 0) + (s.bbnlRkm ?? 0)) : ""}`,
               color: "var(--series-1)",
             },
             {
               label: "BBNL RKM",
               value: s?.bbnlRkm ?? null,
-              display: `${rkm(s?.bbnlRkm)} · ${s ? pct(s.bbnlRkm, s.bsnlRkm + s.bbnlRkm) : ""}`,
+              display: `${rkm(s?.bbnlRkm)} · ${s ? pct(s.bbnlRkm, (s.bsnlRkm ?? 0) + (s.bbnlRkm ?? 0)) : ""}`,
               color: "var(--series-3)",
             },
           ]}

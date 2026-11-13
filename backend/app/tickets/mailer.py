@@ -75,7 +75,7 @@ def _ticket_email(db, t: Ticket, r: TicketRecipient, task, tj, scope, shared: tu
             action = L.Action(
                 "Update every GP in the daily progress: choose its status, add remarks and attach the proof documents.",
                 who=f"{role} {r.name}", stage=STATUS_LABEL.get(t.status, t.status), due=f"{task.week_end:%d %b %Y} (end of Week {task.week_code[2:]})",
-                steps=["Sign in with the button below and open the ticket in Ticket Management → User Tickets.", "Statuses: Rectification Done · Ready for Letter Submitted · Revisit Required · Non-Doable – Proposed · Letter Submission Done."],
+                steps=["Sign in with the button below and open the ticket in Ticket Management → User Tickets.", "Statuses: Rectification Done · Ready for Letter Submission · Revisit Required · Non-Doable – Proposed · Letter Submission Done."],
             )
     elif works and not shared:
         action = L.Action("Do the work described below and submit it with your documents for review.", who=f"{role} {r.name}", stage=STATUS_LABEL.get(t.status, t.status))

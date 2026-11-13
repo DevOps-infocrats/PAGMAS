@@ -55,6 +55,9 @@ class ParsedWorkbook:
     master_blocks: list[dict[str, Any]] = field(default_factory=list)
     circle_sheets: list[dict[str, Any]] = field(default_factory=list)  # One-Time-Up rows of the circle sheets
     amc_plan: list[dict[str, Any]] = field(default_factory=list)  # GP-wise AMC conversion plan (planned / achieved dates)
+    # Master Block availability (block_code, kind, period, value): BM / BMA monthly (ALL GPs / AMC GPs group), BW weekly,
+    # BD daily - kept in the cross-upload period history (history.py); the dashboard does not show it yet
+    block_availability: list[tuple[str, str, str, float]] = field(default_factory=list)
     # What the file looked like (for the upload report): sheet names, GP-sheet headers, headers nobody reads
     sheet_names: list[str] = field(default_factory=list)
     gp_headers: list[str] = field(default_factory=list)
@@ -152,7 +155,14 @@ def _locate_columns(header: list[Any], issues: list[Issue], cmap: ColumnMap, she
     return found
 
 
-def _locate_periods(grid: Grid, hdr: int) -> dict[str, Any]:
+def _locate_periods(grid: Grid, hdr: int, issues: list[Issue] | None = None, sheet: str = GP_SHEET) -> dict[str, Any]:
+    """Day / week / month columns of the GP sheet, recognised by pattern (never by a fixed list), so a new day, week,
+    month or year needs no change and a file with only the current week is read as it is.
+
+    Layout of the BSNL sheet: monthly availability (the 1st of a month) before the W-nn columns, one date per day right
+    after them. A file without W-nn columns: the longest run of consecutive day columns is the daily block. Problems
+    with these columns are warnings (the column is left out, named with its letter) - never a reason to reject."""
+    issues = issues if issues is not None else []
     header = grid[hdr]
     above = grid[hdr - 1] if hdr > 0 else [None] * len(header)
     weekly: list[tuple[int, int]] = []  # (col, week number)
@@ -165,44 +175,75 @@ def _locate_periods(grid: Grid, hdr: int) -> dict[str, Any]:
             mon = MONTHS.get(m.group(1)[:4]) or MONTHS.get(m.group(1)[:3])
             if mon:
                 amc_monthly.append((c, f"{2000 + int(m.group(2))}-{mon:02d}"))
-    if not weekly:
-        raise WorkbookError("No weekly availability columns (W-nn) found")
-    first_week_col = min(c for c, _ in weekly)
-    last_week_col = max(c for c, _ in weekly)
+    dates = [(c, d) for c, h in enumerate(header) if not _is_number(h) and (d := as_date(h))]
+    if weekly:
+        first_week_col = min(c for c, _ in weekly)
+        start = max(c for c, _ in weekly) + 1
+    else:  # no week columns: the daily block is the longest run of adjacent columns one day apart
+        runs: list[list[tuple[int, dt.date]]] = []
+        for c, d in dates:
+            if runs and c == runs[-1][-1][0] + 1 and (d - runs[-1][-1][1]).days == 1:
+                runs[-1].append((c, d))
+            else:
+                runs.append([(c, d)])
+        best = max(runs, key=len, default=[])
+        start = best[0][0] if best and (len(best) >= 2 or best[0][1].day != 1) else len(header)
+        first_week_col = start
+        issues.append(Issue(sheet, "warning", "NO_WEEK_COLUMNS", "No weekly columns (W-nn) in the file - the weeks are built from the daily dates"))
 
-    monthly: list[tuple[int, str]] = []
-    for c in range(first_week_col):
-        d = as_date(header[c])
-        if d and d.day == 1:
-            monthly.append((c, f"{d.year}-{d.month:02d}"))
+    monthly: list[tuple[int, str]] = [(c, f"{d.year}-{d.month:02d}") for c, d in dates if c < first_week_col and d.day == 1]
 
     daily: list[tuple[int, dt.date]] = []
-    c = last_week_col + 1
-    while c < len(header) and (d := as_date(header[c])):
+    c = start
+    while c < len(header) and not _is_number(header[c]) and (d := as_date(header[c])):
         daily.append((c, d))
         c += 1
     # The whole block of dates written twice (raw values + a derived % block): only the first (raw) block is read.
-    # A single repeated day is an error in the file (reported below), not a second block.
     half = len(daily) // 2
     whole_repeat = len(daily) % 2 == 0 and half > 1 and [d for _, d in daily[:half]] == [d for _, d in daily[half:]]
     if whole_repeat:
         daily = daily[:half]
     if not daily:
-        raise WorkbookError("No daily availability columns found after the weekly columns")
-    later = [(cc, as_date(header[cc])) for cc in range(c, len(header)) if as_date(header[cc])]
+        raise WorkbookError("No daily availability columns found (one date per column" + (", right after the W-nn columns)" if weekly else ")"))
+    later = [(cc, d) for cc, d in dates if cc >= c]
     repeated = whole_repeat or (len(later) == len(daily) and [d for _, d in later] == [d for _, d in daily])
     if repeated:  # the same block again further right (after other columns): ignored as well
         later = []
-    if (stray := next((cc for cc, _ in later), None)) is not None:
-        raise WorkbookError(
-            f"Daily date columns must be contiguous: column {_col(c)} ('{_text(header[c]) or ''}') interrupts them and date column {_col(stray)} ({as_date(header[stray])}) follows"
-        )
-    for kind, cols in (("weekly", [(cc, f"W-{n}") for cc, n in weekly]), ("monthly", monthly), ("AMC monthly", amc_monthly), ("daily", [(cc, d.isoformat()) for cc, d in daily])):
-        dup = [p for p, n in Counter(p for _, p in cols).items() if n > 1]
-        if dup:
-            where = "; ".join(f"{p} (columns {', '.join(_col(cc) for cc, q in cols if q == p)})" for p in dup)
-            raise WorkbookError(f"Duplicate {kind} availability columns: {where} - each period may appear only once")
+    if later:  # dates away from the daily block: left out and named, never guessed into a day
+        listed = ", ".join(f"{_col(cc)} ({d:%d-%m-%Y})" for cc, d in later[:8]) + (f" +{len(later) - 8} more" if len(later) > 8 else "")
+        issues.append(Issue(sheet, "warning", "DATE_COLUMN_IGNORED", f"Date column(s) not next to the daily block (column {_col(c)} interrupts it) were not read: {listed}"))
+    # A period written twice: the first column is read, both columns are named.
+    groups = {"weekly": [(cc, f"W-{n}") for cc, n in weekly], "monthly": list(monthly), "AMC monthly": list(amc_monthly), "daily": [(cc, d.isoformat()) for cc, d in daily]}
+    drop: set[int] = set()
+    for kind, cols in groups.items():
+        first: dict[str, int] = {}
+        for cc, per in cols:
+            if per in first:
+                drop.add(cc)
+                issues.append(Issue(sheet, "warning", "PERIOD_DUPLICATE", f"Duplicate {kind} column {per}: columns {_col(first[per])} and {_col(cc)} - the first ({_col(first[per])}) is read"))
+            else:
+                first[per] = cc
+    if drop:
+        weekly = [x for x in weekly if x[0] not in drop]
+        monthly = [x for x in monthly if x[0] not in drop]
+        amc_monthly = [x for x in amc_monthly if x[0] not in drop]
+        daily = [x for x in daily if x[0] not in drop]
+    # Gaps: a period missing before the latest one is a warning (NA, or kept from earlier uploads) - never a reject.
+    days = sorted({d for _, d in daily})
+    missing_days = [days[i - 1] + dt.timedelta(days=k) for i in range(1, len(days)) for k in range(1, (days[i] - days[i - 1]).days)]
+    if missing_days:
+        listed = ", ".join(f"{d:%d %b}" for d in missing_days[:10]) + (f" +{len(missing_days) - 10} more" if len(missing_days) > 10 else "")
+        issues.append(Issue(sheet, "warning", "PERIOD_GAP", f"Daily dates missing between {days[0]:%d %b} and {days[-1]:%d %b}: {listed} - shown as NA"))
+    ym = sorted({int(per[:4]) * 12 + int(per[5:]) - 1 for _, per in monthly})
+    gap = [f"{v // 12:04d}-{v % 12 + 1:02d}" for a, b in zip(ym, ym[1:]) for v in range(a + 1, b)]
+    if gap:
+        issues.append(Issue(sheet, "warning", "PERIOD_GAP", f"Monthly availability columns missing for {', '.join(gap)} - kept from earlier uploads where available, else NA"))
     return {"weekly": weekly, "amc_monthly": amc_monthly, "monthly": monthly, "daily": daily, "above": above, "repeated_days": repeated}
+
+
+def _is_number(v: Any) -> bool:
+    """A plain number in the header row (a total next to the header) is never a date column."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def _col(c: int) -> str:
@@ -223,7 +264,7 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
         raise WorkbookError(f"'{sheet}': header row not found in the first 15 rows (it must contain {need})")
     header = grid[hdr]
     cols = _locate_columns(header, out.issues, cmap, sheet)
-    periods = _locate_periods(grid, hdr)
+    periods = _locate_periods(grid, hdr, out.issues, sheet)
     if periods.get("repeated_days"):
         out.issues.append(Issue(sheet, "warning", "DAILY_REPEATED", "The daily date columns appear twice – only the first block (right after the W-nn columns) is read; the repeated block is ignored"))
     # Record the file's layout for the upload report: every non-period header, and the ones no field uses.
@@ -241,11 +282,22 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
     last_day = max(d for _, d in daily)
 
     # Weeks from the label row above the W-nn headers (e.g. "2-8 Oct").
+    # A label that is not a 7-day range leaves that week column out (warning) - the week is then built from the daily
+    # dates where they cover it (_normalize_weeks / _derive_missing_weeks), never guessed from the column's position.
+    bad_weeks: set[int] = set()
     for c, number in sorted(periods["weekly"], key=lambda x: x[1]):
-        rng = _parse_week_range(periods["above"][c], last_day)
+        label = periods["above"][c] if c < len(periods["above"]) else None
+        try:
+            rng = _parse_week_range(label, last_day)
+        except WorkbookError:
+            rng = None
         if not rng or (rng[1] - rng[0]).days != 6:
-            raise WorkbookError(f"Week W-{number}: date range label '{periods['above'][c]}' could not be parsed as a 7-day range")
+            bad_weeks.add(c)
+            out.issues.append(Issue(sheet, "warning", "WEEK_LABEL", f"W-{number} (column {_col(c)}): the dates above it ('{_text(label) or ''}') are not a 7-day range like '7-13 Nov' - the column was not read"))
+            continue
         out.weeks.append({"code": f"W-{number}", "number": number, "start_date": rng[0], "end_date": rng[1]})
+    if bad_weeks:
+        periods["weekly"] = [(c, n) for c, n in periods["weekly"] if c not in bad_weeks]
 
     seen: dict[str, int] = {}  # code key -> Excel row of its first occurrence
     last_day_with_data: dt.date | None = None
@@ -413,6 +465,8 @@ def _parse_gp_sheet(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None = No
         col = next(c for c, d in daily if d == last_day_with_data)
         raise WorkbookError(f"'{sheet}' column {_col(col)}: daily date {last_day_with_data} is in the future - check the date headers")
     out.data_as_of = last_day_with_data
+    if not out.weeks:
+        _seed_week_from_daily(out, sheet)
     _normalize_weeks(out, sheet)
     _derive_missing_weeks(out, sheet)
 
@@ -561,6 +615,30 @@ def _normalize_weeks(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
     out.availability = kept + new_weekly
 
 
+def _seed_week_from_daily(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
+    """No usable W-nn column (none in the file, or none with a 7-day range above it): the first week is built from
+    the daily dates on the BSNL calendar (Saturday - Friday; week 1 contains 1 January, so W-46 = 7-13 Nov 2026) and
+    _derive_missing_weeks continues it up to the data date. Its availability follows the file's own rule for week
+    columns (_weekly_from_daily) - never invented."""
+    from .template import week_number
+
+    days = sorted({dt.date.fromisoformat(per) for _gp, kind, per, _v in out.availability if kind == "D"})
+    if not days or out.data_as_of is None:
+        return
+    start = days[0] - dt.timedelta(days=(days[0].weekday() - 5) % 7)
+    end = start + dt.timedelta(days=6)
+    number = week_number(start)
+    code = f"W-{number}"
+    amc = {g["gp_code"]: g["amc_date"] for g in out.gps}
+    daily: dict[str, dict[dt.date, float]] = {}
+    for gp, kind, per, val in out.availability:
+        if kind == "D":
+            daily.setdefault(gp, {})[dt.date.fromisoformat(per)] = val
+    out.weeks.append({"code": code, "number": number, "start_date": start, "end_date": end})
+    out.availability += [(gp, "W", code, v) for gp, v in _weekly_from_daily(out, start, end, amc, daily).items()]
+    out.issues.append(Issue(sheet, "info", "WEEK_DERIVED", f"{code} ({start:%d %b} - {end:%d %b}) built from the daily dates (no usable W-nn column in the file): the mean of the daily values (AMC GPs, from their AMC date)"))
+
+
 def _derive_missing_weeks(out: ParsedWorkbook, sheet: str = GP_SHEET) -> None:
     """Daily data beyond the file's last W-nn week (e.g. data till 18 Oct, last week column W-42 = 9-15 Oct): add the
     next weeks (same week days) so the dashboard reaches the data date. Their weekly availability follows the file's own rule
@@ -623,6 +701,7 @@ def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None 
         out.issues.append(Issue(sheet, "warning", "COLUMN_DUPLICATE", f"{len(headers)} columns match '{k}' ({', '.join(headers)}) - '{headers[0]}' was used"))
     idx = loc.columns
     get = lambda row, key: row[idx[key]] if key in idx and idx[key] < len(row) else None  # noqa: E731
+    periods = _block_periods(grid[hdr], out, sheet)
     first_row: dict[str, int] = {}
     for i in range(hdr + 1, len(grid)):
         row = grid[i]
@@ -630,9 +709,17 @@ def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None 
         state = _text(get(row, "state"))
         if not code or not state:
             continue
-        if code in first_row:
-            out.issues.append(Issue(sheet, "warning", "DUPLICATE_BLOCK", f"Block code {code} also on row {first_row[code]}; this later row is used", i + 1, "Block Code"))
-        first_row.setdefault(code, i + 1)
+        if code in first_row:  # one row per block: the later duplicate is skipped, both rows are named
+            out.issues.append(Issue(sheet, "warning", "DUPLICATE_BLOCK", f"Duplicate Block Code {code} - first on row {first_row[code]}; this later row {i + 1} is skipped", i + 1, "Block Code"))
+            continue
+        first_row[code] = i + 1
+        for c, kind, period, label in periods:
+            raw = row[c] if c < len(row) else None
+            val, ok = _availability(raw)
+            if not ok:
+                out.issues.append(Issue(sheet, "warning", "INVALID_AVAILABILITY", f"{label}: '{raw}' is not a percentage between 0 and 100 - left blank", i + 1, label))
+            elif val is not None:
+                out.block_availability.append((code, kind, period, val))
 
         def as_int(key: str) -> int | None:
             v, ok = _number(get(row, key))
@@ -649,6 +736,41 @@ def _parse_master_block(grid: Grid, out: ParsedWorkbook, cmap: ColumnMap | None 
                 "block_status": _text(get(row, "block_status")),
             }
         )
+
+
+MB_MONTH_RE = re.compile(r"^([a-z]+)\s+(?:avg\s+)?avail(?:\s+td)?$")  # Nov Avail · Nov Avg Avail · Nov Avg Avail TD
+MB_WEEK_RE = re.compile(r"^w-?\s*(\d{1,2})\s+avail$")  # W46 Avail
+
+
+def _block_periods(header: list[Any], out: ParsedWorkbook, sheet: str) -> list[tuple[int, str, str, str]]:
+    """Master Block availability columns by pattern: (col, kind, period, label). A month name has no year: it is the
+    latest such month not after the data date. The same month twice = the ALL GPs group first, then the AMC GPs group
+    (the BSNL layout); a third time is a duplicate (warning, not read)."""
+    as_of = out.data_as_of or dt.date.today()
+    seen: Counter = Counter()
+    found: list[tuple[int, str, str, str]] = []
+    taken: dict[tuple[str, str], int] = {}
+    for c, h in enumerate(header):
+        n = norm(h)
+        if not n:
+            continue
+        kind = period = None
+        if m := MB_WEEK_RE.match(n):
+            kind, period = "BW", f"W-{int(m.group(1))}"
+        elif (m := MB_MONTH_RE.match(n)) and (mon := MONTHS.get(m.group(1)[:4]) or MONTHS.get(m.group(1)[:3])):
+            year = as_of.year if mon <= as_of.month else as_of.year - 1
+            seen[mon] += 1
+            kind, period = ("BM" if seen[mon] == 1 else "BMA"), f"{year}-{mon:02d}"
+        elif not _is_number(h) and (d := as_date(h)):
+            kind, period = "BD", d.isoformat()
+        if kind is None:
+            continue
+        if (kind, period) in taken:
+            out.issues.append(Issue(sheet, "warning", "PERIOD_DUPLICATE", f"Duplicate column {_text(h)}: columns {_col(taken[(kind, period)])} and {_col(c)} - the first is read"))
+            continue
+        taken[(kind, period)] = c
+        found.append((c, kind, period, _text(h) or period))
+    return found
 
 
 def _parse_key_numbers(grid: Grid, out: ParsedWorkbook) -> None:

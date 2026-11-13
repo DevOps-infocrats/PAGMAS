@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/controls";
 import { DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
-import { adminApi, type UploadIssue, type UploadKind, type UploadPreview } from "@/lib/api";
+import { adminApi, type UploadColumnSheet, type UploadIssue, type UploadKind, type UploadPeriods, type UploadPreview } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 
@@ -13,13 +13,14 @@ import { formatCount } from "@/lib/utils/format";
 const FORMATS: Record<UploadKind, { label: string; sheet: string; header: string; required: string; periods?: string; templates: { label: string; href: string }[] }> = {
   master: {
     label: "Master Data workbook",
-    sheet: "“GP Wise Data” and “Master Block” (both required)",
+    sheet: "“GP Wise Data” and “Master Block” in one workbook (both required)",
     header: "found in the first 15 rows (row 3 / row 4 in the template)",
-    required: "every column of the PAGMAS template – 41 fixed columns in GP Wise Data, 24 in Master Block – with exactly the template names (any order); see the template's Read Me",
-    periods: "added as the data moves on, never renamed: one date per day after the W-nn columns, W-nn with its 7-day dates in the row above, the 1st of each month, Mon'YY (AMC), month / WK-nn status; Master Block month and week columns",
+    required: "Section A of the template – 17 in GP Wise Data, 9 in Master Block – by name, in any order (case, spaces and punctuation do not matter). Other columns are optional or ignored",
+    periods: "flexible – as many days / weeks / months as you have; only the current week or month is fine (earlier ones stay from earlier uploads). Never a reason to reject",
     templates: [
-      { label: "Blank template", href: "/api/v1/ingestion/template/master.xlsx" },
-      { label: "Sample (2 example rows)", href: "/api/v1/ingestion/template/master.xlsx?sample=true" },
+      { label: "GP Wise template", href: "/api/v1/ingestion/template/gp.xlsx" },
+      { label: "Master Block template", href: "/api/v1/ingestion/template/block.xlsx" },
+      { label: "Both sheets in one workbook", href: "/api/v1/ingestion/template/master.xlsx" },
     ],
   },
   escalation: {
@@ -33,7 +34,7 @@ const FORMATS: Record<UploadKind, { label: string; sheet: string; header: string
     ],
   },
 };
-const STAGE_LABEL: Record<UploadPreview["stage"], string> = { ok: "Ready", file: "File check", kind: "File type", duplicate: "Already imported", template: "Not the PAGMAS template", structure: "Sheet / columns" };
+const STAGE_LABEL: Record<UploadPreview["stage"], string> = { ok: "Ready", file: "File check", kind: "File type", duplicate: "Already imported", template: "Required column missing", structure: "Sheet / columns" };
 const ACCEPT = ".xlsb,.xlsx";
 type Sev = "all" | UploadIssue["severity"];
 
@@ -150,7 +151,7 @@ export function UploadDialog({ onConfirmed, onClose, onCheckColumns }: { onConfi
                 </li>
                 {fmt.periods && (
                   <li>
-                    <b className="font-medium text-foreground">Period columns:</b> {fmt.periods}
+                    <b className="font-medium text-foreground">Day / week / month columns:</b> {fmt.periods}
                   </li>
                 )}
               </ul>
@@ -229,6 +230,8 @@ function Report({ report: r, onCheckColumns }: { report: UploadPreview; onCheckC
           <XCircle className="size-4" aria-hidden /> Cannot import – {STAGE_LABEL[r.stage]}
         </p>
         <p className="mt-1 text-critical-text">{r.error}</p>
+        {r.columnCheck && <RequiredColumns sheets={r.columnCheck.sheets} />}
+        {r.stage === "template" && <TemplateHelp />}
         {r.templateErrors && r.templateErrors.length > 0 && (
           <div className="mt-2 max-h-64 overflow-auto rounded-md border border-critical/30 bg-card">
             <table className="w-full text-[0.75rem]">
@@ -346,7 +349,10 @@ function Report({ report: r, onCheckColumns }: { report: UploadPreview; onCheckC
         </div>
       )}
 
-      {r.columns && (r.columns.missingOptional.length > 0 || r.columns.unknown.length > 0) && (
+      {r.columnCheck && <ColumnSummary sheets={r.columnCheck.sheets} />}
+      {r.periods && <PeriodSummary p={r.periods} />}
+
+      {!r.columnCheck && r.columns && (r.columns.missingOptional.length > 0 || r.columns.unknown.length > 0) && (
         <div className="space-y-1 rounded-lg border border-border px-3 py-2 text-[0.75rem]">
           {r.columns.missingOptional.length > 0 && (
             <p>
@@ -410,6 +416,128 @@ function Report({ report: r, onCheckColumns }: { report: UploadPreview; onCheckC
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Required columns of each sheet: found (with the file's own header) or missing (with a similar column, if any). */
+function RequiredColumns({ sheets }: { sheets: UploadColumnSheet[] }) {
+  const bad = sheets.filter((s) => !s.requiredOk);
+  if (!bad.length) return null;
+  return (
+    <div className="mt-2 space-y-1.5 rounded-md border border-critical/30 bg-card px-3 py-2 text-[0.75rem]">
+      {bad.map((s) => (
+        <div key={s.sheet}>
+          <p className="font-semibold text-foreground">
+            {s.sheet}
+            {!s.found && " – sheet not found"}
+            {s.found && s.headerRow == null && " – header row not found"}
+          </p>
+          {s.found && s.headerRow != null && (
+            <ul className="mt-0.5 flex flex-wrap gap-1.5">
+              {s.required.map((c) => (
+                <li
+                  key={c.name}
+                  className={cn("rounded px-1.5 py-0.5", c.header ? "bg-good-soft text-good-text" : "bg-critical-soft font-semibold text-critical-text")}
+                  title={c.header ? `Found as “${c.header}”` : c.hint ? `Missing – the file has “${c.hint}” (similar)` : "Missing"}
+                >
+                  {c.header ? "✓" : "✕"} {c.name}
+                  {!c.header && c.hint && <span className="font-normal"> (file has “{c.hint}”)</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** What to do when a required column is missing: the template's two sections. */
+function TemplateHelp() {
+  return (
+    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+      <div className="rounded-md border border-good/40 bg-good-soft px-3 py-2 text-[0.75rem]">
+        <p className="font-semibold text-good-text">Section A – required columns (fixed)</p>
+        <p className="text-foreground/80">Exact names, must be present, any order. A missing one is the only column reason a file is rejected.</p>
+      </div>
+      <div className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-[0.75rem]">
+        <p className="font-semibold text-warning-text">Section B – day / week / month columns (flexible)</p>
+        <p className="text-foreground/80">Examples only: add as many as you have; only the current week is fine. Never a reason to reject.</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-[0.75rem] sm:col-span-2">
+        {FORMATS.master.templates.map((t) => (
+          <a key={t.href} href={t.href} download className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+            <Download className="size-3.5" aria-hidden /> {t.label}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Columns of an importable file: required OK, optional present / absent, columns the dashboard does not use. */
+function ColumnSummary({ sheets }: { sheets: UploadColumnSheet[] }) {
+  return (
+    <div className="grid gap-2 md:grid-cols-2">
+      {sheets.map((s) => (
+        <div key={s.sheet} className="min-w-0 space-y-1 rounded-lg border border-border px-3 py-2 text-[0.75rem]">
+          <p className="flex items-center gap-1.5 font-semibold">
+            {s.requiredOk ? <CheckCircle2 className="size-3.5 text-good-text" aria-hidden /> : <XCircle className="size-3.5 text-critical-text" aria-hidden />}
+            {s.sheet}
+            <span className="font-normal text-muted-foreground">· header row {s.headerRow ?? "—"}</span>
+          </p>
+          <p>
+            <b className="font-medium text-good-text">Required OK</b> – {s.required.filter((c) => c.header).length} of {s.required.length} columns
+          </p>
+          <p className="break-words">
+            <b className="font-medium text-foreground">Optional present</b> ({s.optionalPresent.length}){s.optionalPresent.length ? `: ${s.optionalPresent.join(", ")}` : ""}
+          </p>
+          {s.optionalAbsent.length > 0 && (
+            <p className="break-words">
+              <b className="font-medium text-warning-text">Optional absent</b> (left empty – NA where the dashboard uses one): {s.optionalAbsent.join(", ")}
+            </p>
+          )}
+          {s.unused.length > 0 && (
+            <p className="break-words text-muted-foreground">
+              <b className="font-medium text-foreground">Not used</b> (ignored): {s.unused.join(", ")}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const day = (iso: string | null) => (iso ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—");
+const month = (ym: string) => new Date(`${ym}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+
+/** Day / week / month columns found, their gaps, and the earlier periods kept from earlier uploads. */
+function PeriodSummary({ p }: { p: UploadPeriods }) {
+  const kept = [...p.fromHistory.weeks, ...p.fromHistory.months.map(month)];
+  return (
+    <div className="space-y-1 rounded-lg border border-border px-3 py-2 text-[0.75rem]">
+      <p className="font-semibold">Periods found</p>
+      <p>
+        <b className="font-medium">Days:</b> {formatCount(p.days.count)} ({day(p.days.first)} – {day(p.days.last)}) · <b className="font-medium">Weeks:</b>{" "}
+        {p.weeks.length ? `${p.weeks[0]} – ${p.weeks[p.weeks.length - 1]}${p.weekRange ? ` (${p.weekRange})` : ""}` : "—"} · <b className="font-medium">Months:</b>{" "}
+        {p.months.length ? p.months.map(month).join(", ") : "—"}
+        {p.amcMonths.length > 0 && ` · AMC months: ${p.amcMonths.map(month).join(", ")}`}
+      </p>
+      {kept.length > 0 && (
+        <p className="text-good-text">
+          <b className="font-medium">Kept from earlier uploads</b> (not in this file): {kept.join(", ")}
+        </p>
+      )}
+      {p.gaps.length > 0 ? (
+        <ul className="list-disc space-y-0.5 pl-4 text-warning-text">
+          {p.gaps.map((g) => (
+            <li key={g}>{g}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-muted-foreground">No gaps in the day / week / month columns.</p>
+      )}
     </div>
   );
 }
