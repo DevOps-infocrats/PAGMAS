@@ -136,7 +136,7 @@ def test_tc1_successful_non_doable_approval(client, nd, mail):  # noqa: F811
     assert _act(client, hs, c["id"], "SME_RECOMMEND", remark="Recommend Non-Doable", to=[{"name": "Nd Coh", "email": COH[0]}]).json()["case"]["status"] == "PENDING_COH"
     hc = _h(client, COH)
     r = _act(client, hc, c["id"], "COH_FORWARD", remark="Forward to the Corporate Team")
-    assert r.status_code == 409 and "Corporate Team – MGG" in r.json()["detail"]  # nobody authorised yet
+    assert r.status_code == 422 and "Corporate Team – MGG" in r.json()["detail"]  # nobody authorised yet and nobody typed
     ha = _h(client)
     with SessionLocal() as db:
         mid = db.scalar(select(User.id).where(User.email == MGG[0]))

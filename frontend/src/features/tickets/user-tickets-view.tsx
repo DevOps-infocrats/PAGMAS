@@ -6,6 +6,7 @@ import { useCallback, useState } from "react";
 import { ErrorState, PageSkeleton } from "@/components/feedback/states";
 import { MiniKpi } from "@/components/kpi/mini-kpi";
 import { PageHeader } from "@/components/layout/page-header";
+import { Select } from "@/components/ui/overlays";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useSession } from "@/hooks/use-session";
@@ -37,14 +38,30 @@ import { ShareCard } from "./ticket-share";
 import { TaskPanel } from "./ticket-task";
 import { WorkSubmission } from "./work-submission";
 
+const day = (iso: string, withMonth: boolean) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", ...(withMonth ? { month: "short" } : {}), timeZone: "UTC" });
+/** "Week 46 · 07–13 Nov" (dates of the task week) */
+export function weekLabel(id: string, start?: string | null, end?: string | null): string {
+  const n = id.replace("W-", "Week ");
+  if (!start || !end) return n;
+  const sameMonth = start.slice(0, 7) === end.slice(0, 7);
+  return `${n} · ${sameMonth ? day(start, false) : day(start, true)}–${day(end, true)}`;
+}
+
 const COLUMNS: TicketColumn[] = [
   CODE_COL,
+  {
+    key: "week",
+    header: "Week",
+    render: (t) => (t.week ? <span className="whitespace-nowrap font-medium">{weekLabel(t.week, t.weekStart, t.weekEnd)}</span> : <span className="text-muted-foreground">—</span>),
+  },
+  { key: "am", header: "Area Manager", render: (t) => <span className="whitespace-nowrap">{t.areaManager ?? <span className="text-muted-foreground">—</span>}</span> },
   SUBJECT_COL,
   PRIORITY_COL,
   { key: "by", header: "Assigned By", render: (t) => <span className="whitespace-nowrap">{t.createdBy.name}</span> },
   CREATED_COL,
   STATUS_COL,
 ];
+const ALL_WEEKS = "all";
 
 export function UserTicketsView() {
   const { session } = useSession();
@@ -129,10 +146,17 @@ function UserKpis({ k }: { k?: TicketKpis }) {
 
 function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) => void }) {
   const [filters, setFilters] = useState<ListFilters>(EMPTY_FILTERS);
-  const q = listQuery(filters);
+  // week filter: the latest week of the user's GP-wise tickets by default (null = not chosen yet), or every week
+  const [chosenWeek, setChosenWeek] = useState<string | null>(null);
+  const weeksQ = useApiQuery(`tickets-weeks:mine:${tick}`, () => ticketApi.myWeeks());
+  const weeks = weeksQ.data?.weeks ?? [];
+  const week = chosenWeek ?? (weeksQ.data ? (weeks[0]?.id ?? ALL_WEEKS) : weeksQ.error ? ALL_WEEKS : null);
+  const q = { ...listQuery(filters), week: week && week !== ALL_WEEKS ? week : undefined };
   const kpis = useApiQuery(`tickets-kpis:mine:${tick}`, () => ticketApi.getKpis("mine"));
-  const list = useApiQuery(`tickets:mine:${tick}:${JSON.stringify(q)}`, () => ticketApi.list({ scope: "mine", ...q }));
-  const filtered = !!(filters.search || filters.status !== "all" || filters.priority !== "all");
+  // wait for the weeks (the default week) before the first list request
+  const list = useApiQuery(week === null ? null : `tickets:mine:${tick}:${JSON.stringify(q)}`, () => ticketApi.list({ scope: "mine", ...q }));
+  const filtered = !!(filters.search || filters.status !== "all" || filters.priority !== "all" || (week && week !== ALL_WEEKS));
+  const openElsewhere = week && week !== ALL_WEEKS ? weeks.filter((w) => w.id !== week).reduce((n, w) => n + w.open, 0) : 0;
   return (
     <>
       {kpis.error ? (
@@ -146,14 +170,54 @@ function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) =
         title="Tickets assigned to or shared with you"
         page={list.data ?? list.staleData}
         error={list.error}
-        loading={list.loading}
+        loading={list.loading || week === null}
         onRetry={list.reload}
         columns={COLUMNS}
         onOpen={(t) => onOpen(t.id)}
         onPage={(page) => setFilters((f) => ({ ...f, page }))}
         filtered={filtered}
         emptyText="When an admin assigns a ticket to you it appears here."
-        filters={<TicketFilterBar value={filters} onChange={setFilters} searchHint="Ticket ID or subject" />}
+        filters={
+          <>
+            <TicketFilterBar
+              value={filters}
+              onChange={setFilters}
+              searchHint="Ticket ID or subject"
+              extra={
+                weeks.length > 0 ? (
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="text-xs font-semibold text-foreground/75">Week</span>
+                    <Select
+                      ariaLabel="Week"
+                      value={week ?? ALL_WEEKS}
+                      onValueChange={(v) => {
+                        if (!v) return;
+                        setChosenWeek(v);
+                        setFilters((f) => ({ ...f, page: 1 }));
+                      }}
+                      options={[
+                        ...weeks.map((w, i) => ({ value: w.id, label: `${weekLabel(w.id, w.start, w.end)} · ${w.total} ticket${w.total === 1 ? "" : "s"}${i === 0 ? " · latest" : ""}` })),
+                        { value: ALL_WEEKS, label: "All weeks" },
+                      ]}
+                      // one line like the other filters: a long label is cut with "…" instead of wrapping out of the box
+                      className="w-full min-w-0 [&>span:first-child]:truncate"
+                    />
+                  </div>
+                ) : null
+              }
+            />
+            {openElsewhere > 0 && (
+              <div className="flex items-center justify-between gap-3 border-b border-border bg-warning-soft/50 px-4 py-2 text-[0.78125rem] text-warning-text">
+                <span>
+                  {openElsewhere} open ticket{openElsewhere === 1 ? "" : "s"} in other weeks.
+                </span>
+                <button type="button" onClick={() => setChosenWeek(ALL_WEEKS)} className="shrink-0 rounded px-2 py-0.5 font-semibold hover:bg-warning-soft">
+                  Show all weeks
+                </button>
+              </div>
+            )}
+          </>
+        }
       />
     </>
   );

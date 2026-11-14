@@ -336,6 +336,36 @@ def apply(
     return n, [r.id for r in sent_to]
 
 
+NOTICE = ("AM_RETURN", "COH_LETTER", "COH_AMC")  # steps e-mailed to the people concerned (nobody is chosen in them)
+
+
+def notice_to(db: Session, t: Ticket, gp_ids: list[int], action: str, user: CurrentUser) -> list[tuple[str, str]]:
+    """(e-mail, name) for the e-mail of a step that hands the GPs to nobody chosen: AM_RETURN → the Field Engineer(s) of
+    the returned GPs (also without a dashboard account – the e-mail is how they learn it); COH_LETTER / COH_AMC → the
+    Area Manager(s) of the ticket (AM recipients, else the assignee). Never the person who did the step."""
+    from ..models import User
+    from .task import FeScope
+
+    if action not in NOTICE:
+        return []
+    out: dict[str, str] = {}
+    if action == "AM_RETURN":
+        gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id, TicketTaskGp.id.in_(gp_ids))))
+        for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE").order_by(TicketRecipient.id)):
+            if r.email and any(FeScope(r.name, r.fe_mail).owns(g) for g in gps):
+                out.setdefault(r.email.lower(), r.name)
+    else:
+        for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "AM").order_by(TicketRecipient.id)):
+            if r.email:
+                out.setdefault(r.email.lower(), r.name)
+        if not out and t.assignee_id:
+            u = db.get(User, t.assignee_id)
+            if u is not None and u.email:
+                out[u.email.lower()] = u.name
+    out.pop((user.email or "").lower(), None)
+    return list(out.items())
+
+
 def _handed_to(db: Session, t: Ticket, gps: list[TicketTaskGp], action: str) -> set[int]:
     """User ids (accounts) the GPs were handed to by their latest `action` step. Steps from before forwards were
     recorded: every account with that role on the ticket."""

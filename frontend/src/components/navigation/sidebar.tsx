@@ -11,7 +11,7 @@ import { useSession } from "@/hooks/use-session";
 import { IS_LIVE } from "@/lib/api";
 import { AMC_PATH, AMC_VIEWS, amcViewFrom } from "@/lib/amc-views";
 import { BLOCK_PATH, BLOCK_VIEWS, blockViewFrom } from "@/lib/block-views";
-import { FIELD_PATH, FIELD_VIEWS, fieldViewFrom } from "@/lib/field-views";
+import { FIELD_PATH, SIDEBAR_FIELD_VIEWS, fieldViewFrom } from "@/lib/field-views";
 import { CIRCLE_PATH, CIRCLE_VIEWS, circleViewFrom } from "@/lib/circle-views";
 import { GP_PATH, GP_VIEWS, gpViewFrom } from "@/lib/gp-views";
 import { OVERVIEW_PATH, OVERVIEW_VIEWS, overviewViewFrom } from "@/lib/overview-views";
@@ -48,7 +48,7 @@ export function SidebarContent({
     [BLOCK_PATH]: { param: "view", label: "Block Insights views", items: BLOCK_VIEWS, current: blockViewFrom(searchParams.get("view")), open: pathname.startsWith(BLOCK_PATH) },
     [GP_PATH]: { param: "view", label: "GP Insights views", items: GP_VIEWS, current: gpViewFrom(searchParams.get("view")), open: pathname.startsWith(GP_PATH) },
     [AMC_PATH]: { param: "view", label: "AMC conversion views", items: AMC_VIEWS, current: amcViewFrom(searchParams.get("view")), open: pathname.startsWith(AMC_PATH) },
-    [FIELD_PATH]: { param: "view", label: "Field Team & Escalation views", items: FIELD_VIEWS, current: fieldViewFrom(searchParams.get("view")), open: pathname.startsWith(FIELD_PATH) },
+    [FIELD_PATH]: { param: "view", label: "Field Team & Escalation views", items: SIDEBAR_FIELD_VIEWS, current: fieldViewFrom(searchParams.get("view")), open: pathname.startsWith(FIELD_PATH) },
     [REVIEW_PATH]: { param: "page", label: "Management Review pages", items: REVIEW_PAGES, current: reviewPageFrom(searchParams.get("page")), open: pathname.startsWith(REVIEW_PATH) },
   };
   const subHref = (path: string, param: string, id: string) => {

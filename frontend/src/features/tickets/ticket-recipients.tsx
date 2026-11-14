@@ -73,6 +73,11 @@ export function RecipientsCard({ t, onNotice }: { t: TicketDetail; onNotice?: (n
                 <div className="min-w-0">
                   <p className="truncate text-[0.84375rem] font-semibold">
                     {r.name} <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[0.65625rem] font-semibold uppercase tracking-wide text-muted-foreground">{ROLE_LABEL[r.role]}</span>
+                    {r.typed && (
+                      <span className="ml-1 rounded bg-primary-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-primary" title="Name and e-mail typed by the admin at Generate Ticket – not from the Escalation Matrix">
+                        typed
+                      </span>
+                    )}
                   </p>
                   <p className="truncate text-[0.78125rem] text-muted-foreground">
                     {r.email}

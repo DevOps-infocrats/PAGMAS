@@ -7,6 +7,8 @@ Layered checks, strict order, the first failing layer stops the report (fail fas
   4 template   master data (template.py): both sheets, every REQUIRED column by name (any order, case / spaces /
                punctuation ignored), at least one day / week / month column. Optional columns may be absent, other
                columns are ignored ("not used"), day / week / month columns are never a reason to reject.
+               Escalation Matrix (template.validate_escalation): the sheet with Circle + GP Code + FE Name, every
+               REQUIRED column by name (people the tickets / e-mails go to); optional ones may be absent.
   4 structure  what the importer itself needs to read the sheet (parser / escalation)
   5 rows       business rules per row: rejected rows (critical), warnings, info – each with its Excel row number
 A report with layers 1–4 passed can be imported (rows rejected in layer 5 are skipped and listed). The report also says
@@ -45,34 +47,31 @@ def build(path: Path, kind: str, base: dict[str, Any], already: str | None) -> d
     except WorkbookError as exc:
         return _fail("file", str(exc), base)
     if found is None:
-        return _fail("kind", f"Not recognised as a {KINDS[kind]}: the master data workbook needs the sheet 'GP Wise Data', the Escalation Matrix the columns GP Code, FRT Code and FE Name.", base)
+        return _fail("kind", f"Not recognised as a {KINDS[kind]}: the master data workbook needs the sheet 'GP Wise Data', the Escalation Matrix a header row with Circle, GP Code and FE Name.", base)
     if found != kind:
         return _fail("kind", f"You selected '{KINDS[kind]}', but this file is the {KINDS[found]}. Choose '{KINDS[found]}' in the file type list, or pick the right file.", base)
     if already:
         return _fail("duplicate", already, base)
-    tpl_warnings: list[dict[str, Any]] = []
-    if kind == "master":
-        from . import template
+    from . import template
 
-        try:
-            chk = template.validate_master(path)
-        except WorkbookError as exc:
-            return _fail("file", str(exc), base)
-        columns = {"sheets": [sh.json() for sh in chk.sheets], "templateHint": template.TEMPLATE_HINT}
-        if not chk.ok:
-            return _fail("template", chk.message(), base) | {
-                "templateErrors": [p.json() for p in chk.errors],
-                "templateErrorCount": chk.error_count,
-                "columnCheck": columns,
-            }
-        # duplicate optional columns: the importer reads the first one – listed so the admin knows
-        tpl_warnings = [{"row": p.row, "severity": "warning", "code": "TEMPLATE", "column": p.column, "gpCode": None, "message": p.message, "sheet": p.sheet} for p in chk.warnings]
+    try:  # required columns by name – the same rules the downloadable template is built from
+        chk = template.validate_master(path) if kind == "master" else template.validate_escalation(path)
+    except WorkbookError as exc:
+        return _fail("file", str(exc), base)
+    columns = {"sheets": [sh.json() for sh in chk.sheets], "templateHint": template.TEMPLATE_HINT if kind == "master" else template.ESC_TEMPLATE_HINT}
+    if not chk.ok:
+        return _fail("template", chk.message(), base) | {
+            "templateErrors": [p.json() for p in chk.errors],
+            "templateErrorCount": chk.error_count,
+            "columnCheck": columns,
+        }
+    # duplicate optional columns: the importer reads the first one – listed so the admin knows
+    tpl_warnings = [{"row": p.row, "severity": "warning", "code": "TEMPLATE", "column": p.column, "gpCode": None, "message": p.message, "sheet": p.sheet} for p in chk.warnings]
     try:
         body = _master(path) if kind == "master" else _escalation(path)
     except WorkbookError as exc:
         return _fail("structure", str(exc), base)
-    if kind == "master":
-        body["columnCheck"] = columns
+    body["columnCheck"] = columns
     if tpl_warnings:
         body["issues"] = (body.get("issues") or []) + tpl_warnings[: max(0, MAX_ISSUES - len(body.get("issues") or []))]
         body["counts"]["warning"] += len(tpl_warnings)
@@ -208,12 +207,12 @@ def _escalation(path: Path) -> dict[str, Any]:
             facts.append({"label": "GP codes not in the active master data", "value": f"{outside:,}"})
     except Exception:  # noqa: BLE001 - a fact, never a reason to fail the report
         pass
-    from .column_map import ESCALATION_COLUMNS
+    from .template import esc_label
 
     return {
         "counts": {"rows": p.rows_total, "accepted": len(p.rows), "rejected": p.rows_rejected, "critical": sev["critical"], "warning": sev["warning"], "info": sev["info"]},
         "facts": facts,
-        "columns": {"missingOptional": [ESCALATION_COLUMNS[k][0] for k in p.missing if k in ESCALATION_COLUMNS], "unknown": [], "mapProblems": []},
+        "columns": {"missingOptional": [esc_label(k) for k in p.missing], "unknown": [], "mapProblems": []},
         "crossCheck": [],
         "issues": listed,
         "issueSummary": summary,

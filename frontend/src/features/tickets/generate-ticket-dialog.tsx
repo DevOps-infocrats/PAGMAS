@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
 import { Input, Label } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { ticketApi, type DirectoryFe, type DirectoryPerson, type TaskFigures, type TaskPreviewRow, type TicketAssignee, type TicketPriority } from "@/lib/api";
+import { ticketApi, type DirectoryFe, type DirectoryPerson, type TaskFigures, type TaskPreviewRow, type TicketAssignee, type TicketDirectory, type TicketPriority } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { PRIORITY_META, TEXTAREA } from "./ticket-parts";
 
@@ -23,12 +23,21 @@ interface Picked {
   /** FE: parent Area Manager and the matrix FE e-mail of their GPs (decides which GPs the FE gets) */
   am?: string;
   mapped?: string | null;
+  /** typed by the admin (nobody / not this person in the matrix): AM = acting AM of the GPs without an AM; FE = gets
+   * the GPs without an FE of the Area Manager `am` */
+  typed?: boolean;
+  /** AM of the matrix who also takes the circle's GPs without an Area Manager (and their FEs) */
+  withNoAm?: boolean;
 }
 
-/** FEs stay only while their Area Manager is selected (none once every Area Manager is removed). */
+/** The group of a circle's GPs without an Area Manager in the matrix (backend task.NO_AM). */
+const NO_AM = "No Area Manager";
+
+/** FEs stay only while their Area Manager is selected (none once every Area Manager is removed); FEs of GPs without an
+ * Area Manager stay (they go FE-wise or to the AM who takes those GPs). */
 const pruneFes = (list: Picked[]) => {
   const ams = new Set(list.filter((p) => p.role === "AM").map((p) => p.name));
-  return list.filter((p) => p.role !== "FE" || (p.am != null && ams.has(p.am)));
+  return list.filter((p) => p.role !== "FE" || (p.am != null && (ams.has(p.am) || (!p.typed && p.am === NO_AM))));
 };
 const feKey = (f: { name: string; mappedEmail?: string | null; mapped?: string | null }) => `${f.name.toLowerCase().replace(/[^a-z0-9]/g, "")}|${(f.mappedEmail ?? f.mapped ?? "").toLowerCase()}`;
 
@@ -80,7 +89,12 @@ export function GenerateTicketDialog({
   const pickedAms = picked.filter((p) => p.role === "AM");
   const pickedFes = picked.filter((p) => p.role === "FE");
   const amNames = new Set(pickedAms.map((a) => a.name));
-  const feOnlyAms = [...new Set(pickedFes.filter((f) => f.am && !amNames.has(f.am)).map((f) => f.am!))];
+  const noAm = here?.noAm ?? null;
+  // the one Area Manager who takes the circle's GPs without an AM: the acting AM typed by the admin or a matrix AM ticked for it
+  const owner = taskOn ? pickedAms.find((a) => a.typed || a.withNoAm) : undefined;
+  /** the Area Manager whose ticket an FE is on (same rule as the backend) */
+  const home = (f: Picked) => (f.typed ? f.am : f.am === NO_AM && owner ? owner.name : f.am);
+  const feOnlyAms = [...new Set(pickedFes.map(home).filter((h): h is string => !!h && !amNames.has(h)))];
   const weekLabel = week?.replace("W-", "Week ");
 
   const add = (p: Picked) => {
@@ -100,18 +114,20 @@ export function GenerateTicketDialog({
 
   const amRow = (name: string) => here?.am.find((a) => a.name === name);
   const feRow = (f: Picked) => here?.fe.find((x) => x.am === f.am && feKey(x) === feKey(f));
+  // no target GP in the week: the ticket is still created (0 GPs – the FE can add GPs found in the field)
   const noGps = taskOn
     ? [
-        ...pickedAms.filter((a) => {
-          const r = amRow(a.name);
-          return r && (r.weekGps ?? 0) === 0;
-        }),
-        ...pickedFes.filter((f) => {
-          const r = feRow(f);
-          return r && r.weekGps === 0;
-        }),
+        ...pickedAms.filter((a) => (a.typed ? (noAm?.weekGps ?? 0) === 0 : !a.withNoAm && (amRow(a.name)?.weekGps ?? 1) === 0)),
+        ...pickedFes.filter((f) => !f.typed && (feRow(f)?.weekGps ?? 1) === 0),
       ]
     : [];
+  // the week's target GPs without an Area Manager that no ticket gets (nobody takes them and their FE is not selected)
+  const leftover = (() => {
+    if (!taskOn || !noAm || owner) return null;
+    const fes = (here?.fe ?? []).filter((f) => f.am === NO_AM && f.weekGps > 0 && !pickedFes.some((p) => p.am === NO_AM && feKey(p) === feKey(f)));
+    const gps = fes.reduce((n, f) => n + f.weekGps, 0) + noAm.unmappedFeGps;
+    return gps > 0 ? { fes: fes.length, gps } : null;
+  })();
   const withAccount = picked.some((p) => p.account) || !!otherUser;
   const amsWithoutAccount = [...pickedAms, ...pickedFes].filter((a) => !a.account);
   const ticketCount = taskOn ? pickedAms.length + feOnlyAms.length : 1;
@@ -122,9 +138,7 @@ export function GenerateTicketDialog({
       ? null
       : pickedAms.length === 0 && pickedFes.length === 0
         ? "Add at least one Area Manager or Field Engineer for the GP-wise task"
-        : noGps.length
-          ? `${noGps.map((a) => a.name).join(", ")} ${noGps.length === 1 ? "has" : "have"} no GP with a target (Planned Date) in ${weekLabel} – remove ${noGps.length === 1 ? "this person" : "them"}`
-          : null,
+        : null,
     reach: sendEmail
       ? null
       : taskOn && amsWithoutAccount.length
@@ -160,7 +174,11 @@ export function GenerateTicketDialog({
     try {
       const r = await ticketApi.create({
         circle,
-        recipients: picked.map(({ role, name, email, am, mapped }) => (role === "FE" ? { role, name, email, am, feEmail: mapped ?? null } : { role, name, email })),
+        recipients: picked.map(({ role, name, email, am, mapped, typed, withNoAm }) =>
+          role === "FE"
+            ? { role, name, email, am, feEmail: mapped ?? null, ...(typed ? { typed } : {}) }
+            : { role, name, email, ...(typed ? { typed } : {}), ...(withNoAm && taskOn ? { withNoAm } : {}) },
+        ),
         assigneeId: otherUser?.id ?? null,
         sendEmail,
         subject: subject.trim(),
@@ -246,6 +264,8 @@ export function GenerateTicketDialog({
                 disabled={busy}
                 showCounts={taskOn}
                 weekLabel={weekLabel}
+                noAm={role === "AM" ? noAm : null}
+                owner={owner?.name}
                 onAdd={add}
                 onRemove={remove}
               />
@@ -254,6 +274,7 @@ export function GenerateTicketDialog({
               key={`FE:${circle ?? ""}`}
               fes={here?.fe ?? []}
               selectedAms={[...amNames]}
+              owner={owner?.name}
               ready={!!here}
               loading={loadingPeople}
               circleChosen={!!circle}
@@ -322,13 +343,34 @@ export function GenerateTicketDialog({
                   week && (
                     <>
                       {pickedAms.map((a) => (
-                        <AmPreview key={`${a.name}:${week}`} am={a.name} circle={circle} week={week} fes={pickedFes.filter((f) => f.am === a.name)} unmapped={amRow(a.name)?.unmappedFeGps ?? 0} />
+                        <AmPreview
+                          key={`${a.name}:${week}:${a.typed ? "acting" : a.withNoAm ? "with" : "own"}`}
+                          am={a.typed ? NO_AM : a.name}
+                          title={a.typed ? `${a.name} (acting AM – GPs without an Area Manager)` : a.withNoAm ? `${a.name} + GPs without an Area Manager` : a.name}
+                          withNoAm={!!a.withNoAm}
+                          circle={circle}
+                          week={week}
+                          fes={pickedFes.filter((f) => home(f) === a.name)}
+                          unmapped={(a.typed ? 0 : (amRow(a.name)?.unmappedFeGps ?? 0)) + (a.typed || a.withNoAm ? (noAm?.unmappedFeGps ?? 0) : 0)}
+                        />
                       ))}
                       {feOnlyAms.map((am) => (
-                        <AmPreview key={`fe-only:${am}:${week}`} am={am} circle={circle} week={week} fes={pickedFes.filter((f) => f.am === am)} feOnly />
+                        <AmPreview key={`fe-only:${am}:${week}`} am={am} circle={circle} week={week} fes={pickedFes.filter((f) => home(f) === am)} feOnly />
                       ))}
                     </>
                   )
+                )}
+                {noGps.length > 0 && (
+                  <p role="status" className="rounded-md bg-muted/60 px-2.5 py-1.5 text-[0.75rem] text-muted-foreground">
+                    {noGps.map((a) => a.name).join(", ")} {noGps.length === 1 ? "has" : "have"} no target GP (Planned Date) in {weekLabel} – the ticket is still created with 0 GPs; GPs found in the field can be added in
+                    the ticket.
+                  </p>
+                )}
+                {leftover && circle && (
+                  <p role="alert" className="rounded-md border border-warning/40 bg-warning-soft px-2.5 py-1.5 text-[0.75rem] text-warning-text">
+                    {circle}: {leftover.fes > 0 ? `${leftover.fes} FE${leftover.fes === 1 ? "" : "s"} (${leftover.gps} target GPs)` : `${leftover.gps} target GPs`} have no Area Manager and are not in any ticket – type an
+                    acting AM, add them to an Area Manager (&quot;also take the GPs without an Area Manager&quot;), or send them FE-wise.
+                  </p>
                 )}
                 {err("task")}
               </div>
@@ -355,6 +397,11 @@ export function GenerateTicketDialog({
             </Label>
             <Input id="tk-subject" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={200} disabled={busy} aria-invalid={touched && !!problems.subject} placeholder="Short title of the work" />
             {err("subject")}
+            {taskOn && (
+              <p className="text-[0.75rem] text-muted-foreground">
+                GP-wise task: each ticket gets its own subject automatically – its Area Manager (or FEs), the week with its dates and the circle, e.g. “Weekly GP task – Ashish Shringi – Week 46 (07–13 Nov) · Rajasthan”.
+              </p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="tk-desc">
@@ -412,7 +459,9 @@ export function GenerateTicketDialog({
   );
 }
 
-/** One role (SME / COH / Area Manager): pick a name of the circle, its e-mail (or type one), add; several allowed. */
+/** One role (SME / COH / Area Manager): pick a name of the circle, its e-mail (or type one), add; several allowed.
+ * Nobody in the matrix (or not this person): type the name and e-mail – the person works in that role. A typed Area
+ * Manager on a GP-wise task is the ACTING AM of the circle's GPs without an Area Manager (with their FEs). */
 function RecipientSection({
   role,
   people,
@@ -424,6 +473,8 @@ function RecipientSection({
   disabled,
   showCounts,
   weekLabel,
+  noAm,
+  owner,
   onAdd,
   onRemove,
 }: {
@@ -437,6 +488,10 @@ function RecipientSection({
   disabled: boolean;
   showCounts: boolean;
   weekLabel?: string;
+  /** AM section: the circle's GPs without an Area Manager (null = none) */
+  noAm: NonNullable<TicketDirectory["noAm"]> | null;
+  /** the Area Manager who already takes the GPs without an AM */
+  owner?: string;
   onAdd: (p: Picked) => void;
   onRemove: (email: string) => void;
 }) {
@@ -445,6 +500,13 @@ function RecipientSection({
   const [choice, setChoice] = useState<string | undefined>(undefined);
   const [manual, setManual] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [typedName, setTypedName] = useState("");
+  const [typedMail, setTypedMail] = useState("");
+  const [withNoAm, setWithNoAm] = useState(false);
+  const typedMode = typing || (ready && people.length === 0);
+  const actingRole = role === "AM" && showCounts; // a typed AM on a GP-wise task = acting AM of the GPs without an AM
+  const actingBlocked = actingRole ? (!noAm ? "Every GP of this circle has an Area Manager in the Escalation Matrix – select one from the list (another e-mail: “Other – type an e-mail”)." : owner ? `${owner} already takes the GPs without an Area Manager.` : null) : null;
   const mine = picked.filter((p) => p.role === role);
   const person = people.find((p) => p.name === name);
   const options = useMemo(
@@ -468,10 +530,25 @@ function RecipientSection({
     if (picked.some((p) => p.email === email)) return setProblem(`${email} is already selected`);
     const fromDb = person?.emails.find((e) => e.email === email)?.user;
     const acc = fromDb ? { id: fromDb.id, name: fromDb.name } : accounts.get(email) ? { id: accounts.get(email)!.id, name: accounts.get(email)!.name } : null;
-    onAdd({ role, name, email, account: acc });
+    onAdd({ role, name, email, account: acc, ...(role === "AM" && withNoAm && noAm && !owner ? { withNoAm: true } : {}) });
     setName(undefined);
     setChoice(undefined);
     setManual("");
+    setWithNoAm(false);
+    setProblem(null);
+  };
+  const addTyped = () => {
+    const who = typedName.trim().replace(/\s+/g, " ");
+    const mail = typedMail.trim().toLowerCase();
+    if (!who) return setProblem(`Type the ${ROLE_TITLE[role]}'s name`);
+    if (role === "AM" && people.some((p) => p.name.toLowerCase() === who.toLowerCase())) return setProblem(`${who} is in the list – select them there`);
+    if (!EMAIL_RE.test(mail)) return setProblem("Enter a valid e-mail address");
+    if (picked.some((p) => p.email === mail)) return setProblem(`${mail} is already selected`);
+    if (actingBlocked) return setProblem(actingBlocked);
+    const acc = accounts.get(mail);
+    onAdd({ role, name: who, email: mail, account: acc ? { id: acc.id, name: acc.name } : null, typed: true });
+    setTypedName("");
+    setTypedMail("");
     setProblem(null);
   };
 
@@ -488,8 +565,52 @@ function RecipientSection({
         <div className="space-y-2 border-t border-border px-3 py-2.5">
           {!circleChosen ? (
             <p className="text-[0.78125rem] text-muted-foreground">Select the circle first.</p>
-          ) : ready && people.length === 0 ? (
-            <p className="text-[0.78125rem] text-muted-foreground">No {ROLE_TITLE[role]} is recorded for this circle in the database.</p>
+          ) : typedMode ? (
+            <div className="space-y-1.5">
+              <p className="text-[0.75rem] text-muted-foreground">
+                {ready && people.length === 0 ? `No ${ROLE_TITLE[role]} is recorded for this circle in the database – type the name and e-mail.` : `Type a ${ROLE_TITLE[role]} who is not in the list.`}{" "}
+                {actingRole
+                  ? noAm
+                    ? `Acting Area Manager: gets the ${noAm.weekGps} target GP${noAm.weekGps === 1 ? "" : "s"} of ${weekLabel ?? "the week"} without an Area Manager in this circle and their Field Engineers.`
+                    : ""
+                  : `Works on the ticket as ${ROLE_TITLE[role]}.`}
+              </p>
+              {actingBlocked && <p className="text-[0.75rem] text-warning-text">{actingBlocked}</p>}
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                <div className="min-w-0 space-y-1">
+                  <span className="text-xs font-semibold text-foreground/75">{ROLE_TITLE[role]} Name</span>
+                  <Input value={typedName} onChange={(e) => setTypedName(e.target.value)} placeholder="Full name" maxLength={160} disabled={disabled} aria-label={`${ROLE_TITLE[role]} name (typed)`} />
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <span className="text-xs font-semibold text-foreground/75">{ROLE_TITLE[role]} Email ID</span>
+                  <Input
+                    type="email"
+                    value={typedMail}
+                    onChange={(e) => {
+                      setTypedMail(e.target.value);
+                      setProblem(null);
+                    }}
+                    placeholder="name@example.com"
+                    maxLength={254}
+                    disabled={disabled}
+                    aria-label={`${ROLE_TITLE[role]} e-mail (typed)`}
+                  />
+                </div>
+                <Button type="button" variant="outline" onClick={addTyped} disabled={disabled || !typedMail.trim() || !!actingBlocked}>
+                  <Plus /> Add
+                </Button>
+              </div>
+              {EMAIL_RE.test(typedMail.trim().toLowerCase()) && (
+                <p className="text-[0.71875rem] text-muted-foreground">
+                  {accounts.get(typedMail.trim().toLowerCase()) ? `Dashboard account found: ${accounts.get(typedMail.trim().toLowerCase())!.name}.` : "No dashboard account with this e-mail – e-mail only (turn on Send Email Notification)."}
+                </p>
+              )}
+              {people.length > 0 && (
+                <button type="button" className="text-[0.75rem] font-medium text-primary hover:underline" onClick={() => setTyping(false)}>
+                  Choose from the list instead
+                </button>
+              )}
+            </div>
           ) : (
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
               <SearchableSelect
@@ -523,6 +644,18 @@ function RecipientSection({
               <Button type="button" variant="outline" onClick={addNow} disabled={disabled || !name}>
                 <Plus /> Add
               </Button>
+              {role === "AM" && showCounts && noAm && !owner && name && (
+                <label className="flex cursor-pointer items-start gap-2 text-[0.75rem] sm:col-span-3">
+                  <input type="checkbox" className="mt-0.5 size-3.5 accent-[var(--primary)]" checked={withNoAm} onChange={(e) => setWithNoAm(e.target.checked)} disabled={disabled} />
+                  <span>
+                    Also give {name} the {noAm.gps.toLocaleString("en-IN")} GPs of this circle without an Area Manager ({noAm.weekGps} target GP{noAm.weekGps === 1 ? "" : "s"} in {weekLabel}) and their Field
+                    Engineers
+                  </span>
+                </label>
+              )}
+              <button type="button" className="text-left text-[0.75rem] font-medium text-primary hover:underline sm:col-span-3" onClick={() => setTyping(true)}>
+                Not in the list? Type the name and e-mail
+              </button>
             </div>
           )}
           {problem && <p className="text-xs text-critical-text">{problem}</p>}
@@ -532,6 +665,8 @@ function RecipientSection({
                 <li key={p.email} className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2.5 pr-1 text-[0.78125rem]">
                   <span className="font-semibold">{p.name}</span>
                   <span className="text-muted-foreground">{p.email}</span>
+                  {p.typed && <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-primary">{role === "AM" && showCounts ? "acting AM · typed" : "typed"}</span>}
+                  {p.withNoAm && showCounts && <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-primary">+ GPs without AM</span>}
                   <span className={cn("rounded px-1.5 py-0.5 text-[0.65625rem] font-semibold", p.account ? "bg-good-soft text-good-text" : "bg-warning-soft text-warning-text")}>
                     {p.account ? "Dashboard" : "E-mail only"}
                   </span>
@@ -656,10 +791,13 @@ const ownsRow = (f: Picked) => (r: TaskPreviewRow) => !!r.feName && feKey({ name
  * Field Engineer (optional, several): only the FEs mapped under the selected Area Manager(s) in the Escalation Matrix
  * (every FE of the circle while no Area Manager is selected). The e-mail comes from the matrix; another one can be typed.
  * One FE name can have rows with different FE e-mails – each is its own GP set, so the e-mail choice says how many GPs.
+ * FEs of GPs without an Area Manager are always listed ("No Area Manager"): on the ticket of the AM who takes those
+ * GPs, else FE-wise. An FE not in the matrix can be typed for a selected Area Manager (gets their GPs without an FE).
  */
 function FeSection({
   fes,
   selectedAms,
+  owner,
   ready,
   loading,
   circleChosen,
@@ -673,6 +811,8 @@ function FeSection({
 }: {
   fes: DirectoryFe[];
   selectedAms: string[];
+  /** the Area Manager who takes the circle's GPs without an AM (their FEs go on that ticket) */
+  owner?: string;
   ready: boolean;
   loading: boolean;
   circleChosen: boolean;
@@ -689,9 +829,30 @@ function FeSection({
   const [choice, setChoice] = useState<string | undefined>(undefined); // "slotIndex::email" or "slotIndex::__other"
   const [manual, setManual] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [typedName, setTypedName] = useState("");
+  const [typedMail, setTypedMail] = useState("");
+  const [typedAm, setTypedAm] = useState<string | undefined>(undefined);
   const mine = picked.filter((p) => p.role === "FE");
-  const available = selectedAms.length ? fes.filter((f) => selectedAms.includes(f.am)) : fes;
+  // FEs of the selected Area Managers – and always the FEs of GPs without an Area Manager (never hidden)
+  const available = selectedAms.length ? fes.filter((f) => selectedAms.includes(f.am) || f.am === NO_AM) : fes;
   const count = (f: DirectoryFe) => (showCounts ? `${f.weekGps} target GPs ${weekLabel ?? ""}` : `${f.gps.toLocaleString("en-IN")} GPs`);
+  const amText = (am?: string) => (am === NO_AM ? (owner ? `no AM → ${owner}'s ticket` : "no Area Manager") : `AM ${am}`);
+  const typedMode = typing || (ready && available.length === 0);
+  const addTyped = () => {
+    const who = typedName.trim().replace(/\s+/g, " ");
+    const mail = typedMail.trim().toLowerCase();
+    if (!who) return setProblem("Type the Field Engineer's name");
+    if (!typedAm) return setProblem("Choose the Area Manager this FE works for");
+    if (!EMAIL_RE.test(mail)) return setProblem("Enter a valid e-mail address");
+    if (picked.some((p) => p.email === mail)) return setProblem(`${mail} is already selected`);
+    if (mine.some((p) => p.typed && p.am === typedAm)) return setProblem(`One typed Field Engineer per Area Manager (${typedAm})`);
+    const acc = accounts.get(mail);
+    onAdd({ role: "FE", name: who, email: mail, account: acc ? { id: acc.id, name: acc.name } : null, am: typedAm, mapped: mail, typed: true });
+    setTypedName("");
+    setTypedMail("");
+    setProblem(null);
+  };
   const people = (() => {
     const m = new Map<string, { value: string; label: string; hint: string; slots: DirectoryFe[] }>();
     for (const f of available) {
@@ -700,7 +861,7 @@ function FeSection({
       cur.slots.push(f);
       m.set(v, cur);
     }
-    return [...m.values()].map((p) => ({ ...p, hint: `AM ${p.slots[0].am} · ${p.slots.map(count).join(" + ")}` }));
+    return [...m.values()].map((p) => ({ ...p, hint: `${amText(p.slots[0].am)} · ${p.slots.map(count).join(" + ")}` }));
   })();
   const sel = people.find((p) => p.value === person);
   const slots = sel?.slots ?? [];
@@ -746,14 +907,48 @@ function FeSection({
         <div className="space-y-2 border-t border-border px-3 py-2.5">
           {!circleChosen ? (
             <p className="text-[0.78125rem] text-muted-foreground">Select the circle first.</p>
-          ) : ready && available.length === 0 ? (
-            <p className="text-[0.78125rem] text-muted-foreground">
-              {selectedAms.length ? `No Field Engineer is mapped under ${selectedAms.join(", ")} in the Escalation Matrix.` : "No Field Engineer is recorded for this circle in the Escalation Matrix."}
-            </p>
+          ) : typedMode ? (
+            <div className="space-y-1.5">
+              <p className="text-[0.75rem] text-muted-foreground">
+                {ready && available.length === 0
+                  ? selectedAms.length
+                    ? `No Field Engineer is mapped under ${selectedAms.join(", ")} in the Escalation Matrix – type one.`
+                    : "No Field Engineer is recorded for this circle in the Escalation Matrix – type one."
+                  : "Type a Field Engineer who is not in the list."}{" "}
+                The FE gets the GPs of the chosen Area Manager&apos;s ticket that have no FE in the Escalation Matrix (one typed FE per Area Manager).
+              </p>
+              {selectedAms.length === 0 ? (
+                <p className="text-[0.75rem] text-warning-text">Add the Area Manager first (above) – a typed FE works on an Area Manager&apos;s ticket.</p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                  <div className="min-w-0 space-y-1">
+                    <span className="text-xs font-semibold text-foreground/75">FE Name</span>
+                    <Input value={typedName} onChange={(e) => setTypedName(e.target.value)} placeholder="Full name" maxLength={160} disabled={disabled} aria-label="Field Engineer name (typed)" />
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <span className="text-xs font-semibold text-foreground/75">FE Email ID</span>
+                    <Input type="email" value={typedMail} onChange={(e) => setTypedMail(e.target.value)} placeholder="name@example.com" maxLength={254} disabled={disabled} aria-label="Field Engineer e-mail (typed)" />
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <span className="text-xs font-semibold text-foreground/75">Area Manager</span>
+                    <Select ariaLabel="Area Manager of the typed FE" value={typedAm} onValueChange={(v) => v && setTypedAm(v)} options={selectedAms.map((a) => ({ value: a, label: a }))} placeholder="Choose" className="w-full" disabled={disabled} />
+                  </div>
+                  <Button type="button" variant="outline" onClick={addTyped} disabled={disabled || !typedMail.trim()}>
+                    <Plus /> Add
+                  </Button>
+                </div>
+              )}
+              {available.length > 0 && (
+                <button type="button" className="text-[0.75rem] font-medium text-primary hover:underline" onClick={() => setTyping(false)}>
+                  Choose from the list instead
+                </button>
+              )}
+            </div>
           ) : (
             <>
               <p className="text-[0.75rem] text-muted-foreground">
-                {selectedAms.length ? `Field Engineers of ${selectedAms.join(", ")} only.` : "Every Field Engineer of the circle – select an Area Manager to see only theirs."} Each FE gets only the GPs mapped to them.
+                {selectedAms.length ? `Field Engineers of ${selectedAms.join(", ")} (and of the GPs without an Area Manager).` : "Every Field Engineer of the circle – select an Area Manager to see only theirs."} Each FE gets only the
+                GPs mapped to them.
               </p>
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
                 <SearchableSelect
@@ -790,6 +985,9 @@ function FeSection({
                   <Plus /> Add
                 </Button>
               </div>
+              <button type="button" className="text-[0.75rem] font-medium text-primary hover:underline" onClick={() => setTyping(true)}>
+                Not in the list? Type the FE&apos;s name and e-mail
+              </button>
             </>
           )}
           {problem && <p className="text-xs text-critical-text">{problem}</p>}
@@ -799,8 +997,9 @@ function FeSection({
                 <li key={p.email} className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-2.5 pr-1 text-[0.78125rem]">
                   <span className="font-semibold">{p.name}</span>
                   <span className="text-muted-foreground">
-                    {p.email} · AM {p.am}
+                    {p.email} · {amText(p.am)}
                   </span>
+                  {p.typed && <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-primary">typed</span>}
                   <span className={cn("rounded px-1.5 py-0.5 text-[0.65625rem] font-semibold", p.account ? "bg-good-soft text-good-text" : "bg-warning-soft text-warning-text")}>
                     {p.account ? "Dashboard" : "E-mail only"}
                   </span>
@@ -820,8 +1019,29 @@ function FeSection({
 /** GPs one Area Manager's task ticket will get (same rows the backend attaches): every GP of the AM, or – without the
  * Area Manager (`feOnly`) – only the selected FEs' GPs. Shows the AM's and every mapped FE's weekly target, Ready (Ach
  * Date), AMC converted (AMC Date) and remaining, and the GP-wise rows behind them, to check before generating. */
-function AmPreview({ am, circle, week, fes = [], unmapped = 0, feOnly = false }: { am: string; circle: string; week: string; fes?: Picked[]; unmapped?: number; feOnly?: boolean }) {
-  const q = useApiQuery(`task-preview:${week}:${circle}:${am}`, () => ticketApi.getTaskPreview(am, week, circle));
+function AmPreview({
+  am,
+  title,
+  withNoAm = false,
+  circle,
+  week,
+  fes = [],
+  unmapped = 0,
+  feOnly = false,
+}: {
+  /** the GP group: an Area Manager of the matrix, or NO_AM (acting AM / FEs without an AM) */
+  am: string;
+  /** shown instead of `am` (the acting AM's name) */
+  title?: string;
+  withNoAm?: boolean;
+  circle: string;
+  week: string;
+  fes?: Picked[];
+  unmapped?: number;
+  feOnly?: boolean;
+}) {
+  const q = useApiQuery(`task-preview:${week}:${circle}:${am}:${withNoAm ? 1 : 0}`, () => ticketApi.getTaskPreview(am, week, circle, withNoAm));
+  const who = title ?? am;
   const [open, setOpen] = useState(false);
   const [only, setOnly] = useState<string>("all"); // GP rows of: all | an FE key | "none" (not mapped)
   const all = q.data?.rows ?? [];
@@ -835,13 +1055,13 @@ function AmPreview({ am, circle, week, fes = [], unmapped = 0, feOnly = false }:
     <div className="rounded-md border border-border">
       <div className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[0.78125rem]">
         <span>
-          <b>{feOnly ? `${fes.map((f) => `FE ${f.name}`).join(", ")} (${am})` : am}</b>{" "}
+          <b>{feOnly ? `${fes.map((f) => `FE ${f.name}`).join(", ")} (${am})` : who}</b>{" "}
           {q.error ? (
             <span className="text-critical-text">· {q.error.message}</span>
           ) : !q.data ? (
             <span className="text-muted-foreground">· loading GPs…</span>
           ) : rows.length === 0 ? (
-            <span className="text-critical-text">· no GP with a Planned Date in this week</span>
+            <span className="text-warning-text">· no target GP this week – the ticket is still created (0 GPs)</span>
           ) : (
             <span className="text-muted-foreground">
               · {rows.length} GPs in the ticket (this week&apos;s target)
@@ -868,7 +1088,7 @@ function AmPreview({ am, circle, week, fes = [], unmapped = 0, feOnly = false }:
               </tr>
             </thead>
             <tbody className="tabular">
-              {!feOnly && <FigureRow label={`AM ${s.am.name} – all GPs`} f={s.am} strong />}
+              {!feOnly && <FigureRow label={`${title ? who : `AM ${s.am.name}`} – all GPs`} f={s.am} strong />}
               {feLines.map((f) => (
                 <FigureRow
                   key={`${f.name}|${f.email ?? ""}`}
@@ -910,7 +1130,7 @@ function AmPreview({ am, circle, week, fes = [], unmapped = 0, feOnly = false }:
                 value={only}
                 onValueChange={(v) => v && setOnly(v)}
                 options={[
-                  { value: "all", label: feOnly ? "All selected FEs" : `All – AM ${am}` },
+                  { value: "all", label: feOnly ? "All selected FEs" : `All – ${title ? who : `AM ${am}`}` },
                   ...feLines.map((f) => ({ value: feKey({ name: f.name, mappedEmail: f.email }), label: `FE ${f.name}${f.email ? ` (${f.email})` : ""}` })),
                   ...(!feOnly && s?.unmapped ? [{ value: "none", label: "FE not mapped" }] : []),
                 ]}

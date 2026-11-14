@@ -74,12 +74,12 @@ const FILTERS = [
   { value: "rejected", label: "Rejected – Action Required" },
 ];
 
-const ACTIONS: Record<NdAction, { label: string; title: string; icon: typeof Send; kind: "forward" | "return" | "approve" | "reject" | "withdraw"; to?: "SME" | "COH" }> = {
+const ACTIONS: Record<NdAction, { label: string; title: string; icon: typeof Send; kind: "forward" | "return" | "approve" | "reject" | "withdraw"; to?: "SME" | "COH" | "MGG" }> = {
   AM_FORWARD: { label: "Forward → SME", title: "Forward the case to the SME", icon: Send, kind: "forward", to: "SME" },
   AM_RETURN: { label: "Return to FE", title: "Return the case to the FE for correction", icon: Undo2, kind: "return" },
   SME_RECOMMEND: { label: "Recommend → COH", title: "Recommend Non-Doable to the COH", icon: Send, kind: "forward", to: "COH" },
   SME_RETURN: { label: "Return to AM", title: "Return the case to the Area Manager", icon: Undo2, kind: "return" },
-  COH_FORWARD: { label: `Forward → ${MGG}`, title: `Forward the case to the ${MGG}`, icon: Send, kind: "forward" },
+  COH_FORWARD: { label: `Forward → ${MGG}`, title: `Forward the case to the ${MGG}`, icon: Send, kind: "forward", to: "MGG" },
   COH_RETURN: { label: "Return for correction", title: "Return the case for correction", icon: Undo2, kind: "return" },
   MGG_APPROVE: { label: "Approve Non-Doable", title: "Approve the GP as Non-Doable", icon: CheckCircle2, kind: "approve" },
   MGG_REJECT: { label: "Reject", title: "Reject the Non-Doable proposal", icon: XCircle, kind: "reject" },
@@ -600,7 +600,8 @@ function Tracker({ steps }: { steps: NdCaseDetail["tracker"] }) {
 
 type FormKind = "verify" | "justify" | "revisitCoordination" | "revisitVisit";
 
-function ActionPanel({ d, onChanged }: { d: NdCaseDetail; onChanged: (n: Notice) => void }) {
+/** The steps the signed-in user can take on a case now (`compact`: inline in the ticket page's Non-Doable strip). */
+export function ActionPanel({ d, onChanged, compact = false }: { d: NdCaseDetail; onChanged: (n: Notice) => void; compact?: boolean }) {
   const [form, setForm] = useState<FormKind | null>(null);
   const [action, setAction] = useState<NdAction | null>(null);
   const forms: [FormKind, string][] = (
@@ -624,11 +625,28 @@ function ActionPanel({ d, onChanged }: { d: NdCaseDetail; onChanged: (n: Notice)
             : c.pendingWith
               ? `Waiting for ${c.pendingWith}.`
               : null;
-    return why ? <p className="rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-[0.8125rem] text-muted-foreground">{why}</p> : null;
+    const picked = c.status === "PENDING_MGG" ? (d.mggPicked ?? []) : [];
+    return why ? (
+      <div className="space-y-1 rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-[0.8125rem] text-muted-foreground">
+        <p>{why}</p>
+        {picked.length > 0 && (
+          <p>
+            Forwarded to:{" "}
+            {picked.map((p, i) => (
+              <span key={p.email}>
+                {i > 0 && ", "}
+                <b className="font-semibold text-foreground">{p.name}</b> · {p.email}
+                {!p.account && <span className="ml-1 rounded bg-warning-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-warning-text">no dashboard account yet – the admin creates it so they can decide</span>}
+              </span>
+            ))}
+          </p>
+        )}
+      </div>
+    ) : null;
   }
   return (
-    <Card className="flex flex-wrap items-center gap-2 p-4">
-      <span className="mr-1 text-[0.8125rem] font-semibold text-subheading">Your action</span>
+    <Card className={cn("flex flex-wrap items-center gap-2", compact ? "border-0 bg-transparent p-0 shadow-none" : "p-4")}>
+      {!compact && <span className="mr-1 text-[0.8125rem] font-semibold text-subheading">Your action</span>}
       {forms.map(([k, label]) => (
         <Button key={k} size="sm" variant="primary" onClick={() => setForm(k)}>
           <FileText /> {label}
@@ -644,7 +662,7 @@ function ActionPanel({ d, onChanged }: { d: NdCaseDetail; onChanged: (n: Notice)
         );
       })}
       {c.status === "PENDING_COH" && d.mggMembers === 0 && d.can.actions.includes("COH_FORWARD") && (
-        <span className="text-[0.78125rem] text-warning-text">No {MGG} account is authorised yet – ask the admin.</span>
+        <span className="text-[0.78125rem] text-warning-text">No {MGG} account is authorised yet – type the MGG name and e-mail in Forward.</span>
       )}
       <Dialog open={form !== null} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent className="max-h-[88vh] overflow-y-auto">
@@ -965,6 +983,66 @@ function ActionForm({ d, action, onCancel, onDone }: { d: NdCaseDetail; action: 
         </Button>
       </div>
     </form>
+  );
+}
+
+/* ---------------------------------------------------------------- on the ticket page (User Tickets) */
+
+/** The Non-Doable cases of this ticket waiting for the signed-in user, with the same actions as the Non-Doable Cases
+ * page – e.g. the COH's Forward → Corporate Team – MGG / Return, the SME's Recommend → COH, the AM's Forward → SME. The
+ * backend decides who may act (only the cases handed to this user are listed); nothing shows when none waits. */
+export function TicketNdCases({ ticketId, onStep }: { ticketId: number; onStep?: () => void }) {
+  const [tick, setTick] = useState(0);
+  const [notice, setNotice] = useState<Notice>(null);
+  const q = useApiQuery(`nd-ticket:${ticketId}:${tick}`, () => ndApi.listCases({ ticket: ticketId, mine: true, size: 50 }));
+  const items = q.data?.items ?? [];
+  if (!items.length && !notice) return null;
+  const changed = (n: Notice) => {
+    setNotice(n);
+    setTick((x) => x + 1);
+    onStep?.(); // the ticket's GP rows show the case status too
+  };
+  return (
+    <div className="space-y-2 border-b border-border bg-muted/40 px-5 py-3 text-[0.78125rem]">
+      <p>
+        <span className="font-semibold text-subheading">Non-Doable cases waiting for you</span>{" "}
+        <span className="text-muted-foreground">
+          ({items.length}) – full verification, evidence and history in{" "}
+          <Link href={`/dashboard/tickets/non-doable?ticket=${ticketId}`} className="font-medium text-primary hover:underline">
+            Non-Doable Cases
+          </Link>
+        </span>
+      </p>
+      <NoticeBar notice={notice} onClose={() => setNotice(null)} />
+      {items.map((c) => (
+        <TicketNdRow key={c.id} c={c} tick={tick} onChanged={changed} />
+      ))}
+    </div>
+  );
+}
+
+function TicketNdRow({ c, tick, onChanged }: { c: NdCaseRow; tick: number; onChanged: (n: Notice) => void }) {
+  const q = useApiQuery(`nd-case:${c.id}:${tick}`, () => ndApi.getCase(c.id));
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2">
+      <Link href={`/dashboard/tickets/non-doable?case=${c.id}`} className="font-semibold text-primary hover:underline">
+        {c.ref}
+      </Link>
+      <span className="min-w-0 truncate">
+        GP {c.gpCode} – {c.gpName ?? "—"}
+        {c.fe && <span className="text-muted-foreground"> · FE {c.fe}</span>}
+      </span>
+      <NdStatusBadge status={c.status} label={c.statusLabel} />
+      <div className="ml-auto">
+        {q.error ? (
+          <span className="text-critical-text">{q.error.message}</span>
+        ) : q.data ? (
+          <ActionPanel d={q.data} onChanged={onChanged} compact />
+        ) : (
+          <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
+        )}
+      </div>
+    </div>
   );
 }
 

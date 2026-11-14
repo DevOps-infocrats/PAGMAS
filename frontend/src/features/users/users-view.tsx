@@ -1,7 +1,7 @@
 "use client";
 
-import { Loader2, Pencil, Plus, Upload, UserPlus, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Loader2, Pencil, Plus, Search, Upload, UserPlus, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { SearchableSelect, type SearchableOption } from "@/components/filters/searchable-select";
@@ -12,28 +12,45 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@
 import { Card, Input, Label } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useSession } from "@/hooks/use-session";
-import { IS_LIVE, adminApi, type AppUser, type ScopeLevel, type UserLocations } from "@/lib/api";
+import { IS_LIVE, adminApi, type AppUser, type UserGpOption, type UserLocations, type UserScopeLevel } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatDateTime } from "@/lib/utils/format";
 import { ImportUsersDialog } from "./import-users-dialog";
 
-const LEVELS: { value: ScopeLevel; label: string }[] = [
+/** Levels offered when adding an area (districts saved before stay valid and are shown, but not offered) */
+const LEVELS: { value: UserScopeLevel; label: string }[] = [
   { value: "circle", label: "Circle" },
-  { value: "district", label: "District" },
   { value: "block", label: "Block" },
+  { value: "gp", label: "GP" },
 ];
+const LEVEL_LABEL: Record<UserScopeLevel, string> = { circle: "Circle", district: "District", block: "Block", gp: "GP" };
+type Scope = { level: UserScopeLevel; id: string };
+type BlockOption = SearchableOption & { circleId: string };
+interface AreaOptions {
+  circles: SearchableOption[];
+  blocks: BlockOption[];
+  /** labels of every circle / district / block, for the chips */
+  labels: Record<string, string>;
+}
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-/** Options per level, labelled with their parents so same-named districts / blocks stay distinguishable. */
-function scopeOptions(loc: UserLocations | undefined): Record<ScopeLevel, SearchableOption[]> {
-  const out: Record<ScopeLevel, SearchableOption[]> = { circle: [], district: [], block: [] };
+/** Circle and block options (blocks know their circle, so the block list follows the chosen circles), labelled with
+ * their parents so same-named blocks stay distinguishable. GPs are searched on the server (thousands of them). */
+function scopeOptions(loc: UserLocations | undefined): AreaOptions {
+  const out: AreaOptions = { circles: [], blocks: [], labels: {} };
   for (const c of loc?.circles ?? []) {
-    out.circle.push({ value: c.id, label: c.name });
+    out.circles.push({ value: c.id, label: c.name });
+    out.labels[`circle:${c.id}`] = c.name;
     for (const d of c.districts) {
-      out.district.push({ value: d.id, label: `${d.name} (${c.name})` });
-      for (const b of d.blocks) out.block.push({ value: b.id, label: `${b.name} (${d.name}, ${c.name})` });
+      out.labels[`district:${d.id}`] = `${d.name} (${c.name})`;
+      for (const b of d.blocks) {
+        const label = `${b.name} (${d.name}, ${c.name})`;
+        out.blocks.push({ value: b.id, label, circleId: c.id });
+        out.labels[`block:${b.id}`] = label;
+      }
     }
   }
+  out.blocks.sort((a, b) => a.label.localeCompare(b.label));
   return out;
 }
 
@@ -73,7 +90,7 @@ function UsersContent() {
       <PageHeader
         breadcrumbs={[{ label: "Administration" }, { label: "User Management" }]}
         title="User Management"
-        description="Dashboard accounts, roles and the circles / districts / blocks each viewer may see – on the dashboard and in the AMC Conversion e-mails."
+        description="Dashboard accounts, roles and the circles / blocks / GPs each viewer may see – on the dashboard and in the AMC Conversion e-mails."
         actions={
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => setImporting(true)} disabled={!IS_LIVE}>
@@ -127,7 +144,7 @@ function UsersContent() {
                               title={s.valid ? undefined : "Not in the active data – ignored"}
                               className={cn("rounded px-1.5 py-0.5 text-xs", s.valid ? "bg-primary-soft text-primary" : "bg-warning-soft text-warning-text line-through")}
                             >
-                              {s.level[0].toUpperCase()}: {s.label ?? s.id}
+                              {LEVEL_LABEL[s.level] ?? s.level}: {s.label ?? s.id}
                             </span>
                           ))}
                         </div>
@@ -199,7 +216,7 @@ function UserDialog({
 }: {
   editing: NonNullable<Editing>;
   self: boolean;
-  options: Record<ScopeLevel, SearchableOption[]>;
+  options: AreaOptions;
   hasData: boolean;
   onDone: (msg: string) => void;
 }) {
@@ -208,18 +225,28 @@ function UserDialog({
   const [email, setEmail] = useState(user?.email ?? "");
   const [role, setRole] = useState<"admin" | "viewer">(user?.role ?? "viewer");
   const [password, setPassword] = useState("");
-  const [scopes, setScopes] = useState<{ level: ScopeLevel; id: string }[]>(user?.scopes.map((s) => ({ level: s.level, id: s.id })) ?? []);
-  const [level, setLevel] = useState<ScopeLevel>("circle");
+  const [scopes, setScopes] = useState<Scope[]>(user?.scopes.map((s) => ({ level: s.level, id: s.id })) ?? []);
+  const [level, setLevel] = useState<UserScopeLevel>("circle");
   const [pick, setPick] = useState<string | undefined>();
+  const [gpLabels, setGpLabels] = useState<Record<string, string>>({}); // GPs picked in this dialog
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const label = (l: ScopeLevel, id: string) => options[l].find((o) => o.value === id)?.label ?? user?.scopes.find((s) => s.level === l && s.id === id)?.label ?? id;
+  const label = (l: UserScopeLevel, id: string) =>
+    (l === "gp" ? gpLabels[id] : options.labels[`${l}:${id}`]) ?? user?.scopes.find((s) => s.level === l && s.id === id)?.label ?? id;
+  // the picker follows what is already chosen: blocks of the chosen circles; GPs of the chosen blocks, else circles
+  const chosenCircles = scopes.filter((s) => s.level === "circle").map((s) => s.id);
+  const chosenBlocks = scopes.filter((s) => s.level === "block").map((s) => s.id);
+  const blockOptions = chosenCircles.length ? options.blocks.filter((b) => chosenCircles.includes(b.circleId)) : options.blocks;
+  const pickOptions = level === "circle" ? options.circles : blockOptions;
   const emailOk = EMAIL_RE.test(email.trim());
   const valid = name.trim().length >= 2 && emailOk && (user ? true : password.length > 0);
 
+  const addScope = (s: Scope) => {
+    if (!scopes.some((x) => x.level === s.level && x.id === s.id)) setScopes([...scopes, s]);
+  };
   const add = () => {
-    if (pick && !scopes.some((s) => s.level === level && s.id === pick)) setScopes([...scopes, { level, id: pick }]);
+    if (pick) addScope({ level, id: pick });
     setPick(undefined);
   };
 
@@ -292,7 +319,7 @@ function UserDialog({
             <p className="text-sm text-warning-text">Upload the master data first – areas come from the active data.</p>
           ) : (
             <>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className={cn("flex flex-col gap-2 sm:flex-row", level === "gp" ? "sm:items-start" : "sm:items-end")}>
                 <div className="space-y-1 sm:w-32">
                   <span className="text-xs font-medium text-muted-foreground">Level</span>
                   <Select
@@ -300,22 +327,50 @@ function UserDialog({
                     className="w-full"
                     value={level}
                     onValueChange={(v) => {
-                      setLevel(v as ScopeLevel);
+                      setLevel(v as UserScopeLevel);
                       setPick(undefined);
                     }}
                     options={LEVELS}
                   />
                 </div>
-                <SearchableSelect className="flex-1" label={LEVELS.find((l) => l.value === level)!.label} value={pick} onChange={setPick} options={options[level]} placeholder="Search…" />
-                <Button type="button" variant="outline" onClick={add} disabled={!pick}>
-                  <Plus /> Add
-                </Button>
+                {level === "gp" ? (
+                  <GpPicker
+                    circles={chosenCircles}
+                    blocks={chosenBlocks}
+                    picked={new Set(scopes.filter((s) => s.level === "gp").map((s) => s.id))}
+                    onPick={(gp) => {
+                      setGpLabels((m) => ({ ...m, [gp.id]: gp.label }));
+                      addScope({ level: "gp", id: gp.id });
+                    }}
+                  />
+                ) : (
+                  <>
+                    <SearchableSelect className="flex-1" label={LEVEL_LABEL[level]} value={pick} onChange={setPick} options={pickOptions} placeholder="Search…" />
+                    <Button type="button" variant="outline" onClick={add} disabled={!pick}>
+                      <Plus /> Add
+                    </Button>
+                  </>
+                )}
               </div>
+              {level !== "circle" && (
+                <p className="text-[0.75rem] text-muted-foreground">
+                  {level === "block"
+                    ? chosenCircles.length
+                      ? `Blocks of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
+                      : "Every block – choose a circle first to see only its blocks."
+                    : chosenBlocks.length
+                      ? `GPs of the chosen block${chosenBlocks.length === 1 ? "" : "s"} only.`
+                      : chosenCircles.length
+                        ? `GPs of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
+                        : "Every GP – choose a circle or block first to narrow the list."}{" "}
+                  A block or GP inside a chosen circle limits the access to it.
+                </p>
+              )}
               {scopes.length ? (
                 <ul className="flex flex-wrap gap-1.5">
                   {scopes.map((s) => (
                     <li key={`${s.level}:${s.id}`} className="inline-flex items-center gap-1 rounded bg-primary-soft py-0.5 pl-2 pr-1 text-xs text-primary">
-                      {LEVELS.find((l) => l.value === s.level)!.label}: {label(s.level, s.id)}
+                      {LEVEL_LABEL[s.level] ?? s.level}: {label(s.level, s.id)}
                       <button type="button" className="rounded p-0.5 hover:bg-primary/15" aria-label="Remove area" onClick={() => setScopes(scopes.filter((x) => x !== s))}>
                         <X className="size-3" />
                       </button>
@@ -363,6 +418,62 @@ function Field({
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
       <Input id={id} type={type} value={value} onChange={(e) => onChange(e.target.value)} autoComplete={autoComplete} maxLength={128} disabled={disabled} aria-invalid={invalid || undefined} />
+    </div>
+  );
+}
+
+/** GP area picker: GPs are searched on the server (thousands of them) – those of the chosen blocks, else of the chosen
+ * circles, else all – by GP name or code; a click adds the GP. */
+function GpPicker({ circles, blocks, picked, onPick }: { circles: string[]; blocks: string[]; picked: Set<string>; onPick: (gp: UserGpOption) => void }) {
+  const [text, setText] = useState("");
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setQ(text.trim()), 250);
+    return () => clearTimeout(t);
+  }, [text]);
+  const scope = blocks.length ? `b:${blocks.join(",")}` : `c:${circles.join(",")}`;
+  const res = useApiQuery(`user-gps:${scope}:${q}`, () => adminApi.searchUserGps({ circles, blocks, q, limit: 50 }));
+  const items = res.data?.items ?? [];
+  return (
+    <div className="min-w-0 flex-1 space-y-1">
+      <span className="text-xs font-medium text-muted-foreground">GP</span>
+      <span className="relative block">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-subtle-foreground" aria-hidden />
+        <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Search GP name or code…" maxLength={80} className="pl-8" aria-label="Search GP" />
+      </span>
+      <div className="max-h-44 overflow-auto rounded-md border border-border">
+        {res.error ? (
+          <p className="px-2.5 py-2 text-xs text-critical-text">{res.error.message}</p>
+        ) : !res.data ? (
+          <p className="px-2.5 py-2 text-xs text-muted-foreground">Loading GPs…</p>
+        ) : items.length === 0 ? (
+          <p className="px-2.5 py-2 text-xs text-muted-foreground">No GP found.</p>
+        ) : (
+          <ul>
+            {items.map((gp) => {
+              const added = picked.has(gp.id);
+              return (
+                <li key={gp.id}>
+                  <button
+                    type="button"
+                    disabled={added}
+                    onClick={() => onPick(gp)}
+                    className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                  >
+                    <span className="truncate">{gp.label}</span>
+                    {added ? <span className="shrink-0 text-[0.6875rem] font-semibold text-primary">added</span> : <Plus className="size-3.5 shrink-0 text-primary" aria-hidden />}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+      {res.data && res.data.total > items.length && (
+        <p className="text-[0.6875rem] text-muted-foreground">
+          Showing {items.length} of {res.data.total.toLocaleString("en-IN")} GPs – type a name or code to narrow.
+        </p>
+      )}
     </div>
   );
 }

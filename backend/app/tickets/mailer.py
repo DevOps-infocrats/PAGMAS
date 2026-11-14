@@ -324,6 +324,74 @@ def review_mail(recipient_ids: list[int], gp_ids: list[int], action: str, by: st
             session.__exit__(None, None, None)
     return {"sent": sent, "failed": failed}
 
+def review_notice_mail(
+    ticket_id: int, gp_ids: list[int], action: str, by: str, remark: str | None, on, to: list[tuple[str, str]], session_factory=SessionLocal,
+) -> int:
+    """The Area Manager returned GPs to the FE (AM_RETURN → the GPs' Field Engineer) or the COH recorded the letter
+    submission / AMC conversion (COH_LETTER / COH_AMC → the Area Manager): one e-mail per address (e-mail, name) with
+    the step, GP count, reason / remark and date. Runs after the save (background task); a mail problem only gets
+    logged (the dashboard notification is already saved). Returns the e-mails sent."""
+    from ..mail import layout as L
+    from ..mail import smtp
+    from . import review, task as tasks
+    from .service import now
+
+    if not to:
+        return 0
+    with session_factory() as db:
+        t = db.get(Ticket, ticket_id)
+        if t is None or t.deleted_at is not None:
+            return 0
+        task = db.get(TicketTask, t.id)
+        gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id, TicketTaskGp.id.in_(gp_ids)).order_by(TicketTaskGp.sort))) if gp_ids else []
+        n = len(gps)
+        gp_word = f"{n} GP{'s' if n != 1 else ''}"
+        step = review.STEPS[action].label
+        if action == "AM_RETURN":
+            revisit = bool(gps) and all(g.gp_category == "C" for g in gps)
+            title = "GPs sent back to recheck" if revisit else "GPs returned for correction"
+            intro = f"Area Manager {by} {'sent back' if revisit else 'returned'} {gp_word} of ticket {t.code} ({t.subject}) to you" + (" to recheck with the FRT team (Revisit Required)." if revisit else " for correction.")
+            badge, tone = "Action Required", "warning"
+            todo = L.Action(
+                "Correct / recheck the returned GPs and submit them again in the daily progress (status, remarks and proof).",
+                who="Field Engineer", stage=review.REVIEW_LABEL["RETURNED"],
+                steps=["Sign in with the button below and open the ticket in Ticket Management → User Tickets.", "Filter the review stage 'Returned to FE' to see the returned GPs and the reason."],
+            )
+            said = ("Reason from the Area Manager", remark) if remark else None
+        else:
+            amc = action == "COH_AMC"
+            title = "AMC conversion recorded" if amc else "Letter submission recorded"
+            intro = f"COH {by} recorded the {'AMC conversion' if amc else 'letter submission'} of {gp_word} of ticket {t.code} ({t.subject})" + (f" on {on:%d %b %Y}." if on else ".")
+            badge, tone = "For Information", "good"
+            todo = None
+            said = None
+        summary = [("Ticket", f"{t.code} – {t.subject}"), ("Circle", t.circle or "—")] + ([("Area Manager", task.am_name), ("Week", f"Week {task.week_code[2:]}")] if task else [])
+        summary += [("Step", step), ("Done by", by), ("GPs", str(n))] + ([("Date", f"{on:%d %b %Y}")] if on else [])
+        if action != "AM_RETURN":
+            done = sum(1 for g in gps if tasks.cumulative(g) >= 1)
+            summary.append(("Achieved (these GPs)", f"{done} of {n}"))
+
+        def email_for(name: str) -> L.Email:
+            return L.Email(
+                title=title, badge=badge, badge_tone=tone, greeting=name, intro=[intro], reference=t.code, date=f"{now():%d %b %Y}", kpis=[L.Kpi("GPs", f"{n}", "info")],
+                summary=summary, highlight=said, sections=[_see_gps()], action=todo, notes=[f"Open ticket {t.code} in Ticket Management after signing in."],
+            )
+
+        subject = f"[{t.code}] {title}: {gp_word}"[:250]
+        sent = 0
+        try:
+            with smtp.SmtpSession() as session:
+                for addr, name in to:
+                    try:
+                        session.send(L.message(addr, subject, email_for(name)))
+                        sent += 1
+                    except smtp.MailError as exc:
+                        log.warning("Review e-mail (%s) not sent: %s", action, exc)
+        except smtp.MailError as exc:
+            log.warning("Review e-mails (%s) not sent: %s", action, exc)
+        return sent
+
+
 def nd_mail(case_id: int, event_id: int, to: list[tuple[str, str]], recipient_ids: list[int] | None = None, session_factory=SessionLocal) -> int:
     """A step of a Non-Doable case (app.tickets.nondoable): one e-mail per address (e-mail, name) of the people
     concerned – the case, GP, new status, who did what, the remarks / reason and the link to the case. Runs after the

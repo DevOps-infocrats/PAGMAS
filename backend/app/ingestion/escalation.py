@@ -3,7 +3,11 @@
 The file is separate from the master data workbook and can be uploaded on its own or together with it (several files
 in one go). `detect_kind` looks at the content, not the file name:
   * a workbook with the GP sheet ("GP Wise Data") is master data;
-  * otherwise a sheet whose header row has GP Code + FRT Code + FE Name is an Escalation Matrix.
+  * otherwise a sheet whose header row has Circle + GP Code + FE Name is an Escalation Matrix.
+
+Its REQUIRED columns (column_map.ESCALATION_REQUIRED, list + reasons + template in template.py) must all be present –
+the preview / upload check (template.validate_escalation) names a missing one; parse_escalation refuses such a file too
+(a re-process of an old file). Every other known column is optional: read when present, left empty when absent.
 
 Each import is kept as its own version (escalation_imports); the newest successful one is active.
 """
@@ -25,8 +29,8 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import SessionLocal, is_postgres
 from ..models import Dataset, EscalationContact, EscalationImport, Gp
-from .column_map import ESCALATION_REQUIRED, load_column_map, locate, resolve_sheet
-from .workbook import WorkbookError, clean_code, code_key, norm, open_workbook, read_sheet
+from .column_map import ESCALATION_HEADER_ANCHORS, ESCALATION_REQUIRED, find_header_row, load_column_map, locate, resolve_sheet
+from .workbook import WorkbookError, clean_code, code_key, open_workbook, read_sheet
 
 log = logging.getLogger(__name__)
 KEEP_IMPORTS = 3
@@ -52,7 +56,7 @@ class ParsedEscalation:
     rows_total: int = 0
     rows_rejected: int = 0
     rejected: list[str] = field(default_factory=list)  # "row 12: no GP code"
-    missing: list[str] = field(default_factory=list)  # optional fields whose column was not found
+    missing: list[str] = field(default_factory=list)  # optional fields whose column was not found (left empty)
     # every finding with its Excel row: {"row", "severity" critical|warning|info, "code", "column", "gpCode", "message"}
     issues: list[dict[str, Any]] = field(default_factory=list)
 
@@ -63,17 +67,16 @@ class ParsedEscalation:
             more = f"; … {len(self.rejected) - limit} more" if len(self.rejected) > limit else ""
             parts.append(f"{len(self.rejected)} row(s) of '{self.sheet}' rejected: " + "; ".join(self.rejected[:limit]) + more)
         if self.missing:
-            parts.append(f"Columns not found (left empty – add the file's header to escalationColumns in data/column_map.json): {', '.join(self.missing)}")
+            from .template import esc_label
+
+            names = ", ".join(esc_label(k) for k in self.missing)
+            parts.append(f"Optional columns not in the file (left empty): {names}")
         return ". ".join(parts) or None
 
 
 def _header_row(grid: list[list[Any]], names: dict[str, tuple[str, ...]] | None = None) -> int | None:
-    names = names or _names()
-    for i, row in enumerate(grid[:15]):
-        cells = {norm(c) for c in row}
-        if all(cells & set(names[k]) for k in REQUIRED):
-            return i
-    return None
+    """First of the first 15 rows with Circle + GP Code + FE Name (any accepted name; case / spaces / punctuation ignored)."""
+    return find_header_row(grid, names or _names(), ESCALATION_HEADER_ANCHORS)
 
 
 def detect_kind(path: Path) -> Literal["master", "escalation"] | None:
@@ -135,13 +138,15 @@ def parse_escalation(path: Path) -> ParsedEscalation:
         if hdr is not None:
             break
     else:
-        raise WorkbookError("No sheet with the Escalation Matrix columns (GP Code, FRT Code, FE Name …) was found")
+        raise WorkbookError("No sheet with the Escalation Matrix header row was found (Circle, GP Code and FE Name in one of the first 15 rows)")
     cols: dict[str, int | None] = {k: None for k in names}
     cols.update(locate(grid[hdr], names).columns)
+    if lost := [k for k in REQUIRED if cols[k] is None]:  # the preview names these first; this guards every other path
+        from .template import esc_label
+
+        raise WorkbookError(f"'{name}': missing required column(s): {', '.join(esc_label(k) for k in lost)}")
     out = ParsedEscalation(sheet=name)
-    missing = [k for k in (*PHONE_FIELDS, "ba", *EMAIL_FIELDS) if cols[k] is None]
-    if missing:
-        out.missing = missing
+    out.missing = [k for k in names if cols[k] is None and k not in REQUIRED]
     seen: dict[str, int] = {}  # code key -> Excel row
     for i, row in enumerate(grid[hdr + 1 :], start=hdr + 2):
         if all(_text(v) is None for v in row[:12]):

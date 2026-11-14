@@ -104,10 +104,11 @@ Browser ──HTTPS──► nginx (443, TLS, real client IP) ──► Next.js 
 1. `backend/.env`: `APP_ENV=production`, `DATABASE_URL=postgresql+psycopg://…`, `CORS_ORIGINS=["https://<your-domain>"]`,
    `TRUSTED_HOSTS=["<your-domain>"]`, `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` (`python scripts/hash_password.py`).
    The API refuses to start in production when one of these is unsafe (localhost-only origins, plain password …).
-2. Start `backend/start-production.sh`, then `cd frontend && npm ci && npm run build && npm start`, with
+2. Back up the database, then `cd backend && .venv/bin/alembic upgrade head` (schema migrations – see backend/README.md).
+3. Start `backend/start-production.sh`, then `cd frontend && npm ci && npm run build && npm start`, with
    `deploy/nginx.conf` in front (replace `analytics.example.com` and the certificate paths).
-3. Run the API with **one worker** (the import lock, rate limits and the data snapshot live in the process).
-4. Probes: `GET /api/health` (process up) and `GET /api/ready` (database reachable) – 503 when not ready.
+4. Run the API with **one worker** (the import lock, rate limits and the data snapshot live in the process).
+5. Probes: `GET /api/health` (process up) and `GET /api/ready` (database reachable) – 503 when not ready.
 
 ## Disk usage – why the folder is ~2 GB
 

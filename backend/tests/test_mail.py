@@ -357,11 +357,14 @@ def test_same_address_in_two_roles_gets_one_merged_email(imported, matrix):
 
 
 def test_user_areas_union_and_never_widened(imported, matrix):
+    """Areas add up; a block chosen INSIDE a chosen district narrows that district to the block (analytics.store.area_mask)."""
     g = imported.gps
     district = g.loc[g["circle_id"] == M.c1, "district_id"].iloc[0]
     assert user_gps(imported, "admin", [])[0].equals(g.index)
     gps, _ = user_gps(imported, "viewer", [Assignment("district", district), Assignment("block", M.block_a)])
-    assert set(gps) == set(g.index[(g["district_id"] == district) | (g["block_id"] == M.block_a)])
+    inside = bool((g.loc[g["block_id"] == M.block_a, "district_id"] == district).any())
+    expected = (g["block_id"] == M.block_a) if inside else (g["district_id"] == district) | (g["block_id"] == M.block_a)
+    assert set(gps) == set(g.index[expected])
     assert user_gps(imported, "viewer", [])[0].empty
     assert user_gps(imported, "viewer", [Assignment("circle", "atlantis")])[0].empty
     assert user_gps(imported, "auditor", [Assignment("circle", M.c1)])[0].empty

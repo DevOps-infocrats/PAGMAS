@@ -54,14 +54,14 @@ class Section:
 SECTIONS: dict[str, Section] = {
     "gp": Section("gp", "gpColumns", "gp", "gp", "GP Wise Data", cm.GP_COLUMNS, cm.GP_REQUIRED, cm.GP_HEADER_ANCHORS),
     "masterBlock": Section("masterBlock", "masterBlockColumns", "master_block", "masterBlock", "Master Block", cm.MASTER_BLOCK_COLUMNS, cm.MASTER_BLOCK_REQUIRED, cm.MASTER_BLOCK_HEADER_ANCHORS),
-    "escalation": Section("escalation", "escalationColumns", "escalation", None, "Escalation Matrix", cm.ESCALATION_COLUMNS, cm.ESCALATION_REQUIRED, cm.ESCALATION_REQUIRED),
+    "escalation": Section("escalation", "escalationColumns", "escalation", None, "Escalation Matrix", cm.ESCALATION_COLUMNS, cm.ESCALATION_REQUIRED, cm.ESCALATION_HEADER_ANCHORS),
 }
 SHEET_LABELS = {"gp": "GP Wise Data (required)", "masterBlock": "Master Block (optional)", "om": "O&M (optional)"}
 
 DATE_FIELDS = {"hoto_date", "amc_date", "lms_amc_date", "letter_date", "planned_date", "ach_date", "plan_letter_date"}
 NUMBER_FIELDS = {"bbnl_km", "bsnl_km", "total_rkm", "total_gp_count", "existing_gps", "new_gps"}
 PHONE_FIELDS = {"splicer_phone", "fe_phone", "am_phone", "shq_phone", "coh_phone", "cbh_phone"}
-EMAIL_FIELDS = {"am_email", "shq_email", "coh_email", "cbh_email"}
+EMAIL_FIELDS = {"fe_email", "am_email", "shq_email", "coh_email", "cbh_email"}
 
 
 class MapperError(ValueError):

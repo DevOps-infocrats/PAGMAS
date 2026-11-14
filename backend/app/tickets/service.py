@@ -242,8 +242,27 @@ def list_tickets(
     items = []
     for t in rows:
         k = tasks.get(t.id)
-        items.append(summary_json(t) | {"areaManager": k.am_name if k else None, "week": k.week_code if k else None, "recipientCount": int(counts.get(t.id, 0))})
+        items.append(summary_json(t) | {
+            "areaManager": k.am_name if k else None, "week": k.week_code if k else None, "recipientCount": int(counts.get(t.id, 0)),
+            "weekStart": k.week_start.isoformat() if k else None, "weekEnd": k.week_end.isoformat() if k else None,
+        })
     return {"items": items, "total": total, "page": page, "pageSize": page_size}
+
+
+def my_weeks(db: Session, user_id: int) -> dict[str, Any]:
+    """The weeks of the GP-wise task tickets of a user (newest first) with how many tickets each has and how many are
+    still open – the week filter of User Tickets (AM / FE / SME / COH / CBH)."""
+    rows = db.execute(
+        select(TicketTask.week_code, TicketTask.week_start, TicketTask.week_end, Ticket.status)
+        .join(Ticket, Ticket.id == TicketTask.ticket_id)
+        .where(live(), _mine(user_id))
+    ).all()
+    weeks: dict[str, dict[str, Any]] = {}
+    for code, start, end, st in rows:
+        w = weeks.setdefault(code, {"id": code, "start": start.isoformat(), "end": end.isoformat(), "total": 0, "open": 0})
+        w["total"] += 1
+        w["open"] += st != "CLOSED"
+    return {"weeks": sorted(weeks.values(), key=lambda w: w["start"], reverse=True)}
 
 
 def filter_options(db: Session) -> dict[str, Any]:
@@ -363,6 +382,7 @@ def recipient_json(r: TicketRecipient, admin: bool) -> dict[str, Any]:
         "emailError": r.email_error if admin else None,
         "emailedAt": iso(r.emailed_at),
         "areaManager": r.am_name,
+        "typed": bool(r.typed),  # typed by the admin at Generate Ticket (not from the Escalation Matrix)
     }
 
 
@@ -430,6 +450,7 @@ def create(db: Session, admin: CurrentUser, assignee_id: int, subject: str, desc
         except tasks.TaskError as exc:
             db.rollback()
             raise TicketError(exc.status, exc.message) from None
+        t.subject = tasks.task_subject(made)  # the AM and week of this ticket's own task
         n = db.scalar(select(func.count()).where(TicketTaskGp.ticket_id == t.id)) or 0
         _event(db, t, admin, "TASK", None, None, f"GP-wise task: {made.am_name} · Week {made.week_code[2:]} · {n} GPs · assignment workbook attached")
     _event(db, t, admin, "CREATED", None, "OPEN", f"Assigned to {u.name} · priority {PRIORITY_LABEL[priority]}")
@@ -444,8 +465,10 @@ class Rcpt:
     name: str
     email: str
     user: User | None
-    am: str | None = None  # FE: the parent Area Manager in the Escalation Matrix
+    am: str | None = None  # FE: the parent Area Manager in the Escalation Matrix (task.NO_AM = GPs without an AM)
     fe_mail: str | None = None  # FE: the matrix FE e-mail of their GPs (None = rows without one)
+    typed: bool = False  # name / e-mail typed by the admin (nobody, or not this person, in the matrix)
+    with_no_am: bool = False  # AM of the matrix who also takes the circle's GPs without an Area Manager
 
     def scope(self):
         from .task import FeScope
@@ -456,9 +479,11 @@ class Rcpt:
 ROLE_ORDER = ("USER", "OTHER", "AM", "FE", "SME", "COH", "CBH")  # who is shown as the assigned user of a normal ticket
 
 
-def resolve_recipients(db: Session, admin: CurrentUser, store: Any, circle: str, items: list[dict[str, str]], assignee_id: int | None, week: str) -> list[Rcpt]:
+def resolve_recipients(db: Session, admin: CurrentUser, store: Any, circle: str, items: list[dict[str, Any]], assignee_id: int | None, week: str, task: bool = False) -> list[Rcpt]:
     """Check what the admin selected: names come from the circle's database records, e-mails are valid, nobody twice.
-    The dashboard account of a recipient is the active user with that e-mail (the creating admin never counts)."""
+    The dashboard account of a recipient is the active user with that e-mail (the creating admin never counts).
+    typed = a person the admin typed for a role (any name): an SME / COH / CBH works in that role; an Area Manager on a
+    GP-wise task is the ACTING Area Manager of the circle's GPs without an AM; an FE gets the task GPs without an FE."""
     from ..mail.smtp import valid_address
     from . import directory
 
@@ -469,11 +494,26 @@ def resolve_recipients(db: Session, admin: CurrentUser, store: Any, circle: str,
     users = {u.email.lower(): u for u in active_users(db)}
     out: list[Rcpt] = []
     seen: dict[str, str] = {}
+    no_am_gps: int | None = None
     for it in items:
         role, name = it["role"], " ".join(str(it["name"]).split())
         label = directory.ROLE_LABEL[role]
         am = fe_mail = None
-        if role == "FE":
+        typed = bool(it.get("typed")) and role != "OTHER"
+        with_no_am = bool(it.get("withNoAm")) and role == "AM" and task and not typed
+        if (typed and role == "AM" and task) or with_no_am:
+            if no_am_gps is None:
+                no_am_gps = tasks.circle_counts(store, tasks.NO_AM, circle, week)["gps"]
+            if not no_am_gps:
+                raise TicketError(422, f"Every GP of {circle} has an Area Manager in the Escalation Matrix – select the Area Manager from the list (another e-mail: 'Other – type an e-mail')")
+        if typed:
+            if not name or name.lower() == tasks.NO_AM.lower():
+                raise TicketError(422, f"Type the {label}'s name")
+            if role == "AM" and name in known["AM"]:
+                raise TicketError(422, f"{name} is an Area Manager of {circle} in the database – select them from the list")
+            if role == "FE":
+                am = " ".join(str(it.get("am") or "").split()) or None  # the Area Manager of the ticket the FE works on
+        elif role == "FE":
             # an FE = one Escalation Matrix mapping (Area Manager, FE name, FE e-mail of the GP rows) of this circle
             if slots is None:
                 slots = tasks.fe_slots(store, circle, week)[0]
@@ -490,11 +530,13 @@ def resolve_recipients(db: Session, admin: CurrentUser, store: Any, circle: str,
         addr = valid_address(it.get("email"))
         if addr is None:
             raise TicketError(422, f"{label} {name}: '{it.get('email') or ''}' is not a valid e-mail address")
+        if typed and role == "FE":
+            fe_mail = addr  # the typed FE's GPs are written with this e-mail at creation
         if addr in seen:
             raise TicketError(422, f"{addr} is selected twice ({seen[addr]} and {label} {name})")
         seen[addr] = f"{label} {name}"
         u = users.get(addr)
-        out.append(Rcpt(role, name, addr, u if u is not None and u.id != admin.id else None, am, fe_mail))
+        out.append(Rcpt(role, name, addr, u if u is not None and u.id != admin.id else None, am, fe_mail, typed, with_no_am))
     if assignee_id is not None:
         u = db.get(User, assignee_id)
         if u is None or not u.is_active:
@@ -532,7 +574,7 @@ def generate(
     chosen = next((c["name"] for c in directory.circles(store) if c["name"].lower() == " ".join(circle.split()).lower()), None)
     if chosen is None:
         raise TicketError(422, "Select a Circle / State of the database")
-    recs = resolve_recipients(db, admin, store, chosen, items, assignee_id, week)
+    recs = resolve_recipients(db, admin, store, chosen, items, assignee_id, week, task)
     if not recs:
         raise TicketError(422, "Select at least one recipient (CBH, SME, Area Manager, Field Engineer or a dashboard user)")
     # (lead, recipients of the ticket, FEs whose GPs make the task when the Area Manager is not on it)
@@ -543,13 +585,30 @@ def generate(
         if not ams and not fes:
             raise TicketError(422, "GP-wise Task Assignment needs at least one Area Manager or Field Engineer")
         others = [r for r in recs if r.role not in ("AM", "FE")]
+        # the circle's GPs without an Area Manager go to at most ONE Area Manager: the acting AM typed by the admin, or
+        # an AM of the matrix ticked "also take them" – never split, never twice
+        owners = [a for a in ams if a.typed or a.with_no_am]
+        if len(owners) > 1:
+            raise TicketError(422, f"Only one Area Manager can take the GPs without an Area Manager of {chosen} – {', '.join(a.name for a in owners)}")
+        owner = owners[0].name if owners else None
+        am_names = {a.name for a in ams}
+
+        def home(f: Rcpt) -> str | None:
+            """The Area Manager whose ticket the FE is on (FEs without an AM: that of the AM who takes them)."""
+            return owner if f.am == tasks.NO_AM and owner and not f.typed else f.am
+
+        for f in fes:
+            if f.typed and f.am not in am_names:
+                raise TicketError(422, f"Field Engineer {f.name} (typed) works on an Area Manager's ticket – add the Area Manager and choose them for this FE")
         placed: set[str] = set()
         for am in ams:
-            mine = [f for f in fes if f.am == am.name and am.name not in placed]
+            mine = [f for f in fes if home(f) == am.name and am.name not in placed]
+            if sum(1 for f in mine if f.typed) > 1:
+                raise TicketError(422, f"One typed Field Engineer per Area Manager ({am.name}) – they get the GPs without an FE in the matrix")
             placed.add(am.name)
             groups.append((am, [am, *mine, *others], None))
-        for name in dict.fromkeys(f.am for f in fes if f.am not in placed):
-            mine = [f for f in fes if f.am == name]
+        for name in dict.fromkeys(home(f) for f in fes if home(f) not in placed):
+            mine = [f for f in fes if home(f) == name]
             groups.append((mine[0], [*mine, *others], mine))
     else:
         primary = next((r for role in ROLE_ORDER for r in recs if r.role == role and r.user), None) or recs[0]
@@ -587,25 +646,33 @@ def generate(
                     TicketRecipient(
                         ticket_id=t.id, role=r.role, name=r.name, email=r.email, user_id=r.user.id if r.user else None, can_work=bool(r.user) and work,
                         attach_workbook=task and (r.role == "FE" or (r is lead and r.role == "AM")), email_status="PENDING" if send_email else "NONE",
-                        emailed_at=now() if send_email else None, am_name=r.am, fe_mail=r.fe_mail,
+                        emailed_at=now() if send_email else None, am_name=r.am, fe_mail=r.fe_mail, typed=r.typed,
                     )
                 )
             if task:
                 am_name = lead.name if lead.role == "AM" else lead.am
+                typed_fe = next((r.scope() for r in group if r.role == "FE" and r.typed), None)
                 try:
-                    made_task = tasks.attach(db, store, t, am_name, week, chosen, lead.email if lead.role == "AM" else None, [f.scope() for f in only] if only else None)
+                    if lead.role == "AM":
+                        made_task = tasks.attach(
+                            db, store, t, tasks.NO_AM if lead.typed else lead.name, week, chosen, lead.email, None,
+                            with_no_am=lead.with_no_am, acting=lead.name if lead.typed else None, typed_fe=typed_fe,
+                        )
+                    else:  # Field Engineers without their Area Manager on the ticket: only their GPs
+                        made_task = tasks.attach(db, store, t, am_name, week, chosen, None, [f.scope() for f in only] if only else None)
                 except tasks.TaskError as exc:
                     raise TicketError(exc.status, exc.message) from None
+                # every ticket of the batch names its own AM / FEs and week (never the subject typed for the first AM)
+                t.subject = tasks.task_subject(made_task, [f.name for f in only] if only else None)
                 rows = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id)))
                 fe_parts = []
                 for f in (r for r in group if r.role == "FE"):
-                    k = sum(1 for g in rows if f.scope().owns(g))
-                    if k == 0:
-                        raise TicketError(422, f"Field Engineer {f.name} ({am_name}) has no GP in {chosen} with a Planned Date in Week {made_task.week_code[2:]} – remove this FE")
+                    k = sum(1 for g in rows if f.scope().owns(g))  # 0 = no target this week: the FE still gets the ticket
                     fe_parts.append(f"FE {f.name} {k}")
                 fe_note = f" · {', '.join(fe_parts)} GPs" if fe_parts else ""
-                _event(db, t, admin, "TASK", None, None, f"GP-wise task: {made_task.am_name} · {chosen} · Week {made_task.week_code[2:]} · {len(rows)} GPs{fe_note} · assignment workbook attached")
-            who = ", ".join(f"{directory.ROLE_LABEL[r.role]} {r.name}" for r in group)
+                src = {"NO_AM": f" (acting Area Manager for the GPs of {chosen} without an Area Manager)", "AM+NO_AM": f" (with the GPs of {chosen} without an Area Manager)"}.get(made_task.gp_source or "", "")
+                _event(db, t, admin, "TASK", None, None, f"GP-wise task: {made_task.am_name}{src} · {chosen} · Week {made_task.week_code[2:]} · {len(rows)} GPs{fe_note} · assignment workbook attached")
+            who = ", ".join(f"{directory.ROLE_LABEL[r.role]} {r.name}" + (" (typed by admin)" if r.typed else "") for r in group)
             _event(db, t, admin, "CREATED", None, "OPEN", f"{chosen} · sent to {who} · priority {PRIORITY_LABEL[priority]} · e-mail {'on' if send_email else 'off'}")
             for r in group:
                 if r.user is None:

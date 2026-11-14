@@ -113,7 +113,14 @@ ESCALATION_COLUMNS: dict[str, tuple[str, ...]] = {
     "cbh_phone": ("CBH Number", "CBH Contact No", "CBH No.", "CBH No"),
     "cbh_email": ("CBH Email ID", "CBH Email"),
 }
-ESCALATION_REQUIRED: tuple[str, ...] = ("circle", "gp_code", "frt_code", "fe_name")
+# Columns an Escalation Matrix must have – a missing one rejects the file and the message names it (values may still be
+# blank in single rows: a vacant post is a warning, never a rejection). The tickets (AM / FE / SME / COH recipients,
+# the FE's own GPs), the AM-wise targets and the e-mails are built from them. The column list with the reason per
+# column and the template are in template.py (ESC_REQUIRED / ESC_OPTIONAL) – a test keeps both in step.
+ESCALATION_REQUIRED: tuple[str, ...] = ("circle", "gp_code", "fe_name", "fe_email", "am_name", "am_email", "shq_name", "shq_email", "coh_name", "coh_email")
+# A header row with these three is an Escalation Matrix – recognised even when another required column is missing, so
+# the upload names the missing column instead of "file not recognised".
+ESCALATION_HEADER_ANCHORS: tuple[str, ...] = ("circle", "gp_code", "fe_name")
 
 
 # ---------------------------------------------------------------- the file

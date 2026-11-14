@@ -59,7 +59,7 @@ def escalation_xlsx() -> bytes:
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     ws = wb.add_worksheet("All")
-    for c, h in enumerate(["Circle", "GP Code", "FRT Code", "FE Name", "AM Name", "FE Email ID"]):
+    for c, h in enumerate(["Circle", "GP Code", "FRT Code", "FE Name", "AM Name", "FE Email ID", "AM Email ID", "SME Name", "SME Email ID", "COH", "COH Email ID"]):
         ws.write(0, c, h)
     for c, v in enumerate(["HARYANA", "910001", "F-1", "Fe A", "", "not-an-email"]):
         ws.write(1, c, v)

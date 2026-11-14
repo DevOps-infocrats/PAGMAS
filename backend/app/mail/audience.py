@@ -42,7 +42,7 @@ MATRIX_ROLES: dict[str, tuple[str, str, str]] = {  # audience -> (name column, e
 AUDIENCES = (*MATRIX_ROLES, "users")
 AUDIENCE_LABELS = {**{k: v[2] for k, v in MATRIX_ROLES.items()}, "users": "Dashboard user", "extra": "Extra recipient"}
 ROLE_ORDER = (*AUDIENCES, "extra")  # order of recipients in the preview / run (extra recipients last)
-LEVELS = ("circle", "district", "block")
+LEVELS = ("circle", "district", "block", "gp")  # district: older assignments only (User Management offers circle / block / GP)
 
 
 # ---------------------------------------------------------------- helpers
@@ -187,14 +187,19 @@ class Assignment:
 
 
 def locations(store: Store) -> dict[str, dict[str, str]]:
-    """level -> {id: label} for every circle, district and block of the active data."""
+    """level -> {id: label} for every circle, district, block and GP of the active data."""
     g = store.gps
     circles = {cid: str(name).title() for cid, name in g.groupby("circle_id")["circle"].first().items()}
     d = g.groupby("district_id")[["circle", "district"]].first()
     districts = {did: f"{str(r.district).title()} ({str(r.circle).title()})" for did, r in d.iterrows()}
     b = g.groupby("block_id")[["circle", "block_name", "block_code"]].first()
     blocks = {bid: f"{str(r.block_name).title()} – {r.block_code} ({str(r.circle).title()})" for bid, r in b.iterrows()}
-    return {"circle": circles, "district": districts, "block": blocks}
+    gps = {str(code): gp_label(code, n, blk, c) for code, n, blk, c in zip(g.index, g["name"], g["block_name"], g["circle"])}
+    return {"circle": circles, "district": districts, "block": blocks, "gp": gps}
+
+
+def gp_label(code, name, block, circle) -> str:
+    return f"{str(name).title()} – {code} ({str(block).title()}, {str(circle).title()})"
 
 
 def location_tree(store: Store) -> list[dict]:
@@ -233,23 +238,26 @@ def assignments_of(db: Session, user_ids: list[int] | None = None) -> dict[int, 
 
 
 def user_gps(store: Store, role: str, items: list[Assignment], locs: dict[str, dict[str, str]] | None = None) -> tuple[pd.Index, list[str]]:
-    """GPs a dashboard user may receive and readable labels. admin: all; viewer: union of valid areas; else none."""
+    """GPs a dashboard user may receive and readable labels. admin: all; viewer: the GPs of their valid areas – the same
+    rule as the dashboard data (analytics.store.area_mask: a block / GP chosen inside a chosen circle narrows it); else none."""
+    from ..analytics.store import area_mask
+
     g = store.gps
     if role == "admin":
         return g.index, ["All circles"]
     if role != "viewer":
         return g.index[:0], []
     locs = locs or locations(store)
-    sets: dict[str, set[str]] = {"circle": set(), "district": set(), "block": set()}
+    valid: list[tuple[str, str]] = []
     labels = []
     for a in items:
         label = locs.get(a.level, {}).get(a.id)
         if label is None:  # not in the active data -> ignored, never widened
             continue
-        sets[a.level].add(a.id)
-        labels.append(f"{a.level.title()}: {label}")
-    m = g["circle_id"].isin(sets["circle"]) | g["district_id"].isin(sets["district"]) | g["block_id"].isin(sets["block"])
-    return g.index[m.to_numpy()], labels
+        valid.append((a.level, a.id))
+        labels.append(f"{'GP' if a.level == 'gp' else a.level.title()}: {label}")
+    mask, _full = area_mask(g, valid)
+    return g.index[mask], labels
 
 
 # ---------------------------------------------------------------- recipients of a schedule

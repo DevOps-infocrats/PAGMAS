@@ -11,6 +11,7 @@ import { formatCount } from "@/lib/utils/format";
 import { TEXTAREA, fileSize, ticketDay, ticketTime, type Notice } from "./ticket-parts";
 import { CATEGORY, GP_CATEGORIES, GpCategoryBadge, GpCategorySelect } from "./gp-category";
 import { GpDetailDialog, SmeGpTable } from "./gp-detail";
+import { TicketNdCases } from "./non-doable-view";
 import { GpStatusBadge, PROOF_ACCEPT, ProofList } from "./ticket-proof";
 import { REVIEW_STAGE, ReviewBar, ReviewCell, reviewable, stageOf } from "./ticket-review";
 
@@ -153,6 +154,8 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
             )}
             {smeView && <>Ticket {t.code} · Area Manager </>}
             <b className="font-semibold text-foreground">{task.areaManager}</b>
+            {task.gpSource === "NO_AM" && <> (acting AM – GPs without an Area Manager in the Escalation Matrix)</>}
+            {task.gpSource === "AM+NO_AM" && <> (with the GPs without an Area Manager)</>}
             {task.circle && <> · {task.circle}</>}
             {task.cbhName && <> · CBH {task.cbhName}</>} · {task.week.id.replace("W-", "Week ")} ({dm(task.week.start)} – {dm(task.week.end)}) · targets from {task.sourceFile}, data as of {ticketDay(task.dataAsOf)}
           </p>
@@ -282,6 +285,19 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       )}
 
       {roles.length > 0 && t.status !== "CLOSED" && <ReviewBar t={t} roles={roles} selected={selected} onClear={() => setPicked(new Set())} onChanged={onChanged} />}
+
+      {/* Non-Doable cases of this ticket waiting for the user (e.g. COH: Forward → Corporate Team – MGG), same actions as Non-Doable Cases */}
+      {!admin && t.status !== "CLOSED" && (
+        <TicketNdCases
+          ticketId={t.id}
+          onStep={() =>
+            ticketApi
+              .get(t.id)
+              .then((next) => onChanged(next, null))
+              .catch(() => undefined)
+          }
+        />
+      )}
 
       {/* SME: only the GPs forwarded to them, FE submission and AM approval side by side */}
       {reviewer && <SmeGpTable t={t} kind={reviewer} roles={roles} picked={picked} setPicked={setPicked} onChanged={onChanged} />}

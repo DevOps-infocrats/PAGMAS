@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
+import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Path as PathParam, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
@@ -213,16 +214,16 @@ def upload(
         if found is None:
             raise HTTPException(
                 status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                f"{display}: not recognised – expected the master data workbook (sheet 'GP Wise Data') or the Escalation Matrix (columns GP Code, FRT Code, FE Name …).",
+                f"{display}: not recognised – expected the master data workbook (sheet 'GP Wise Data') or the Escalation Matrix (header row with Circle, GP Code, FE Name …).",
             )
         if kind is not None and found != kind:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{display}: you selected '{preview.KINDS[kind]}', but this file is the {preview.KINDS[found]}.")
-        if found == "master":  # required sheets / columns – the same check as the preview
-            from ..ingestion import template
+        from ..ingestion import template  # required sheets / columns – the same check as the preview
 
-            chk = template.validate_master(staged)
-            if not chk.ok:
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{display}: {chk.message()} {template.TEMPLATE_HINT}")
+        chk = template.validate_master(staged) if found == "master" else template.validate_escalation(staged)
+        if not chk.ok:
+            hint = template.TEMPLATE_HINT if found == "master" else template.ESC_TEMPLATE_HINT
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{display}: {chk.message()} {hint}")
         target = staging.promote(staging.Staged(token, found, display, suffix, size, sha, user.id, 0.0))
         stored = True
         return _start_import(db, request, background, user, target, display, sha, size, found)
@@ -291,9 +292,10 @@ def upload_confirm(body: ConfirmIn, request: Request, background: BackgroundTask
 
 
 @router.get("/ingestion/template/{kind}.xlsx")
-def master_template(kind: Literal["gp", "block", "master"], request: Request, sample: bool = True, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> Response:
+def master_template(kind: Literal["gp", "block", "master", "escalation"], request: Request, sample: bool = True, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> Response:
     """Upload templates – generated on download from the same column rules the upload check uses, so they can never
-    disagree: gp = GP Wise Data, block = Master Block, master = both sheets in one workbook (ready to fill and upload).
+    disagree: gp = GP Wise Data, block = Master Block, master = both sheets in one workbook (ready to fill and upload),
+    escalation = Escalation Matrix (Section A required, Section B optional columns).
     Section A = required columns with two example rows; Section B = example day / week / month columns (flexible).
     `sample` is accepted for old links (the examples are always included)."""
     from ..ingestion import template
@@ -558,7 +560,8 @@ def reconciliation(store: Store = Depends(get_store)) -> dict:
 
 
 class ScopeIn(BaseModel):
-    level: Literal["circle", "district", "block"]
+    # circle / block / gp (GP code) – User Management; district is still accepted for areas saved before
+    level: Literal["circle", "district", "block", "gp"]
     id: str = Field(min_length=1, max_length=120)
 
 
@@ -567,8 +570,8 @@ class UserCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     role: Literal["admin", "viewer"] = "viewer"
     password: str = Field(min_length=1, max_length=128)
-    # Circle / district / block areas of a viewer: what they see on the dashboard and receive in the AMC Conversion e-mails
-    # (security/access.py, mail/audience.py); admins see and receive everything
+    # Circle / block / GP areas of a viewer: what they see on the dashboard and receive in the AMC Conversion e-mails
+    # (security/access.py, mail/audience.py; a block / GP chosen inside a chosen circle narrows it); admins see everything
     scopes: list[ScopeIn] = Field(default_factory=list, max_length=500)
 
 
@@ -631,6 +634,32 @@ def user_locations() -> dict:
     """Circles → districts → blocks of the active data, for assigning user areas."""
     st = _active_store()
     return {"circles": location_tree(st) if st is not None else [], "hasData": st is not None}
+
+
+@router.get("/users/locations/gps")
+def user_location_gps(
+    circle: Annotated[list[str] | None, Query(max_length=50)] = None,
+    block: Annotated[list[str] | None, Query(max_length=500)] = None,
+    q: Annotated[str | None, Query(max_length=80)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict:
+    """GPs for the User Management area picker: those of the chosen blocks, else of the chosen circles, else all –
+    matching `q` in the GP name or code (at most `limit`, by name)."""
+    from ..mail.audience import gp_label
+
+    st = _active_store()
+    if st is None:
+        return {"items": [], "total": 0}
+    g = st.gps
+    m = g["block_id"].isin(block) if block else g["circle_id"].isin(circle) if circle else pd.Series(True, index=g.index)
+    sub = g[m.to_numpy()]
+    text = " ".join((q or "").split()).lower()
+    if text:
+        hit = sub["name"].astype(str).str.lower().str.contains(text, regex=False) | sub.index.astype(str).str.lower().str.contains(text, regex=False)
+        sub = sub[hit.to_numpy()]
+    sub = sub.assign(_n=sub["name"].astype(str).str.lower()).sort_values("_n")
+    items = [{"id": str(code), "label": gp_label(code, r["name"], r["block_name"], r["circle"]), "blockId": r["block_id"], "circleId": r["circle_id"]} for code, r in sub.head(limit).iterrows()]
+    return {"items": items, "total": int(len(sub))}
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)

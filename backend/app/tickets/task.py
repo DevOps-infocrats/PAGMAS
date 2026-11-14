@@ -23,6 +23,12 @@ Field Engineer    Escalation Matrix "FE Name" + "FE Email ID" of each GP (snapsh
                   recipient of a ticket sees, reports and downloads ONLY the GPs mapped to them (same FE name and the
                   same matrix FE e-mail under that Area Manager); the Area Manager, CBH, SME and admins see every GP of
                   the ticket. A GP without an FE in the matrix is never given to an FE (counted as "FE not mapped").
+No Area Manager    GPs whose matrix AM is blank or "Vacant…" form the circle's NO_AM group: their FEs are listed under it
+                  (never hidden), and the admin can give the group to an acting Area Manager typed at Generate Ticket
+                  (gp_source "NO_AM"), add it to an Area Manager of the matrix ("AM+NO_AM"), or send it FE-wise. Nothing
+                  is fixed per circle – a matrix with the AM moves the GPs to that AM for the next tickets.
+Zero target       an Area Manager / FE without a GP planned in the week still gets the ticket (0 GPs; the FE can add
+                  GPs found in the field) – it is never refused.
 Nothing here closes a ticket – only an admin does (service.close).
 """
 
@@ -60,6 +66,7 @@ CATEGORIES: dict[str, str] = {
     "E": "Letter Submission Done",
 }
 ACHIEVED_CATEGORY = "E"
+NO_AM = "No Area Manager"  # the circle's GPs whose matrix AM is blank / "Vacant…" (one group per circle)
 
 
 def category_label(code: str | None) -> str | None:
@@ -107,6 +114,11 @@ def _directory(store: Store) -> tuple[pd.DataFrame, str]:
     return pd.DataFrame(
         {"am": names, "email": col("am_email").map(_mail), "ba": ba, "fe": col("fe_name").map(fe_label), "fe_email": col("fe_email").map(_mail)}, index=g.index
     ), source
+
+
+def _grouped(d: pd.DataFrame) -> pd.DataFrame:
+    """The directory with every GP without an Area Manager (blank / "Vacant…") under NO_AM."""
+    return d.assign(am=d["am"].where(~d["am"].isin([NOT_ASSIGNED, VACANT]), NO_AM))
 
 
 def fe_key(name: Any, mail: Any) -> tuple[str, str]:
@@ -268,7 +280,7 @@ def _in_circle(store: Store, idx: pd.Index, circle: str | None) -> pd.Index:
 def circle_counts(store: Store, am: str, circle: str, week_code: str) -> dict[str, int]:
     """GPs of an Area Manager in one circle, and how many of them are this week's / pending task GPs."""
     w = store.week(week_code)
-    d, _ = _directory(store)
+    d = _grouped(_directory(store)[0])
     mine = _in_circle(store, d.index[d["am"] == am], circle)
     rows = _task_rows(store, d, am, w.start, w.end)
     rows = rows.loc[rows.index.isin(mine)]
@@ -281,13 +293,13 @@ def _str(v: Any) -> str | None:
 
 def fe_slots(store: Store, circle: str | None, week_code: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Field Engineers of a circle, one per (Area Manager, FE name, matrix FE e-mail) – the GPs mapped to each, with
-    the week's task GP counts – and per Area Manager the week's task GPs that have no FE in the matrix."""
+    the week's task GP counts – and per Area Manager the week's task GPs that have no FE in the matrix. FEs of GPs
+    without an Area Manager are listed under NO_AM (never left out)."""
     w = store.week(week_code)
-    d, _ = _directory(store)
+    d = _grouped(_directory(store)[0])
     if "fe" not in d.columns:
         return [], {}
     d = d.loc[_in_circle(store, d.index, circle)]
-    d = d[~d["am"].isin([NOT_ASSIGNED, VACANT])]
     rows = _task_rows(store, d, None, w.start, w.end)
     rows = rows.loc[rows.index.isin(d.index)]
     slots: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -308,20 +320,30 @@ def fe_slots(store: Store, circle: str | None, week_code: str) -> tuple[list[dic
     return sorted(slots.values(), key=lambda s: (s["am"].lower(), s["name"].lower(), s["mappedEmail"] or "")), unmapped
 
 
-def preview(store: Store, am: str, week_code: str, circle: str | None = None, fes: list[FeScope] | None = None, backlog: bool = False) -> list[dict[str, Any]]:
+def preview(
+    store: Store, am: str, week_code: str, circle: str | None = None, fes: list[FeScope] | None = None, backlog: bool = False, with_no_am: bool = False
+) -> list[dict[str, Any]]:
     """The task GPs of an Area Manager: Planned Date in the week (only that AM's GPs; only the selected circle's when
     one is given; only the GPs of these Field Engineers when `fes` is given). backlog=True: the backlog GPs instead
-    (planned before the week, not achieved) – information only, never part of a ticket."""
+    (planned before the week, not achieved) – information only, never part of a ticket.
+    am = NO_AM: the circle's GPs without an Area Manager (circle required). with_no_am: the AM's GPs plus those."""
     w = store.week(week_code)
-    d, _ = _directory(store)
+    d = _grouped(_directory(store)[0])
+    if (am == NO_AM or with_no_am) and not circle:
+        raise TaskError(422, "Select the circle – the GPs without an Area Manager are taken per circle")
+    if (am == NO_AM or with_no_am) and not len(_in_circle(store, d.index[d["am"] == NO_AM], circle)):
+        raise TaskError(422, f"Every GP of {circle} has an Area Manager in the Escalation Matrix – select the Area Manager from the list")
     if am not in set(d["am"]) or am in (NOT_ASSIGNED, VACANT):
         raise TaskError(422, "Unknown Area Manager")
+    if with_no_am and am != NO_AM:
+        d = d.assign(am=d["am"].replace(NO_AM, am))  # the circle's GPs without an AM join this AM (cut to the circle below)
     rows = _task_rows(store, d, am, w.start, w.end)
     rows = rows[rows["kind"] == ("PENDING" if backlog else "WEEK")]
     rows = rows.loc[rows.index.isin(_in_circle(store, rows.index, circle))]
     if fes is not None:
         keys = {f.key() for f in fes}
-        rows = rows[[isinstance(fe, str) and fe_key(fe, mail) in keys for fe, mail in zip(rows["fe"], rows["fe_email"])]]
+        mask = [isinstance(fe, str) and fe_key(fe, mail) in keys for fe, mail in zip(rows["fe"], rows["fe_email"])]
+        rows = rows.loc[pd.Series(mask, index=rows.index, dtype=bool)]  # a boolean mask, also when empty ([] would pick columns)
     g = store.gps.loc[rows.index]
     out = []
     for i, (code, r) in enumerate(rows.sort_values(["kind", "planned"], ascending=[False, True]).iterrows(), start=1):
@@ -367,7 +389,7 @@ def _figures(rows: list[dict[str, Any]], ready_by: dt.date, amc_by: dt.date, bac
     return {"week": part(week), "backlog": part(backlog or []), "total": part(week)}
 
 
-def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: list[dict[str, Any]], with_no_am: bool = False) -> dict[str, Any]:
     """Target and achievement of an Area Manager's task for the week, and of every FE mapped under them (only the GPs
     mapped to that FE; GPs without an FE in the matrix are a separate "not mapped" line – never given to anyone).
     `page` = the same AM's figures of AMC Conversion → area manager-wise table (Ach / AMC Date IN the week), to check."""
@@ -376,8 +398,9 @@ def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: l
     w = store.week(week_code)
     win = windows(store, week_code, month_of_week=True)
     ready_by, amc_by = plan_data_date(store), store.data_as_of
-    slots = [s for s in fe_slots(store, circle, week_code)[0] if s["am"] == am] if circle else []
-    back = preview(store, am, week_code, circle, backlog=True)
+    groups = {am, NO_AM} if with_no_am else {am}
+    slots = [s for s in fe_slots(store, circle, week_code)[0] if s["am"] in groups] if circle else []
+    back = preview(store, am, week_code, circle, backlog=True, with_no_am=with_no_am)
     fes = []
     for s in slots:
         key = fe_key(s["name"], s["mappedEmail"])
@@ -386,7 +409,7 @@ def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: l
     unmapped = [x for x in rows if not x["feName"]]
     unmapped_back = [x for x in back if not x["feName"]]
     page = None
-    if circle:
+    if circle and am != NO_AM and not with_no_am:  # the AMC Conversion table knows only the matrix AMs' own GPs
         ckey = " ".join(circle.split()).lower()
         cid = next((i for i, c in zip(store.gps["circle_id"], store.gps["circle"]) if " ".join(str(c).split()).lower() == ckey), None)
         if cid is not None:
@@ -411,6 +434,8 @@ def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: l
 
 
 def am_emails(store: Store, am: str) -> list[str]:
+    if am == NO_AM:
+        return []
     d, _ = _directory(store)
     return sorted({e for v in d.loc[d["am"] == am, "email"] for e in split_emails(v)})
 
@@ -426,20 +451,26 @@ def _cbh_of(codes: list[str]) -> str | None:
     return ", ".join(names)[:160] or None
 
 
-def attach(db: Session, store: Store, t: Ticket, am: str, week_code: str, circle: str | None = None, am_email: str | None = None, fes: list[FeScope] | None = None) -> TicketTask:
+def attach(
+    db: Session, store: Store, t: Ticket, am: str, week_code: str, circle: str | None = None, am_email: str | None = None, fes: list[FeScope] | None = None,
+    *, with_no_am: bool = False, acting: str | None = None, typed_fe: FeScope | None = None,
+) -> TicketTask:
     """Create the task rows of a ticket being created (same transaction) and its assignment workbook. `fes`: a ticket
-    without the Area Manager – only the GPs of these Field Engineers."""
-    rows = preview(store, am, week_code, circle, fes)
-    if not rows:
-        where = f" in {circle}" if circle else ""
-        who = ", ".join(f"FE {f.name}" for f in fes) if fes is not None else am
-        raise TaskError(422, f"{who} has no GP{where} with a Planned Date in this week – nothing to assign")
+    without the Area Manager – only the GPs of these Field Engineers. am = NO_AM + `acting`: the circle's GPs without an
+    Area Manager for the acting AM typed by the admin; with_no_am: an AM's GPs plus those. `typed_fe`: an FE typed by
+    the admin gets the task GPs that have no FE in the matrix. No GP in the week = a ticket with 0 GPs (never refused)."""
+    rows = preview(store, am, week_code, circle, fes, with_no_am=with_no_am)
+    if typed_fe is not None:
+        for r in rows:
+            if not r["feName"]:
+                r["feName"], r["feEmail"] = typed_fe.name, typed_fe.mail
     w = store.week(week_code)
     emails = am_emails(store, am)
     circles = sorted({r["circle"] for r in rows})
+    source = "NO_AM" if am == NO_AM and acting else "AM+NO_AM" if with_no_am else None
     task = TicketTask(
-        ticket_id=t.id, am_name=am, am_email=am_email or (emails[0] if emails else None), week_code=w.code, week_start=w.start, week_end=w.end, data_as_of=store.data_as_of,
-        source_file=store.file_name, circle=circle or ", ".join(circles)[:80], cbh_name=_cbh_of([r["gpCode"] for r in rows]),
+        ticket_id=t.id, am_name=(acting or am)[:160], am_email=am_email or (emails[0] if emails else None), week_code=w.code, week_start=w.start, week_end=w.end,
+        data_as_of=store.data_as_of, source_file=store.file_name, circle=circle or ", ".join(circles)[:80], cbh_name=_cbh_of([r["gpCode"] for r in rows]), gp_source=source,
     )
     db.add(task)
     for r in rows:
@@ -459,6 +490,20 @@ def attach(db: Session, store: Store, t: Ticket, am: str, week_code: str, circle
     (folder / name).write_bytes(data)
     task.assignment_file = name
     return task
+
+
+def week_range(start: dt.date, end: dt.date) -> str:
+    """07–13 Nov / 28 Oct – 03 Nov."""
+    return f"{start:%d}–{end:%d %b}" if (start.year, start.month) == (end.year, end.month) else f"{start:%d %b} – {end:%d %b}"
+
+
+def task_subject(task: TicketTask, fes: list[str] | None = None) -> str:
+    """The subject of a GP-wise task ticket, built from ITS OWN task – the Area Manager (or the Field Engineers of a
+    ticket without the AM), the week with its dates and the circle – so every ticket of a batch names the right AM."""
+    am = f"{task.am_name} (acting AM)" if task.gp_source == "NO_AM" else task.am_name
+    who = f"FE {', '.join(fes)} ({am})" if fes else am
+    where = f" · {task.circle}" if task.circle else ""
+    return f"Weekly GP task – {who} – Week {task.week_code[2:]} ({week_range(task.week_start, task.week_end)}){where}"[:200]
 
 
 def _iso(v: str | None) -> dt.date | None:
@@ -638,6 +683,7 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         scope_out = None
     return {
         "areaManager": task.am_name,
+        "gpSource": task.gp_source,
         "amEmail": task.am_email,
         # a Field Engineer's / SME's view: only their GPs; everyone else sees the whole task with the FE-wise split
         "scope": scope_out,

@@ -22,12 +22,12 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import (
-    NdCase, NdEvent, NdFile, NdForward, NdMggMember, NdRecord, Ticket, TicketProgress, TicketProgressLine, TicketRecipient, TicketTask, TicketTaskGp, User,
+    NdCase, NdEvent, NdFile, NdForward, NdMggMember, NdMggPick, NdRecord, Ticket, TicketProgress, TicketProgressLine, TicketRecipient, TicketTask, TicketTaskGp, User,
 )
 from ..security.deps import CurrentUser
 from . import files
@@ -137,6 +137,40 @@ def mgg_people(db: Session) -> list[User]:
     return list(db.scalars(select(User).join(NdMggMember, NdMggMember.user_id == User.id).where(User.is_active.is_(True)).order_by(User.name)))
 
 
+def _mgg_picks(db: Session, c: NdCase) -> list[NdMggPick]:
+    """The MGG people the COH chose / typed in the case's LATEST forward (empty = not forwarded yet, or forwarded to
+    every authorised MGG account without a choice – as before)."""
+    ev = db.scalar(select(NdEvent.id).where(NdEvent.case_id == c.id, NdEvent.action == "COH_FORWARD").order_by(NdEvent.id.desc()).limit(1))
+    return [] if ev is None else list(db.scalars(select(NdMggPick).where(NdMggPick.event_id == ev).order_by(NdMggPick.id)))
+
+
+def _picked(db: Session, c: NdCase, user: CurrentUser) -> bool:
+    """The user's e-mail is one the COH forwarded this case to (decides THIS case, like an authorised MGG account)."""
+    me = (user.email or "").strip().lower()
+    return bool(me) and any(p.email == me for p in _mgg_picks(db, c))
+
+
+def _mgg_to(db: Session, user: CurrentUser, to: list[dict[str, str]]) -> list[tuple[str, str]]:
+    """(name, e-mail) of the MGG people chosen / typed by the COH – valid, distinct addresses, never the COH."""
+    from ..mail.smtp import valid_address
+
+    if len(to) > 10:
+        raise NdError(422, f"At most 10 {MGG} e-mails")
+    accounts = {u.email.lower(): u.name for u in db.scalars(select(User).where(User.is_active.is_(True)))}
+    me = (user.email or "").strip().lower()
+    out: dict[str, str] = {}
+    for it in to:
+        addr = valid_address(it.get("email"))
+        if addr is None:
+            raise NdError(422, f"'{str(it.get('email') or '')[:80]}' is not a valid e-mail address")
+        addr = addr.lower()
+        if addr == me:
+            raise NdError(422, f"You cannot forward the case to yourself – choose the {MGG} person who decides it")
+        name = " ".join(str(it.get("name") or "").split())[:160]
+        out.setdefault(addr, name or accounts.get(addr) or addr.split("@")[0])
+    return [(n, e) for e, n in out.items()]
+
+
 def _fe_recipients(db: Session, t: Ticket, g: TicketTaskGp) -> list[TicketRecipient]:
     from .task import FeScope
 
@@ -189,7 +223,11 @@ def _people(db: Session, t: Ticket, g: TicketTaskGp, role: str, c: NdCase | None
         cur = _current(db, c, role) if c is not None else None
         rows = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.id.in_(cur)) if cur else select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == role))
         return [] if cur == set() else [(r.user_id, r.name, r.email) for r in rows]
-    if role == "MGG":
+    if role == "MGG":  # the people the COH chose / typed, else every authorised MGG account (as before)
+        picks = _mgg_picks(db, c) if c is not None else []
+        if picks:
+            users = {u.email.lower(): u.id for u in db.scalars(select(User).where(func.lower(User.email).in_([p.email for p in picks]), User.is_active.is_(True)))}
+            return [(users.get(p.email), p.name, p.email) for p in picks]
         return [(u.id, u.name, u.email) for u in mgg_people(db)]
     return []
 
@@ -228,7 +266,7 @@ def roles_for(db: Session, c: NdCase, t: Ticket, g: TicketTaskGp, user: CurrentU
         out.add("SME")
     if _holds(db, c, t, user, "COH"):
         out.add("COH")
-    if is_mgg(db, user) and _reached(db, c.id, ("COH_FORWARD",)):
+    if _reached(db, c.id, ("COH_FORWARD",)) and (is_mgg(db, user) or _picked(db, c, user)):
         out.add("MGG")
     return out
 
@@ -513,8 +551,11 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
         if not sent and not db.scalar(select(TicketRecipient.id).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == nxt).limit(1)):
             db.rollback()
             raise NdError(422, f"Choose the {nxt} who receives the case (name and e-mail)")
-    if action == "COH_FORWARD" and not mgg_people(db):
-        raise NdError(409, f"No {MGG} member is authorised yet – ask the admin to add one in Non-Doable Cases")
+    mgg_to: list[tuple[str, str]] = []
+    if action == "COH_FORWARD":  # to the MGG people chosen / typed by the COH, else every authorised MGG account
+        mgg_to = _mgg_to(db, user, to or [])
+        if not mgg_to and not mgg_people(db):
+            raise NdError(422, f"No {MGG} account is authorised yet – type the name and e-mail of the {MGG} person who decides the case")
     at = now()
     values: dict[str, Any] = {}
     if returning and action != "MGG_REJECT":
@@ -570,6 +611,12 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
             db.flush()  # the e-mail / notification list below reads them
         if sent:
             ev.remark = ((ev.remark + " · ") if ev.remark else "") + "Sent to " + ", ".join(f"{nxt} {r.name} <{r.email}>" for r in sent)
+        if mgg_to:  # who decides the case now (the e-mail / notification list below reads them)
+            db.flush()
+            for name, email in mgg_to:
+                db.add(NdMggPick(case_id=c.id, event_id=ev.id, name=name, email=email, at=at))
+            db.flush()
+            ev.remark = ((ev.remark + " · ") if ev.remark else "") + "Sent to " + ", ".join(f"MGG {n} <{e}>" for n, e in mgg_to)
         detail = why or recommendation or text
         body = f"{user.name}: {ACTION_LABEL[action]} – GP {g.gp_code} ({g.gp_name})" + (f". {'Reason' if why else 'Remarks'}: {detail}" if detail else "")
         who: tuple[str, ...] = {
@@ -596,11 +643,14 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
 
     q = select(NdCase).where(NdCase.ticket_id.not_in(deleted_ids())).order_by(NdCase.updated_at.desc(), NdCase.id.desc())
     mgg = is_mgg(db, user)
+    me = (user.email or "").strip().lower()
     if not user.is_admin:
         mine = select(Ticket.id).where(_mine(user.id))
         conds = [NdCase.ticket_id.in_(mine)]
         if mgg:
             conds.append(NdCase.id.in_(select(NdEvent.case_id).where(NdEvent.action == "COH_FORWARD")))
+        if me:  # cases the COH forwarded to this e-mail
+            conds.append(NdCase.id.in_(select(NdMggPick.case_id).where(NdMggPick.email == me)))
         q = q.where(or_(*conds))
     cases = list(db.scalars(q))
     if not cases:
@@ -609,6 +659,7 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
     gps = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_({c.task_gp_id for c in cases})))}
     reached: dict[int, set[str]] = {}
     latest: dict[tuple[int, str], int] = {}  # (case, SME / COH) -> its latest handing step (the same rule as _current)
+    latest_coh: dict[int, int] = {}  # case -> its latest COH forward
     role_of = {a: r for r, a in HANDED_BY.items()}
     for eid, cid, a in db.execute(
         select(NdEvent.id, NdEvent.case_id, NdEvent.action).where(NdEvent.case_id.in_([c.id for c in cases]), NdEvent.action.in_(("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD"))).order_by(NdEvent.id)
@@ -616,6 +667,10 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
         reached.setdefault(cid, set()).add(a)
         if a in role_of:
             latest[(cid, role_of[a])] = eid
+        if a == "COH_FORWARD":
+            latest_coh[cid] = eid
+    # the cases whose latest COH forward went to this user's e-mail (the same rule as _mgg_picks / _picked)
+    picked_events = set(db.scalars(select(NdMggPick.event_id).where(NdMggPick.event_id.in_(list(latest_coh.values())), NdMggPick.email == me))) if latest_coh and me else set()
     handed: dict[int, set[int]] = {}  # handing step -> recipient ids
     for eid, rid in db.execute(select(NdForward.event_id, NdForward.recipient_id).where(NdForward.event_id.in_(list(latest.values())))) if latest else []:
         handed.setdefault(eid, set()).add(rid)
@@ -655,7 +710,7 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
             roles.add("SME")
         if holds(c, "COH"):
             roles.add("COH")
-        if mgg and "COH_FORWARD" in got:
+        if "COH_FORWARD" in got and (mgg or latest_coh.get(c.id) in picked_events):
             roles.add("MGG")
         if roles or user.is_admin:
             out.append((c, roles))
@@ -862,7 +917,17 @@ def detail(db: Session, case_id: int, user: CurrentUser) -> dict[str, Any]:
         "otherRounds": [{"id": o.id, "ref": o.ref, "round": o.round, "status": o.status, "statusLabel": STATUS_LABEL[o.status]} for o in others],
         "can": can,
         "mggMembers": len(mgg_people(db)),
+        "mggPicked": _picked_json(db, c),
     }
+
+
+def _picked_json(db: Session, c: NdCase) -> list[dict[str, Any]]:
+    """The MGG people the COH forwarded the case to, and whether each has an active dashboard account (needed to decide)."""
+    picks = _mgg_picks(db, c)
+    if not picks:
+        return []
+    accounts = set(db.scalars(select(func.lower(User.email)).where(func.lower(User.email).in_([p.email for p in picks]), User.is_active.is_(True))))
+    return [{"name": p.name, "email": p.email, "account": p.email in accounts} for p in picks]
 
 
 def file_for(db: Session, file_id: int, user: CurrentUser) -> NdFile:
@@ -878,6 +943,14 @@ def contacts(db: Session, case_id: int, user: CurrentUser, role: str) -> dict[st
     from . import review
 
     c, t, _g, roles = _load(db, case_id, user)
+    if role == "MGG":  # the COH's forward: the authorised MGG accounts (the COH may also type another name / e-mail)
+        if "COH" not in roles:
+            raise NdError(403, f"Only the COH of this case chooses the {MGG}")
+        me = (user.email or "").lower()
+        return {
+            "circle": None, "role": "MGG", "onTicket": [],
+            "people": [{"name": u.name, "emails": [{"email": u.email, "account": True, "onTicket": False}]} for u in mgg_people(db) if u.email.lower() != me],
+        }
     need = {"SME": "AM", "COH": "SME"}.get(role)
     if need is None or need not in roles:
         raise NdError(403, f"Only the {ROLE_LABEL.get(need or '', 'reviewer')} of this case chooses the {role}")
