@@ -211,7 +211,8 @@ export type Typed = { key: number; name: string; email: string };
 /** Who receives the GPs of the step (SME for the approval, COH for the forward): the circle's people from the
  * Escalation Matrix (pre-selected), or a name / e-mail typed by the user. */
 export function SendTo({ role, contacts: c, loading, failed, picked, setPicked, typed, setTyped, disabled }: {
-  role: "SME" | "COH";
+  /** MGG: the Corporate Team – MGG of a Non-Doable case (authorised accounts, or typed by the COH) */
+  role: "SME" | "COH" | "MGG";
   contacts: ReviewContacts | undefined;
   loading: boolean;
   failed: boolean;
@@ -228,19 +229,30 @@ export function SendTo({ role, contacts: c, loading, failed, picked, setPicked, 
     setPicked(next);
   };
   const people = [...(c?.people ?? []), ...(c?.onTicket ?? []).map((r) => ({ name: r.name, emails: [{ email: r.email, account: r.account, onTicket: true }] }))];
+  const mgg = role === "MGG";
+  const label = mgg ? "Corporate Team – MGG" : role;
   return (
     <fieldset className="space-y-2 rounded-lg border border-border p-3">
       <legend className="px-1 text-[0.8125rem] font-medium">
-        Send to {role} {c?.circle ? <span className="font-normal text-muted-foreground">– {c.circle}, from the Escalation Matrix</span> : null}
+        Send to {label}{" "}
+        {mgg ? (
+          <span className="font-normal text-muted-foreground">– authorised accounts, or type the name and e-mail</span>
+        ) : c?.circle ? (
+          <span className="font-normal text-muted-foreground">– {c.circle}, from the Escalation Matrix</span>
+        ) : null}
       </legend>
       {loading && !c ? (
         <p className="flex items-center gap-2 text-[0.78125rem] text-muted-foreground">
-          <Loader2 className="size-3.5 animate-spin" /> Loading the {role}…
+          <Loader2 className="size-3.5 animate-spin" /> Loading the {label}…
         </p>
       ) : failed ? (
-        <p className="text-[0.78125rem] text-critical-text">Could not load the {role} list – type the e-mail below.</p>
+        <p className="text-[0.78125rem] text-critical-text">Could not load the {label} list – type the e-mail below.</p>
       ) : people.length === 0 ? (
-        <p className="text-[0.78125rem] text-warning-text">No {role} of this circle in the Escalation Matrix – type the name and e-mail below.</p>
+        <p className="text-[0.78125rem] text-warning-text">
+          {mgg
+            ? "No Corporate Team – MGG account is authorised yet – type the name and e-mail of the MGG person below. They decide this case after signing in with that e-mail (an account is needed to approve)."
+            : `No ${role} of this circle in the Escalation Matrix – type the name and e-mail below.`}
+        </p>
       ) : (
         <ul className="space-y-1.5">
           {people.map((p) =>
@@ -266,8 +278,8 @@ export function SendTo({ role, contacts: c, loading, failed, picked, setPicked, 
         const bad = r.email.trim() !== "" && !EMAIL.test(r.email.trim());
         return (
           <div key={r.key} className="flex gap-2">
-            <Input value={r.name} onChange={(e) => upd({ name: e.target.value })} maxLength={160} placeholder={`${role} name`} disabled={disabled} className="h-8 flex-1 text-[0.8125rem]" aria-label={`${role} name`} />
-            <Input value={r.email} onChange={(e) => upd({ email: e.target.value })} maxLength={254} type="email" placeholder="name@example.com" disabled={disabled} aria-invalid={bad} className={cn("h-8 flex-[1.4] text-[0.8125rem]", bad && "border-critical")} aria-label={`${role} e-mail`} />
+            <Input value={r.name} onChange={(e) => upd({ name: e.target.value })} maxLength={160} placeholder={`${mgg ? "MGG" : role} name`} disabled={disabled} className="h-8 flex-1 text-[0.8125rem]" aria-label={`${label} name`} />
+            <Input value={r.email} onChange={(e) => upd({ email: e.target.value })} maxLength={254} type="email" placeholder="name@example.com" disabled={disabled} aria-invalid={bad} className={cn("h-8 flex-[1.4] text-[0.8125rem]", bad && "border-critical")} aria-label={`${label} e-mail`} />
             <button type="button" disabled={disabled} onClick={() => setTyped(typed.filter((x) => x.key !== r.key))} className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="Remove this e-mail">
               <X className="size-3.5" />
             </button>

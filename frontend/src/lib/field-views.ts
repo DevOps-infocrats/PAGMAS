@@ -13,6 +13,9 @@ export const FIELD_VIEWS = [
 ] as const;
 
 export type FieldViewId = (typeof FIELD_VIEWS)[number]["id"];
+/** Views listed in the sidebar sub-menu. The other views stay reachable from the page itself (e.g. "View area managers"
+ * on the summary) – only their sidebar links are not shown. */
+export const SIDEBAR_FIELD_VIEWS = FIELD_VIEWS.filter((v) => v.id === "summary" || v.id === "sheet");
 export const FIELD_VIEW_IDS: string[] = FIELD_VIEWS.map((v) => v.id);
 export const FIELD_PATH = "/dashboard/field-team";
 export const DEFAULT_FIELD_VIEW: FieldViewId = "summary";

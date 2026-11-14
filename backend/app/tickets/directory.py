@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -72,7 +73,7 @@ def people(db: Session, role: str, circle: str) -> list[dict[str, Any]]:
     df = act[1]
     if name_col not in df.columns or email_col not in df.columns:
         return []
-    df = df[[_key(c) == _key(circle) for c in df["circle"]]]
+    df = df.loc[pd.Series([_key(c) == _key(circle) for c in df["circle"]], index=df.index, dtype=bool)]  # a mask, also when empty
     found: dict[str, dict[str, Any]] = {}
     for name, mail in zip(df[name_col], df[email_col]):
         k = person_key(name)
@@ -130,7 +131,19 @@ def directory(db: Session, store: Store, circle: str | None, week: str) -> dict[
         "coh": people(db, "COH", chosen) if chosen else [],
         "am": area_managers(db, store, chosen, week, unmapped) if chosen else [],
         "fe": fe,
+        "noAm": no_am(store, chosen, week, unmapped) if chosen else None,
     }
+
+
+def no_am(store: Store, circle: str, week: str, unmapped: dict[str, int] | None = None) -> dict[str, Any] | None:
+    """The circle's GPs without an Area Manager in the Escalation Matrix (blank / "Vacant…"): how many, this week's
+    target among them and the target GPs without an FE either (None = every GP has an Area Manager)."""
+    from . import task as tasks
+
+    c = tasks.circle_counts(store, tasks.NO_AM, circle, week)
+    if not c["gps"]:
+        return None
+    return {"label": tasks.NO_AM, **c, "unmappedFeGps": (unmapped or {}).get(tasks.NO_AM, 0)}
 
 
 def known_names(db: Session, store: Store, circle: str, week: str) -> dict[str, dict[str, list[str]]]:

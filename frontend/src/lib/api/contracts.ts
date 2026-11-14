@@ -645,10 +645,13 @@ export interface RunIssuesResponse {
 }
 
 export type ScopeLevel = "circle" | "district" | "block";
+/** User Management areas: circle / block / GP (GP code); "district" only for areas saved before. A block / GP chosen
+ * inside a chosen circle narrows it (the same rule for the dashboard data and the AMC Conversion e-mail). */
+export type UserScopeLevel = ScopeLevel | "gp";
 
-/** One circle / district / block a viewer receives in the AMC Conversion e-mails. */
+/** One circle / block / GP a viewer may see (dashboard) and receives in the AMC Conversion e-mails. */
 export interface UserScope {
-  level: ScopeLevel;
+  level: UserScopeLevel;
   id: string;
   /** null when the area is no longer in the active data (then it is ignored) */
   label: string | null;
@@ -677,7 +680,7 @@ export interface UserCreateBody {
   name: string;
   role: "admin" | "viewer";
   password: string;
-  scopes?: { level: ScopeLevel; id: string }[];
+  scopes?: { level: UserScopeLevel; id: string }[];
 }
 
 /** Bulk import of dashboard users from an Excel / CSV file (Name + Email columns) */
@@ -709,7 +712,15 @@ export interface UserUpdateBody {
   role?: "admin" | "viewer";
   isActive?: boolean;
   password?: string;
-  scopes?: { level: ScopeLevel; id: string }[];
+  scopes?: { level: UserScopeLevel; id: string }[];
+}
+
+/** A GP for the User Management area picker */
+export interface UserGpOption {
+  id: string;
+  label: string;
+  blockId: string;
+  circleId: string;
 }
 
 /* ---------------------------------------------------------------- Mail Configuration */
@@ -1671,6 +1682,8 @@ export interface AdminApi {
   /** dryRun = preview only; otherwise creates the new Viewer accounts with the temporary password */
   importUsers(file: File, dryRun: boolean): Promise<UserImportResult>;
   getUserLocations(): Promise<UserLocations>;
+  /** GPs of the chosen blocks (else circles, else all) matching `q` – the GP picker of User Management */
+  searchUserGps(q: { circles?: string[]; blocks?: string[]; q?: string; limit?: number }): Promise<{ items: UserGpOption[]; total: number }>;
   getMailStatus(): Promise<MailStatus>;
   getMailOptions(): Promise<MailOptions>;
   sendTestMail(to: string): Promise<{ ok: boolean; message: string }>;
@@ -1725,7 +1738,20 @@ export interface TicketSummary {
   /** list rows only: GP-wise task Area Manager / week and number of recipients */
   areaManager?: string | null;
   week?: string | null;
+  /** list rows only: first / last day of the task week (YYYY-MM-DD) */
+  weekStart?: string | null;
+  weekEnd?: string | null;
   recipientCount?: number;
+}
+
+/** A week of the signed-in user's GP-wise task tickets (User Tickets week filter) */
+export interface TicketWeek {
+  id: string;
+  start: string;
+  end: string;
+  total: number;
+  /** not closed yet */
+  open: number;
 }
 
 export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "USER" | "OTHER";
@@ -1746,6 +1772,8 @@ export interface TicketRecipient {
   emailedAt: string | null;
   /** FE only: parent Area Manager in the Escalation Matrix */
   areaManager?: string | null;
+  /** typed by the admin at Generate Ticket (not from the Escalation Matrix) */
+  typed?: boolean;
 }
 
 export interface DirectoryEmail {
@@ -1788,6 +1816,9 @@ export interface TicketDirectory {
   coh?: DirectoryPerson[];
   am: DirectoryPerson[];
   fe: DirectoryFe[];
+  /** the circle's GPs without an Area Manager in the matrix (blank / Vacant) – their FEs are listed with am = label;
+   * null = every GP of the circle has an Area Manager */
+  noAm?: { label: string; gps: number; weekGps: number; pendingGps: number; unmappedFeGps: number } | null;
 }
 
 export interface TicketCreateBody {
@@ -1798,7 +1829,9 @@ export interface TicketCreateBody {
   task?: { amName?: string; week: string };
   circle?: string;
   /** FE: `am` + `feEmail` name the matrix mapping of the FE's GPs; `email` is where the ticket e-mail goes */
-  recipients?: { role: "CBH" | "SME" | "COH" | "AM" | "FE" | "OTHER"; name: string; email: string; am?: string; feEmail?: string | null }[];
+  /** typed = name / e-mail typed by the admin (an AM on a GP-wise task = acting AM of the circle's GPs without an AM; an
+   * FE = gets the GPs without an FE of the Area Manager `am`); withNoAm = a matrix AM also takes those GPs */
+  recipients?: { role: "CBH" | "SME" | "COH" | "AM" | "FE" | "OTHER"; name: string; email: string; am?: string; feEmail?: string | null; typed?: boolean; withNoAm?: boolean }[];
   sendEmail?: boolean;
 }
 
@@ -1965,7 +1998,8 @@ export interface GpReviewRecord {
 
 export interface ReviewContacts {
   circle: string | null;
-  role: "SME" | "COH";
+  /** MGG: the authorised Corporate Team – MGG accounts (Non-Doable forward of the COH) */
+  role: "SME" | "COH" | "MGG";
   /** Escalation Matrix people of the circle */
   people: { name: string; emails: { email: string; account: boolean; onTicket: boolean }[] }[];
   /** already on the ticket with this role, not in the matrix */
@@ -2127,6 +2161,8 @@ export interface TicketTaskFe {
 
 export interface TicketTask {
   areaManager: string;
+  /** NO_AM = acting Area Manager of the circle's GPs without an AM · AM+NO_AM = an AM with those GPs too · null = the AM's own GPs */
+  gpSource?: "NO_AM" | "AM+NO_AM" | null;
   amEmail: string | null;
   /** FE = a Field Engineer's view (only their GPs) · SME / COH = a reviewer's view (only the GPs the Area Manager /
    * the SME forwarded to them) · null = the whole task */
@@ -2266,6 +2302,8 @@ export interface TicketNotificationItem {
 export interface TicketApi {
   getKpis(scope: TicketScope): Promise<TicketKpis>;
   list(q: TicketListQuery): Promise<TicketPage>;
+  /** the weeks of the signed-in user's GP-wise task tickets, newest first */
+  myWeeks(): Promise<{ weeks: TicketWeek[] }>;
   get(id: number): Promise<TicketDetail>;
   /** Admin: active users a ticket can be assigned to */
   listAssignees(): Promise<TicketAssignee[]>;
@@ -2279,7 +2317,7 @@ export interface TicketApi {
   resendEmail(id: number, recipientId: number): Promise<TicketDetail>;
   /** GP-wise task: Area Managers of the week (with the matching dashboard user) and the GPs of one of them */
   getTaskAreaManagers(week: string): Promise<{ week: { id: string; label: string; start: string; end: string }; source: string; areaManagers: TaskAreaManager[] }>;
-  getTaskPreview(am: string, week: string, circle?: string): Promise<{ rows: TaskPreviewRow[]; dataAsOf: string; emails: string[]; summary?: TaskBreakdown }>;
+  getTaskPreview(am: string, week: string, circle?: string, withNoAm?: boolean): Promise<{ rows: TaskPreviewRow[]; dataAsOf: string; emails: string[]; summary?: TaskBreakdown }>;
   /** Daily progress of the assigned Area Manager (each submission is kept) */
   submitProgress(id: number, items: { taskGpId: number; achievedToday: number; remark?: string | null }[], note?: string): Promise<TicketDetail>;
   /** Daily progress with Done / Pending per GP and proof documents per GP (upload progress 0–1) */
@@ -2442,6 +2480,8 @@ export interface NdCaseDetail {
   otherRounds: { id: number; ref: string; round: number; status: NdStatus; statusLabel: string }[];
   can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[] };
   mggMembers: number;
+  /** the Corporate Team – MGG people the COH forwarded the case to (account = can sign in and decide) */
+  mggPicked?: { name: string; email: string; account: boolean }[];
 }
 
 export interface NdSummary {
@@ -2466,7 +2506,7 @@ export interface NonDoableApi {
   getSummary(): Promise<NdSummary>;
   listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
   getCase(id: number): Promise<NdCaseDetail>;
-  getContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
+  getContacts(id: number, role: "SME" | "COH" | "MGG"): Promise<ReviewContacts>;
   /** E1 / E2 / revisit forms with evidence and site photographs (upload progress 0–1) */
   submitForm(
     id: number,

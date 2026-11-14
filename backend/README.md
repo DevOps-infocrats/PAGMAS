@@ -43,7 +43,7 @@ backend/
 |---|---|
 | `app/main.py` | Creates the FastAPI app; adds security headers, body-size limit, rate limit, trusted hosts, CORS and the cross-site Origin check; maps errors to safe JSON (no stack traces); on start-up creates tables, creates/syncs the `.env` admin and auto-imports the newest workbook in `data/raw/` when the database is empty; mounts the routers under `/api/v1`. |
 | `app/config.py` | All settings from `backend/.env` (Pydantic Settings): secret key and rotation key, JWT algorithm / issuer / audience, session length, login limits, CORS / hosts, upload size, business thresholds (98% healthy, 90% penalty), admin login. Rejects weak or placeholder keys at start-up. |
-| `app/db.py` | SQLAlchemy engine and session (SQLite in `var/app.db` by default, PostgreSQL via `DATABASE_URL`); `init_db()` creates the tables. |
+| `app/db.py` | SQLAlchemy engine and session (SQLite in `var/app.db` by default, PostgreSQL via `DATABASE_URL`); `init_db()` brings the schema to the newest migration on PostgreSQL (`alembic upgrade head`; tests on SQLite create the tables from the models). |
 | `app/models.py` | Database tables: `users`, `audit_logs`, `datasets` (one per import), `validation_issues`, `dataset_weeks` (the file's W-nn weeks), `gps` (one row per GP), `gp_availability` (daily / weekly / monthly values), `reported_numbers` (O&M KEY NUMBERS), `master_blocks`. |
 | `app/cli.py` | Command line: `create-user`, `import-file <path>`, `reconcile`. |
 
@@ -156,6 +156,34 @@ Backup / restore (PowerShell):
 & "C:\Program Files\PostgreSQL\18\bin\pg_dump.exe" -U partap_db -h localhost -F c -f "E:\PRATAP\backup\partap_db_$(Get-Date -Format yyyyMMdd).dump" partap_db
 & "C:\Program Files\PostgreSQL\18\bin\pg_restore.exe" -U partap_db -h localhost -d partap_db --clean "E:\PRATAP\backup\partap_db_YYYYMMDD.dump"
 ```
+
+### Schema changes – migrations (Alembic)
+
+The database **structure** (tables, columns, indexes, unique rules) changes only through migration files in
+`migrations/versions/` – never by hand in pgAdmin. Every migration has a number; the database remembers the last one it
+ran (table `alembic_version`), so each one runs exactly once – on the local database, the test server and the live server alike.
+Migrations change structure, not data: copying records between servers is a `pg_dump` / `pg_restore` job.
+
+| File | Work |
+|---|---|
+| `alembic.ini`, `migrations/env.py` | Alembic setup – the database comes from `DATABASE_URL` in `.env` (no password in these files) |
+| `migrations/versions/0001_baseline.py` | the complete schema of 13 Nov 2026; on an empty database it creates everything, on a database made before Alembic (live) it adds only what is missing – it never drops or rewrites a row |
+| `migrations/legacy.py` | leftovers of an earlier design that still hold rows (`ticket_gp_stages`, `ticket_task_gps.stage/stage_at`, `ticket_tasks.workflow`) – never offered as "drop" |
+| `tests/test_migrations.py` | fails when `app/models.py` and the migrations differ |
+
+Changing the schema (from `backend/`):
+
+```powershell
+# 1. change app/models.py
+.venv\Scripts\alembic revision --autogenerate --rev-id 0002 -m "add xyz to tickets"   # writes migrations/versions/0002_….py
+# 2. READ that file – autogenerate guesses; a rename shows up as drop + add and must be rewritten by hand
+.venv\Scripts\alembic upgrade head        # apply locally, then run the tests
+# 3. commit the model change and the migration file together
+```
+
+Deploying (every server): **backup** (`pg_dump`, below) → pull the code → `.venv\Scripts\alembic upgrade head` → restart the API.
+The API also runs `upgrade head` itself at start-up, so a restart alone never leaves the schema behind; `alembic current`
+shows the revision of a database and `alembic upgrade head --sql` prints the SQL without running it.
 
 ## Column / sheet names (`data/column_map.json`)
 

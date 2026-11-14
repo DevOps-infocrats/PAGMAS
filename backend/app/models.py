@@ -479,6 +479,9 @@ class TicketRecipient(Base):
     # the matrix rows (None = rows without an FE e-mail); `email` is where the ticket e-mail goes
     am_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     fe_mail: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # True = name / e-mail typed by the admin at Generate Ticket (the role had nobody, or not this person, in the
+    # Escalation Matrix) – the person works in that role like one from the matrix; None / False = from the database
+    typed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
 
 
 class TicketSubmission(Base):
@@ -567,6 +570,9 @@ class TicketTask(Base):
     assignment_file: Mapped[str | None] = mapped_column(String(80), nullable=True)  # stored name under DATA_DIR/tickets/<id>/
     circle: Mapped[str | None] = mapped_column(String(80), nullable=True)
     cbh_name: Mapped[str | None] = mapped_column(String(160), nullable=True)  # CBH of the AM's GPs (Escalation Matrix)
+    # where the task GPs came from: None = the Area Manager's own GPs (Escalation Matrix); "NO_AM" = the circle's GPs
+    # without an Area Manager, given to an acting Area Manager typed by the admin; "AM+NO_AM" = the AM's own GPs plus them
+    gp_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -799,6 +805,23 @@ class NdForward(Base):
     event_id: Mapped[int] = mapped_column(ForeignKey("nd_events.id", ondelete="CASCADE"), index=True)
     recipient_id: Mapped[int] = mapped_column(ForeignKey("ticket_recipients.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(String(10))  # SME | COH – the role the case was sent to
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NdMggPick(Base):
+    """The Corporate Team – MGG person(s) the COH forwarded a case to (COH_FORWARD), by name / e-mail – chosen from the
+    authorised MGG accounts or typed by the COH (e.g. no MGG account is authorised yet). The dashboard account with
+    that e-mail (matched when it signs in, so an account made later works too) decides THIS case; only the people of
+    the LATEST forward count. Rows are only added, never changed."""
+
+    __tablename__ = "nd_mgg_picks"
+    __table_args__ = (UniqueConstraint("event_id", "email", name="uq_nd_mgg_pick_step"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("nd_cases.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("nd_events.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    email: Mapped[str] = mapped_column(String(254), index=True)  # lower case
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

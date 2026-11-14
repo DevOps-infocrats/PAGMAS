@@ -192,6 +192,14 @@ export const httpAdminApi: AdminApi = {
     return upload(`/users/import?dryRun=${dryRun ? "true" : "false"}`, body);
   },
   getUserLocations: () => request("/users/locations"),
+  searchUserGps: ({ circles = [], blocks = [], q, limit = 50 }) => {
+    const p = new URLSearchParams();
+    for (const b of blocks) p.append("block", b);
+    if (!blocks.length) for (const c of circles) p.append("circle", c);
+    if (q?.trim()) p.set("q", q.trim());
+    p.set("limit", String(limit));
+    return request(`/users/locations/gps?${p.toString()}`);
+  },
   getMailStatus: () => request("/mail/status"),
   getMailOptions: () => request("/mail/options"),
   sendTestMail: (to) => request("/mail/test", { method: "POST", body: JSON.stringify({ to }) }),
@@ -216,6 +224,7 @@ export const httpTicketApi: TicketApi = {
     request(
       `/tickets${qs({ scope: q.scope, search: q.search, status: q.status, priority: q.priority, date_from: q.dateFrom, date_to: q.dateTo, circle: q.circle, areaManager: q.areaManager, week: q.week, gp: q.gp, progressDate: q.progressDate, page: q.page, page_size: q.pageSize })}`,
     ),
+  myWeeks: () => request("/tickets/my-weeks"),
   get: (id) => request(`/tickets/${id}`),
   listAssignees: () => request("/tickets/assignees"),
   create: (body) => request("/tickets", { method: "POST", body: JSON.stringify(body) }),
@@ -238,7 +247,7 @@ export const httpTicketApi: TicketApi = {
   markNotificationsRead: () => request("/tickets/notifications/read", { method: "POST" }),
   attachmentUrl: (id, inline) => `${API_BASE}/tickets/attachments/${id}${inline ? "?inline=true" : ""}`,
   getTaskAreaManagers: (week) => request(`/tickets/task/area-managers${qs({ week })}`),
-  getTaskPreview: (am, week, circle) => request(`/tickets/task/preview${qs({ am, week, circle })}`),
+  getTaskPreview: (am, week, circle, withNoAm) => request(`/tickets/task/preview${qs({ am, week, circle, withNoAm: withNoAm ? "true" : undefined })}`),
   submitProgress: (id, items, note) => request(`/tickets/${id}/progress`, { method: "POST", body: JSON.stringify({ items, note: note || null }) }),
   submitProgressForm: (id, items, note, proofs, onProgress, newGps) => {
     const body = new FormData();

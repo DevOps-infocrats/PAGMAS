@@ -25,13 +25,11 @@ const FORMATS: Record<UploadKind, { label: string; sheet: string; header: string
   },
   escalation: {
     label: "Escalation Matrix",
-    sheet: "any sheet with the columns below (“All” in the template)",
-    header: "found in the first 15 rows (row 1 in the template)",
-    required: "Circle, GP Code, FRT Code, FE Name",
-    templates: [
-      { label: "Blank template", href: "/templates/Escalation%20Matrix%20Template.xlsx" },
-      { label: "Sample (2 example rows)", href: "/templates/Escalation%20Matrix%20Sample.xlsx" },
-    ],
+    sheet: "any sheet whose header row has Circle, GP Code and FE Name (“All” in the template)",
+    header: "found in the first 15 rows (row 2 in the template)",
+    required:
+      "Section A of the template – Circle, GP Code, FE Name, FE Email ID, AM Name, AM Email ID, SME Name, SME Email ID, COH, COH Email ID – by name, in any order (case, spaces and punctuation do not matter). A blank cell (vacant post) is only a warning. Phones, CBH, FRT Code, BA, District, Block and GP are optional; other columns are ignored",
+    templates: [{ label: "Escalation Matrix template (2 example rows)", href: "/api/v1/ingestion/template/escalation.xlsx" }],
   },
 };
 const STAGE_LABEL: Record<UploadPreview["stage"], string> = { ok: "Ready", file: "File check", kind: "File type", duplicate: "Already imported", template: "Required column missing", structure: "Sheet / columns" };
@@ -231,7 +229,7 @@ function Report({ report: r, onCheckColumns }: { report: UploadPreview; onCheckC
         </p>
         <p className="mt-1 text-critical-text">{r.error}</p>
         {r.columnCheck && <RequiredColumns sheets={r.columnCheck.sheets} />}
-        {r.stage === "template" && <TemplateHelp />}
+        {r.stage === "template" && <TemplateHelp kind={r.kind} />}
         {r.templateErrors && r.templateErrors.length > 0 && (
           <div className="mt-2 max-h-64 overflow-auto rounded-md border border-critical/30 bg-card">
             <table className="w-full text-[0.75rem]">
@@ -454,7 +452,8 @@ function RequiredColumns({ sheets }: { sheets: UploadColumnSheet[] }) {
 }
 
 /** What to do when a required column is missing: the template's two sections. */
-function TemplateHelp() {
+function TemplateHelp({ kind }: { kind: UploadKind }) {
+  const esc = kind === "escalation";
   return (
     <div className="mt-2 grid gap-2 sm:grid-cols-2">
       <div className="rounded-md border border-good/40 bg-good-soft px-3 py-2 text-[0.75rem]">
@@ -462,11 +461,13 @@ function TemplateHelp() {
         <p className="text-foreground/80">Exact names, must be present, any order. A missing one is the only column reason a file is rejected.</p>
       </div>
       <div className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-[0.75rem]">
-        <p className="font-semibold text-warning-text">Section B – day / week / month columns (flexible)</p>
-        <p className="text-foreground/80">Examples only: add as many as you have; only the current week is fine. Never a reason to reject.</p>
+        <p className="font-semibold text-warning-text">{esc ? "Section B – optional columns" : "Section B – day / week / month columns (flexible)"}</p>
+        <p className="text-foreground/80">
+          {esc ? "Read when present, may be left out (phones, CBH, FRT Code …). Never a reason to reject." : "Examples only: add as many as you have; only the current week is fine. Never a reason to reject."}
+        </p>
       </div>
       <div className="flex flex-wrap items-center gap-3 text-[0.75rem] sm:col-span-2">
-        {FORMATS.master.templates.map((t) => (
+        {FORMATS[kind].templates.map((t) => (
           <a key={t.href} href={t.href} download className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
             <Download className="size-3.5" aria-hidden /> {t.label}
           </a>

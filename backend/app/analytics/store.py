@@ -397,6 +397,34 @@ _scoped: OrderedDict[tuple, tuple[Store, Store]] = OrderedDict()
 _scoped_lock = threading.Lock()
 
 
+AREA_LEVELS = ("circle", "district", "block", "gp")
+
+
+def area_mask(g: pd.DataFrame, areas) -> tuple[np.ndarray, set[str]]:
+    """The GPs of a user's areas (level, id) – circle / district / block ids as in User Management, gp = GP code – and
+    the circles given in full. An area is the union of everything chosen, except that a more specific area chosen
+    INSIDE another one narrows it: Rajasthan + one Rajasthan block = that block only; Rajasthan + a block of Assam =
+    all of Rajasthan and that Assam block; a block + GPs of that block = those GPs. Ids not in the data match nothing
+    (never widened). Used for the dashboard data (scoped_store) and the AMC Conversion e-mail (mail.audience)."""
+    ids = {lvl: {i for l, i in areas if l == lvl} for lvl in AREA_LEVELS}
+    gp_in = g.index.isin(list(ids["gp"]))
+    blk_in = g["block_id"].isin(ids["block"]).to_numpy()
+    dist_in = g["district_id"].isin(ids["district"]).to_numpy()
+    circ_in = g["circle_id"].isin(ids["circle"]).to_numpy()
+    # parents holding a chosen, more specific area are narrowed to it
+    narrowed_blocks = set(g.loc[gp_in, "block_id"])
+    narrowed_districts = set(g.loc[gp_in | blk_in, "district_id"])
+    narrowed_circles = set(g.loc[gp_in | blk_in | dist_in, "circle_id"])
+    mask = (
+        gp_in
+        | (blk_in & ~g["block_id"].isin(narrowed_blocks).to_numpy())
+        | (dist_in & ~g["district_id"].isin(narrowed_districts).to_numpy())
+        | (circ_in & ~g["circle_id"].isin(narrowed_circles).to_numpy())
+    )
+    full = {c for c in ids["circle"] if c not in narrowed_circles}
+    return mask, full
+
+
 def scoped_store(base: Store, areas: tuple[tuple[str, str], ...]) -> Store | None:
     """The part of `base` a viewer may see: the GPs of their areas (level, id) – circle / district / block ids as in
     User Management – with every GP-wise frame cut to those GPs. All figures are then computed by the same code as
@@ -409,13 +437,13 @@ def scoped_store(base: Store, areas: tuple[tuple[str, str], ...]) -> Store | Non
             _scoped.move_to_end(key)
             return hit[1]
     g = base.gps
-    ids = {lvl: {i for l, i in areas if l == lvl} for lvl in ("circle", "district", "block")}
-    mask = (g["circle_id"].isin(ids["circle"]) | g["district_id"].isin(ids["district"]) | g["block_id"].isin(ids["block"])).to_numpy()
+    mask, full_ids = area_mask(g, areas)
     if not mask.any():
         return None
     idx = g.index[mask]
     sub = g[mask]
-    full = frozenset(str(c).upper() for c in g.loc[g["circle_id"].isin(ids["circle"]), "circle"].unique())
+    # circles given in full (not narrowed to blocks / GPs): their state-level reference rows stay
+    full = frozenset(str(c).upper() for c in g.loc[g["circle_id"].isin(full_ids), "circle"].unique())
     # State-level reference rows: kept for circles given in full; rows that are not about a circle (e.g. the
     # "W-35 END DATE" row of the O&M sheet) stay.
     all_circles = {str(c).upper() for c in g["circle"].unique()}

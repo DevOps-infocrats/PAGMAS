@@ -38,7 +38,7 @@ class ActionIn(BaseModel):
     remark: str | None = Field(default=None, max_length=nd.MAX_TEXT)
     reason: str | None = Field(default=None, max_length=nd.MAX_TEXT)
     target: Literal["FE", "AM", "SME"] | None = None  # COH_RETURN
-    to: list[ToIn] = Field(default_factory=list, max_length=10)  # AM_FORWARD: SME · SME_RECOMMEND: COH
+    to: list[ToIn] = Field(default_factory=list, max_length=10)  # AM_FORWARD: SME · SME_RECOMMEND: COH · COH_FORWARD: MGG
 
 
 class MemberIn(BaseModel):
@@ -75,8 +75,9 @@ def case(case_id: int, user: CurrentUser = Depends(get_current_user), db: Sessio
 
 
 @router.get("/cases/{case_id}/contacts")
-def contacts(case_id: int, role: Literal["SME", "COH"], user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    """SME (AM forward) / COH (SME recommendation) of the ticket's circle in the Escalation Matrix."""
+def contacts(case_id: int, role: Literal["SME", "COH", "MGG"], user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """SME (AM forward) / COH (SME recommendation) of the ticket's circle in the Escalation Matrix; MGG (COH forward):
+    the authorised Corporate Team – MGG accounts."""
     try:
         return nd.contacts(db, case_id, user, role)
     except nd.NdError as exc:

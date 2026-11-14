@@ -2,6 +2,7 @@
 and the downloadable templates – one source of truth for all three, so they can never disagree.
 
 An upload is ONE workbook ("Master Data … Daily track") with two data sheets: "GP Wise Data" and "Master Block".
+The Escalation Matrix (its own workbook) follows the same rules with ESC_REQUIRED / ESC_OPTIONAL (validate_escalation).
 
 Three column buckets per sheet. Columns are found by their header NAME, never by position, so any order works:
 
@@ -140,6 +141,52 @@ MB_OPTIONAL: tuple[Col, ...] = (
     Col("Block Status", "block_status"),
 )
 
+# Escalation Matrix (its own workbook, any sheet name) – REQUIRED: the people the tickets, the AM-wise targets and the
+# e-mails are built from. The COLUMN must be present; a blank cell (vacant post) is a warning, never a rejection.
+# Fields = column_map.ESCALATION_REQUIRED (tests/test_escalation_template.py keeps both lists in step).
+ESC_REQUIRED: tuple[Col, ...] = (
+    Col("Circle", "circle", example=("RAJASTHAN", "HARYANA"), why="circle of the GP – Area Manager / FE lists per circle"),
+    Col("GP Code", "gp_code", "int", (999901, 999902), "the GP's key – one row per GP code, matched with the master data"),
+    Col("FE Name", "fe_name", example=("Example FE One", "Example FE Two"), why="Field Engineer of the GP – FE-wise tickets and FE lists"),
+    Col("FE Email ID", "fe_email", example=("fe.one@example.in", "fe.two@example.in"), why="FE login: which GPs of a ticket the FE works on; FE ticket e-mails"),
+    Col("AM Name", "am_name", example=("Example AM", "Example AM 2"), why="Area Manager of the GP – one ticket per AM, AM-wise targets, AMC Conversion"),
+    Col("AM Email ID", "am_email", example=("am.one@example.in", "am.two@example.in"), why="who receives the AM's ticket; AM e-mails"),
+    Col("SME Name", "shq_name", example=("Example SME", "Example SME"), why="SME (SHQ SPOC) – ticket recipient, AM → SME forwarding"),
+    Col("SME Email ID", "shq_email", example=("sme@example.in", "sme@example.in"), why="SME ticket, Non-Doable and report e-mails"),
+    Col("COH", "coh_name", example=("Example COH", "Example COH"), why="COH – ticket recipient, SME → COH forwarding"),
+    Col("COH Email ID", "coh_email", example=("coh@example.in", "coh@example.in"), why="COH ticket, Non-Doable and report e-mails"),
+)
+# Escalation Matrix – OPTIONAL: read when present, left empty when the column is not in the file.
+ESC_OPTIONAL: tuple[Col, ...] = (
+    Col("BA", "ba", example=("Jodhpur", "Ambala"), why="BA of the GP (Escalation Sheet)"),
+    Col("District", "district", example=("JODHPUR", "AMBALA"), why="district of the GP (Escalation Sheet)"),
+    Col("Block Name", "block_name", example=("BAP", "BARARA"), why="block of the GP (Escalation Sheet)"),
+    Col("Block Code", "block_code", "int", (722, 501), "block of the GP (Escalation Sheet)"),
+    Col("GP", "gp_name", example=("EXAMPLE GP One", "EXAMPLE GP Two"), why="GP name (Escalation Sheet) – the dashboard takes it from the master data"),
+    Col("FRT Code", "frt_code", example=("FRT-01", "FRT-02"), why="FRT team of the GP (Field Team & Escalation)"),
+    Col("Splicer Name", "splicer_name", example=("Example Splicer", "Example Splicer 2"), why="splicer of the GP (Field Team & Escalation)"),
+    Col("Splicer number", "splicer_phone", example=("9000000001", "9000000002"), why="splicer phone (masked for non-admins)"),
+    Col("FE Number", "fe_phone", example=("9000000003", "9000000004"), why="FE phone (masked for non-admins)"),
+    Col("AM Number", "am_phone", example=("9000000005", "9000000006"), why="AM phone (masked for non-admins)"),
+    Col("SME Number", "shq_phone", example=("9000000007", "9000000007"), why="SME phone (masked for non-admins)"),
+    Col("COH No.", "coh_phone", example=("9000000008", "9000000008"), why="COH phone (masked for non-admins)"),
+    Col("CBH", "cbh_name", example=("Example CBH", "Example CBH"), why="CBH – ticket recipient (Escalation Sheet)"),
+    Col("CBH No.", "cbh_phone", example=("9000000009", "9000000009"), why="CBH phone (masked for non-admins)"),
+    Col("CBH Email ID", "cbh_email", example=("cbh@example.in", "cbh@example.in"), why="CBH ticket e-mail"),
+)
+ESC_TEMPLATE_HINT = (
+    "Download the Escalation Matrix template: Section A lists the required columns (exact names, they must be present – "
+    "a blank cell for a vacant post is fine); Section B the optional ones, which may be left out."
+)
+
+
+def esc_label(field_key: str) -> str:
+    """The name an Escalation Matrix field has in the template and in messages ('shq_name' -> 'SME Name')."""
+    from .column_map import ESCALATION_COLUMNS
+
+    col = next((c for c in (*ESC_REQUIRED, *ESC_OPTIONAL) if c.field == field_key), None)
+    return col.name if col else ESCALATION_COLUMNS.get(field_key, (field_key,))[0]
+
 # ---------------------------------------------------------------- time-varying columns (patterns, never fixed names)
 
 MONTH_WORD = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
@@ -236,6 +283,7 @@ class Check:
     error_count: int = 0
     warning_count: int = 0
     sheets: list[SheetColumns] = field(default_factory=list)
+    note: str = "The file was rejected only because of the required columns / sheets above – day, week and month columns are never a reason to reject."
 
     def add(self, p: Problem) -> None:
         if p.severity == "error":
@@ -264,7 +312,7 @@ class Check:
         parts += [m if m.endswith(".") else m + "." for m in other[:3]]
         if len(other) > 3:
             parts.append(f"(+{len(other) - 3} more)")
-        parts.append("The file was rejected only because of the required columns / sheets above – day, week and month columns are never a reason to reject.")
+        parts.append(self.note)
         return " ".join(parts)
 
 
@@ -295,10 +343,11 @@ def _find_header(grid: list[list[Any]], anchors: tuple[Col, ...], aliases: dict[
     return None
 
 
-def _scan(sheet: str, grid: list[list[Any]], required: tuple[Col, ...], optional: tuple[Col, ...], aliases: dict[str, tuple[str, ...]], period_of, check: Check) -> SheetColumns:
-    """Header row → every column in a bucket: required / optional / time-varying / not used."""
+def _scan(sheet: str, grid: list[list[Any]], required: tuple[Col, ...], optional: tuple[Col, ...], aliases: dict[str, tuple[str, ...]], period_of, check: Check, hdr: int | None = None) -> SheetColumns:
+    """Header row (found here unless given) → every column in a bucket: required / optional / time-varying / not used."""
     rep = SheetColumns(sheet, found=True)
-    hdr = _find_header(grid, required[:1] + tuple(c for c in required if c.field in ("gp_code", "block_code")), aliases)
+    if hdr is None:
+        hdr = _find_header(grid, required[:1] + tuple(c for c in required if c.field in ("gp_code", "block_code")), aliases)
     if hdr is None:
         anchors = [required[0].name] + [c.name for c in required if c.field in ("gp_code", "block_code")]
         rep.required = [{"name": c.name, "header": None, "hint": None} for c in required]
@@ -374,6 +423,28 @@ def validate_master(path: Path) -> Check:
     return check
 
 
+def validate_escalation(path: Path) -> Check:
+    """Structure check of an Escalation Matrix (nothing is written): the sheet whose header row has Circle + GP Code +
+    FE Name, then every REQUIRED column by name (missing / twice = rejected, with a similar header as a hint). Row
+    values (blank GP code, repeated GP code, e-mails that are not addresses …) are checked by escalation.parse_escalation."""
+    from .column_map import load_column_map
+    from .escalation import _header_row
+    from .workbook import open_workbook, read_sheet
+
+    check = Check(note="The file was rejected only because of the required columns above – optional columns may be left out, and a blank cell (vacant post) is never a reason to reject.")
+    wb = open_workbook(path)
+    names = load_column_map().escalation
+    for name in wb.sheet_names:
+        grid = read_sheet(wb, name, nrows=15)
+        hdr = _header_row(grid, names)
+        if hdr is not None:
+            check.sheets.append(_scan(name, grid, ESC_REQUIRED, ESC_OPTIONAL, names, lambda _text: None, check, hdr))
+            return check
+    check.add(Problem("Escalation Matrix", None, None, f"Header row not found: no sheet has 'Circle', 'GP Code' and 'FE Name' in one of its first 15 rows (the workbook has: {', '.join(wb.sheet_names)})"))
+    check.sheets.append(SheetColumns("Escalation Matrix"))
+    return check
+
+
 # ---------------------------------------------------------------- the downloadable templates
 
 
@@ -427,15 +498,15 @@ class _Fmt:
         self.wrap = wb.add_format(base | {"text_wrap": True, "valign": "top"})
 
 
-def _sections(ws: Any, f: _Fmt, a_cols: int, b_from: int, b_to: int) -> None:
+def _sections(ws: Any, f: _Fmt, a_cols: int, b_from: int, b_to: int, b_text: str = SECTION_B) -> None:
     ws.merge_range(0, 0, 0, a_cols - 1, SECTION_A, f.sec_a) if a_cols > 1 else ws.write(0, 0, SECTION_A, f.sec_a)
-    ws.merge_range(0, b_from, 0, b_to, SECTION_B, f.sec_b) if b_to > b_from else ws.write(0, b_from, SECTION_B, f.sec_b)
+    ws.merge_range(0, b_from, 0, b_to, b_text, f.sec_b) if b_to > b_from else ws.write(0, b_from, b_text, f.sec_b)
     ws.set_row(0, 48)
 
 
-def _write_required(ws: Any, f: _Fmt, hdr: int, cols: tuple[Col, ...], first_row: int, planned: dt.date) -> None:
-    for c, col in enumerate(cols):
-        ws.write(hdr, c, col.name, f.req)
+def _write_required(ws: Any, f: _Fmt, hdr: int, cols: tuple[Col, ...], first_row: int, planned: dt.date, start: int = 0, head: Any = None) -> None:
+    for c, col in enumerate(cols, start=start):
+        ws.write(hdr, c, col.name, head or f.req)
         ws.set_column(c, c, 14 if len(col.name) < 14 else 22, f.cell[col.fmt])
         ex = col.example
         if col.field == "planned_date":
@@ -522,6 +593,48 @@ def _mb_sheet(wb: Any, f: _Fmt, today: dt.date) -> None:
     ws.freeze_panes(first, 5)
 
 
+SECTION_B_ESC = "SECTION B – OPTIONAL columns: read when present, may be left out. Any other column is ignored."
+
+
+def _esc_sheet(wb: Any, f: _Fmt, today: dt.date) -> None:
+    """Escalation Matrix ('All', as in the BSNL file): row 1 sections, row 2 header, rows 3–4 examples."""
+    ws = wb.add_worksheet("All")
+    hdr, first = 1, 2
+    _write_required(ws, f, hdr, ESC_REQUIRED, first, today)
+    _write_required(ws, f, hdr, ESC_OPTIONAL, first, today, start=len(ESC_REQUIRED), head=f.per)
+    _sections(ws, f, len(ESC_REQUIRED), len(ESC_REQUIRED), len(ESC_REQUIRED) + len(ESC_OPTIONAL) - 1, SECTION_B_ESC)
+    ws.set_row(hdr, 32)
+    ws.freeze_panes(first, 3)
+
+
+def _read_me_esc(wb: Any, f: _Fmt) -> None:
+    from .column_map import ESCALATION_COLUMNS
+
+    rd = wb.add_worksheet("Read Me")
+    rd.write(0, 0, "PAGMAS – Escalation Matrix upload template", f.title)
+    notes = [
+        "Upload the Escalation Matrix as its own workbook (any sheet name – 'All' here). The header row is found in the first 15 rows by its names: any column order works; letter case, spaces and punctuation do not matter.",
+        "SECTION A (green) = REQUIRED columns. They must be present – a missing one is the ONLY column reason a file is rejected, and the message names it. A blank cell in a single row (vacant post, e.g. no AM yet) is fine: it is listed as a warning.",
+        "SECTION B (orange) = OPTIONAL columns: read when present; a column left out stays empty (phones, CBH, FRT Code …).",
+        "One row per GP Code. A row without GP Code or Circle, or a repeated GP Code, is skipped and named with its Excel row. A text that is not an e-mail address is left empty and reported. Several numbers or e-mails in one cell: separate them with ' / '.",
+        "Any other column (GP Type, HOTO Date, 2W / 4W …) is ignored and listed as 'not used'. Names an admin added under Data Operations → Column names are accepted too.",
+    ]
+    for i, t in enumerate(notes, start=2):
+        rd.merge_range(i, 0, i, 3, t, f.wrap)
+        rd.set_row(i, 44)
+    r = len(notes) + 3
+    for j, h in enumerate(("Column", "Bucket", "Also accepted as", "Used for")):
+        rd.write(r, j, h, f.req)
+    r += 1
+    for bucket, cols in (("REQUIRED", ESC_REQUIRED), ("optional", ESC_OPTIONAL)):
+        for col in cols:
+            other = [n for n in ESCALATION_COLUMNS.get(col.field or "", ()) if loose(n) != loose(col.name)]
+            rd.write_row(r, 0, [col.name, bucket, ", ".join(other) or "—", col.why], f.wrap)
+            r += 1
+    for c, w in zip(range(4), (22, 12, 40, 60)):
+        rd.set_column(c, c, w)
+
+
 def _read_me(wb: Any, f: _Fmt, kind: str) -> None:
     rd = wb.add_worksheet("Read Me")
     rd.write(0, 0, "PAGMAS – Master Data upload template", f.title)
@@ -563,8 +676,9 @@ def _read_me(wb: Any, f: _Fmt, kind: str) -> None:
 
 
 def build_template(kind: str = "master", today: dt.date | None = None, sample: bool = True) -> bytes:
-    """Template (.xlsx) with two example rows: kind "gp" (GP Wise Data), "block" (Master Block) or "master" (both sheets
-    in one workbook – ready to fill and upload). `sample` is kept for old links (the examples are always included)."""
+    """Template (.xlsx) with two example rows: kind "gp" (GP Wise Data), "block" (Master Block), "master" (both sheets
+    in one workbook – ready to fill and upload) or "escalation" (Escalation Matrix). `sample` is kept for old links (the
+    examples are always included)."""
     import xlsxwriter
 
     del sample
@@ -572,6 +686,11 @@ def build_template(kind: str = "master", today: dt.date | None = None, sample: b
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     f = _Fmt(wb)
+    if kind == "escalation":
+        _read_me_esc(wb, f)
+        _esc_sheet(wb, f, today)
+        wb.close()
+        return buf.getvalue()
     _read_me(wb, f, kind)
     if kind in ("gp", "master"):
         _gp_sheet(wb, f, today)
@@ -581,4 +700,9 @@ def build_template(kind: str = "master", today: dt.date | None = None, sample: b
     return buf.getvalue()
 
 
-TEMPLATE_FILES = {"gp": "PAGMAS GP Wise Template.xlsx", "block": "PAGMAS Master Block Template.xlsx", "master": "PAGMAS Master Data Template.xlsx"}
+TEMPLATE_FILES = {
+    "gp": "PAGMAS GP Wise Template.xlsx",
+    "block": "PAGMAS Master Block Template.xlsx",
+    "master": "PAGMAS Master Data Template.xlsx",
+    "escalation": "PAGMAS Escalation Matrix Template.xlsx",
+}

@@ -73,7 +73,8 @@ def test_escalation_rows_rejected_with_reasons(tmp_path):
     path = tmp_path / "esc.xlsx"
     wb = xlsxwriter.Workbook(str(path))
     ws = wb.add_worksheet("Matrix")
-    rows = [["Circle", "GP Code", "FRT Code", "FE Name"], ["Rajasthan", "O033977", "F1", "A"], ["Rajasthan", 33977, "F2", "B"], ["Rajasthan", None, "F3", "C"], [None, "4455", "F4", "D"]]
+    head = ["Circle", "GP Code", "FRT Code", "FE Name", "FE Email ID", "AM Name", "AM Email ID", "SME Name", "SME Email ID", "COH", "COH Email ID"]
+    rows = [head, ["Rajasthan", "O033977", "F1", "A"], ["Rajasthan", 33977, "F2", "B"], ["Rajasthan", None, "F3", "C"], [None, "4455", "F4", "D"]]
     for r, row in enumerate(rows):
         for c, v in enumerate(row):
             if v is not None:

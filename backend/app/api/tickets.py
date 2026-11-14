@@ -59,6 +59,12 @@ class RecipientIn(BaseModel):
     # null = rows without an FE e-mail). `email` is the delivery address (from the matrix or typed by the admin).
     am: str | None = Field(default=None, max_length=160)
     feEmail: str | None = Field(default=None, max_length=200)
+    # typed by the admin (the role has nobody, or not this person, in the matrix): SME / COH / CBH work in that role; an
+    # Area Manager of a GP-wise task is the acting AM of the circle's GPs without an AM; an FE (`am` = the Area Manager
+    # of the ticket they work on) gets that ticket's GPs without an FE
+    typed: bool = False
+    # Area Manager of the matrix: also take the circle's GPs without an Area Manager (and their FEs) on this ticket
+    withNoAm: bool = False
 
 
 class TicketIn(BaseModel):
@@ -174,6 +180,12 @@ def list_tickets(
     )
 
 
+@router.get("/my-weeks")
+def my_weeks(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Weeks of the signed-in user's GP-wise task tickets (User Tickets week filter); declared before /{ticket_id}."""
+    return service.my_weeks(db, user.id)
+
+
 @router.get("/filter-options", dependencies=[Depends(require_admin)])
 def filter_options(db: Session = Depends(get_db)) -> dict:
     return service.filter_options(db)
@@ -256,15 +268,18 @@ def task_preview(
     am: Annotated[str, Query(min_length=1, max_length=160)],
     week: Annotated[str, Query(pattern=r"^W-\d{1,2}$")],
     circle: Annotated[str | None, Query(max_length=80)] = None,
+    withNoAm: bool = False,
     store: Store = Depends(get_store),
 ) -> dict:
-    """The GPs a task ticket for this Area Manager would get (only the selected circle's when one is given)."""
+    """The GPs a task ticket for this Area Manager would get (only the selected circle's when one is given). am = "No
+    Area Manager": the circle's GPs without an AM (an acting AM's ticket); withNoAm: the AM's GPs plus those."""
     _week_ok(store, week)
     try:
-        rows = tasks.preview(store, am, week, circle)
+        rows = tasks.preview(store, am, week, circle, with_no_am=withNoAm)
+        summary = tasks.breakdown(store, am, week, circle, rows, with_no_am=withNoAm)
     except tasks.TaskError as exc:
         raise HTTPException(exc.status, exc.message) from None
-    return {"rows": rows, "dataAsOf": store.data_as_of.isoformat(), "emails": tasks.am_emails(store, am), "summary": tasks.breakdown(store, am, week, circle, rows)}
+    return {"rows": rows, "dataAsOf": store.data_as_of.isoformat(), "emails": tasks.am_emails(store, am), "summary": summary}
 
 
 @router.get("/notifications")
@@ -451,6 +466,9 @@ def review_gps(ticket_id: int, body: ReviewIn, request: Request, background: Bac
         raise HTTPException(exc.status, exc.message) from None
     if ids:
         background.add_task(mailer.review_mail, ids, body.taskGpIds, body.action, user.name, (body.remark or "").strip() or None)
+    notice = review.notice_to(db, t, body.taskGpIds, body.action, user)  # return → FE, letter / AMC → Area Manager
+    if notice:
+        background.add_task(mailer.review_notice_mail, t.id, body.taskGpIds, body.action, user.name, (body.remark or "").strip() or None, body.date, notice)
     audit(db, "ticket_review", request, user.id, f"{t.code} {body.action} · {n} GPs" + (f" · e-mail to {len(ids)}" if ids else ""))
     db.refresh(t)
     return service.detail_json(db, t, user)

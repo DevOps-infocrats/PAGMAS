@@ -197,6 +197,18 @@ def test_task_one_ticket_per_area_manager(client, org, mail):
         d = client.get(f"/api/v1/tickets/{t['id']}").json()
         by_am[d["task"]["areaManager"]] = d
     first, second = by_am[org["am"]], by_am["Second Area Manager"]
+    # every ticket of the batch names ITS OWN Area Manager and the week with its dates (not the subject typed once)
+    wk = org["week"][2:]
+    assert first["subject"].startswith(f"Weekly GP task – {org['am']} – Week {wk} (") and org["circle"] in first["subject"]
+    assert second["subject"].startswith(f"Weekly GP task – Second Area Manager – Week {wk} (")
+    # list rows carry the week dates; the AM's week filter lists the week with its ticket count
+    row = next(x for x in client.get("/api/v1/tickets", params={"scope": "all", "week": org["week"]}).json()["items"] if x["id"] == first["id"])
+    assert row["week"] == org["week"] and row["weekStart"] == first["task"]["week"]["start"] and row["weekEnd"] == first["task"]["week"]["end"]
+    login(client, VIEWER)
+    weeks = client.get("/api/v1/tickets/my-weeks").json()["weeks"]
+    w = next(x for x in weeks if x["id"] == org["week"])
+    assert w["total"] >= 1 and w["open"] >= 1 and w["start"] == first["task"]["week"]["start"]
+    login(client, ADMIN)
     assert sorted(g["gpCode"] for g in first["task"]["gps"]) == sorted(org["first"])  # no GP of another AM
     assert sorted(g["gpCode"] for g in second["task"]["gps"]) == org["second"]
     assert first["task"]["circle"] == org["circle"] and first["assignee"]["email"] == VIEWER[0]

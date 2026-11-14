@@ -125,7 +125,20 @@ export interface ListFilters {
 export const EMPTY_FILTERS: ListFilters = { search: "", status: "all", priority: "all", dateFrom: "", dateTo: "", page: 1 };
 
 /** Search waits until typing pauses; every filter change starts again on page 1. */
-export function TicketFilterBar({ value, onChange, searchHint, withDates }: { value: ListFilters; onChange: (v: ListFilters) => void; searchHint: string; withDates?: boolean }) {
+/** `extra`: one more labelled field in the same row (e.g. the Week filter of User Tickets), placed before "Clear". */
+export function TicketFilterBar({
+  value,
+  onChange,
+  searchHint,
+  withDates,
+  extra,
+}: {
+  value: ListFilters;
+  onChange: (v: ListFilters) => void;
+  searchHint: string;
+  withDates?: boolean;
+  extra?: React.ReactNode;
+}) {
   const [text, setText] = useState(value.search);
   useEffect(() => {
     if (text.trim() === value.search) return;
@@ -135,7 +148,16 @@ export function TicketFilterBar({ value, onChange, searchHint, withDates }: { va
   const set = (patch: Partial<ListFilters>) => onChange({ ...value, ...patch, page: 1 });
   const active = value.search || value.status !== "all" || value.priority !== "all" || value.dateFrom || value.dateTo;
   return (
-    <div className={cn("grid grid-cols-1 gap-3 border-b border-border px-4 py-3 sm:grid-cols-2", withDates ? "xl:grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,1fr))_repeat(2,minmax(0,0.9fr))_auto]" : "xl:grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,1fr))_auto]")}>
+    <div
+      className={cn(
+        "grid grid-cols-1 gap-3 border-b border-border px-4 py-3 sm:grid-cols-2",
+        withDates
+          ? "xl:grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,1fr))_repeat(2,minmax(0,0.9fr))_auto]"
+          : extra
+            ? "xl:grid-cols-[minmax(0,1.3fr)_repeat(2,minmax(0,0.85fr))_minmax(0,1.5fr)_auto]"
+            : "xl:grid-cols-[minmax(0,1.6fr)_repeat(2,minmax(0,1fr))_auto]",
+      )}
+    >
       <label className="flex min-w-0 flex-col gap-1">
         <span className="text-xs font-semibold text-foreground/75">Search</span>
         <span className="relative">
@@ -163,6 +185,7 @@ export function TicketFilterBar({ value, onChange, searchHint, withDates }: { va
           </label>
         </>
       )}
+      {extra}
       <div className="flex items-end">
         <Button
           variant="ghost"

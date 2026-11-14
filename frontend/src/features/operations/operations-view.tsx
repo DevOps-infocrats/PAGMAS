@@ -1,6 +1,6 @@
 "use client";
 
-import { Columns3, FileDown, FileUp, Info, Loader2, RotateCcw } from "lucide-react";
+import { Columns3, FileUp, Info, Loader2, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, KpiSkeleton } from "@/components/feedback/states";
@@ -14,7 +14,6 @@ import { Dialog } from "@/components/ui/overlays";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { IS_LIVE, adminApi, api, type EscalationImportRun, type ReconciliationRow } from "@/lib/api";
-import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate, formatDateTime, formatDuration } from "@/lib/utils/format";
 import type { IngestionRun } from "@/types";
 import { ColumnCheckDialog, ColumnMapperCard, type ColumnNext, type ColumnSource } from "./column-mapper";
@@ -357,7 +356,6 @@ function OperationsContent() {
       </section>
 
       {selected && IS_LIVE && <UploadReport key={`report-${selected.id}`} run={selected} />}
-      {selected && (IS_LIVE ? <RunIssues key={`issues-${selected.id}`} run={selected} /> : <DemoIssues run={selected} />)}
 
       <UploadToasts items={toasts} onClose={(key) => setToastsSeen((seen) => [...seen, key])} />
 
@@ -537,128 +535,6 @@ function Reconciliation() {
           pageSize={25}
           exportName="reconciliation"
         />
-      </Card>
-    </section>
-  );
-}
-
-type Severity = "all" | "critical" | "warning" | "info";
-
-function RunIssues({ run }: { run: IngestionRun }) {
-  const [severity, setSeverity] = useState<Severity>("all");
-  const [code, setCode] = useState<string | null>(null);
-  const filters = { severity: severity === "all" ? undefined : severity, code: code ?? undefined };
-  const q = useApiQuery(`issues:${run.id}:${severity}:${code}:${run.status}`, () => adminApi.getRunIssues(run.id, filters));
-  return (
-    <section className="space-y-4" aria-labelledby="ops-errors">
-      <SectionHeader
-        id="ops-errors"
-        title="Data-quality issues"
-        description={`${run.fileName} · ${formatCount(q.data?.total ?? null)} issues${severity === "all" ? "" : ` (${severity})`}${code ? ` · ${code.replaceAll("_", " ").toLowerCase()}` : ""}`}
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            <Segmented<Severity>
-              ariaLabel="Severity"
-              value={severity}
-              onChange={setSeverity}
-              options={[
-                { value: "all", label: "All" },
-                { value: "critical", label: "Critical" },
-                { value: "warning", label: "Warning" },
-                { value: "info", label: "Info" },
-              ]}
-            />
-            <Button asChild variant="outline" size="sm">
-              <a href={adminApi.runIssuesXlsxUrl(run.id, filters)} download>
-                <FileDown /> Excel
-              </a>
-            </Button>
-          </div>
-        }
-      />
-      <Card className="p-5">
-        {q.error ? (
-          <ErrorState error={q.error} onRetry={q.reload} />
-        ) : !q.data ? (
-          <KpiSkeleton />
-        ) : (
-          <div className="space-y-5">
-            <div className="flex flex-wrap gap-2">
-              {q.data.summary.map((s) => (
-                <button
-                  key={`${s.code}-${s.severity}`}
-                  type="button"
-                  aria-pressed={code === s.code}
-                  title={code === s.code ? "Show all codes" : `Show only ${s.code.replaceAll("_", " ").toLowerCase()}`}
-                  className={cn("rounded-full transition-shadow", code === s.code && "ring-2 ring-primary/50 ring-offset-1 ring-offset-card")}
-                  onClick={() => setCode((c) => (c === s.code ? null : s.code))}
-                >
-                  <StatusBadge tone={s.severity === "critical" ? "critical" : s.severity === "warning" ? "warning" : "neutral"}>
-                    {s.code.replaceAll("_", " ").toLowerCase()} · {formatCount(s.count)}
-                  </StatusBadge>
-                </button>
-              ))}
-              {!q.data.summary.length && <p className="text-sm text-muted-foreground">No issues recorded for this import.</p>}
-            </div>
-            {q.data.summary.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Click a code to see only those rows. These are problems in the source workbook: the dashboard keeps such values blank (never 0) – download the Excel and send it to the team that maintains the file.
-              </p>
-            )}
-            {q.data.items.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[40rem] text-[0.8125rem]">
-                  <thead>
-                    <tr className="border-b border-border text-left text-muted-foreground">
-                      {["Excel row", "GP code", "Column", "Severity", "Message"].map((c) => (
-                        <th key={c} scope="col" className="py-2 pr-3 font-medium">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {q.data.items.map((e, i) => (
-                      <tr key={i} className="border-b border-border/60 last:border-0">
-                        <td className="tabular py-2 pr-3">{e.row ?? "—"}</td>
-                        <td className="tabular py-2 pr-3">{e.gpCode ?? "—"}</td>
-                        <td className="py-2 pr-3">{e.column ?? "—"}</td>
-                        <td className="py-2 pr-3 capitalize">{e.severity}</td>
-                        <td className="py-2">{e.message}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {q.data.total > q.data.items.length && (
-                  <p className="pt-3 text-xs text-muted-foreground">
-                    Showing the first {q.data.items.length} of {formatCount(q.data.total)}.
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </Card>
-    </section>
-  );
-}
-
-function DemoIssues({ run }: { run: IngestionRun }) {
-  return (
-    <section className="space-y-4">
-      <SectionHeader title="Validation errors" description={run.fileName} />
-      <Card className="p-5">
-        {run.validationErrors.length ? (
-          <ul className="space-y-2 text-sm">
-            {run.validationErrors.map((e, i) => (
-              <li key={i}>
-                Row {e.row} · {e.column}: {e.message}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-muted-foreground">No validation errors recorded for this run.</p>
-        )}
       </Card>
     </section>
   );

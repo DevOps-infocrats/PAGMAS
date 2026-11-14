@@ -39,8 +39,11 @@ def _master(tmp_path, rename: dict[str, str] | None = None, sheet: str = "GP Wis
     return path
 
 
-ESC_HEADER = ["Circle", "BA", "District", "Block Code", "GP", "GP Code", "FRT Code", "FE name", "FE Number", "AM Name", "AM Number", "AM Email ID"]
-ESC_ROWS = [["HARYANA", "Ambala", "Ambala", "501", "Gp One", "10001", "F-1", "Fe A", "9876543210", "Ravi", "9876500000", "ravi@x.in"]]
+ESC_HEADER = [
+    "Circle", "BA", "District", "Block Code", "GP", "GP Code", "FRT Code", "FE name", "FE Number", "FE Email ID", "AM Name", "AM Number", "AM Email ID",
+    "SME Name", "SME Email ID", "COH", "COH Email ID",
+]  # fmt: skip
+ESC_ROWS = [["HARYANA", "Ambala", "Ambala", "501", "Gp One", "10001", "F-1", "Fe A", "9876543210", "fe@x.in", "Ravi", "9876500000", "ravi@x.in", "Sme", "sme@x.in", "Coh", "coh@x.in"]]
 
 
 @pytest.fixture(autouse=True)
@@ -157,20 +160,23 @@ def test_remove_only_added_names_and_backup_kept():
 
 
 def test_escalation_with_renamed_required_column(tmp_path):
-    """Upload refuses an Escalation Matrix whose FRT Code column was renamed; the check finds it, and once the name
-    is added the file is recognised."""
+    """An Escalation Matrix whose AM Email ID column was renamed is still recognised, but refused by name; the check
+    suggests the file's column, and once the name is added the file passes."""
     from app.ingestion.escalation import detect_kind
+    from app.ingestion.template import validate_escalation
 
     path = tmp_path / "esc.xlsx"
-    _book(path, {"All": [["Escalation"], [h if h != "FRT Code" else "FRT Team Code" for h in ESC_HEADER], *ESC_ROWS]})
-    assert detect_kind(path) is None
+    _book(path, {"All": [["Escalation"], [h if h != "AM Email ID" else "AM Email Address" for h in ESC_HEADER], *ESC_ROWS]})
+    assert detect_kind(path) == "escalation"
+    chk = validate_escalation(path)
+    assert not chk.ok and "Missing required column(s) – All: AM Email ID" in chk.message()
     r = mapper.check(path)
     assert r["kind"] == "escalation" and not r["ready"]
-    assert _field(r, "escalation", "frt_code")["suggestion"] == "FRT Team Code"
+    assert _field(r, "escalation", "am_email")["suggestion"] == "AM Email Address"
     phone = _field(r, "escalation", "fe_phone")
     assert phone["status"] == "found" and not phone["fit"]["warning"]
-    mapper.add_names([{"section": "escalation", "field": "frt_code", "name": "FRT Team Code"}], [])
-    assert detect_kind(path) == "escalation" and mapper.check(path)["ready"]
+    mapper.add_names([{"section": "escalation", "field": "am_email", "name": "AM Email Address"}], [])
+    assert mapper.check(path)["ready"] and validate_escalation(path).ok
 
 
 def test_wrong_kind_of_values_is_flagged(tmp_path):
