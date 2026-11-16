@@ -16,6 +16,7 @@ from app.security.core import hash_password
 from app.tickets import task as tasks
 
 from .conftest import ADMIN, VIEWER, login
+from .evidence import JPG, progress
 from .test_ticket_recipients import mail  # noqa: F401 - shared fixture (fake SMTP)
 from .test_ticket_tasks import am_week  # noqa: F401 - shared fixture
 
@@ -128,8 +129,8 @@ def test_am_gets_all_gps_each_fe_only_their_own(client, fe_org):
     own = next(g for g in d1["task"]["gps"] if g["status"] == "PENDING")
     ok = client.post(
         f"/api/v1/tickets/{tid}/progress-form",
-        data={"payload": '{"items": [{"taskGpId": %d, "status": "DONE", "remark": "FE: letter accepted"}], "note": "FE day 1"}' % own["id"], "proofGps": [str(own["id"])]},
-        files=[("proofs", ("fe_letter.pdf", PDF, "application/pdf"))],
+        data={"payload": '{"items": [{"taskGpId": %d, "status": "DONE", "remark": "FE: letter accepted"}], "note": "FE day 1"}' % own["id"], "proofGps": [str(own["id"])] * 2},
+        files=[("proofs", ("fe_letter.pdf", PDF, "application/pdf")), ("proofs", ("fe_site.jpg", JPG, "image/jpeg"))],  # the letter + the required photo
         headers=h1,
     )
     assert ok.status_code == 200, ok.text
@@ -141,7 +142,7 @@ def test_am_gets_all_gps_each_fe_only_their_own(client, fe_org):
     assert x.status_code == 200 and 'filename="FE_Test_FE_One_' in x.headers["content-disposition"]
     rows = _sheet(x.content)
     assert sorted(str(r[7]) for r in rows[5:] if r[7]) == sorted(fe_org["one"]) and all(r[3] == "Test FE One" for r in rows[5:] if r[7])
-    assert any(r[14] == "fe_letter.pdf" for r in rows[5:] if r[7])
+    assert any("fe_letter.pdf" in str(r[14]) for r in rows[5:] if r[7])
     assert client.post(f"/api/v1/tickets/{tid}/close", json={}, headers=h1).status_code == 403
 
     # FE Two: never sees FE One's GPs or proof file
@@ -156,7 +157,7 @@ def test_am_gets_all_gps_each_fe_only_their_own(client, fe_org):
     da = client.get(f"/api/v1/tickets/{tid}").json()
     assert sorted(g["gpCode"] for g in da["task"]["gps"]) == all_codes
     fe1_row = next(f for f in da["task"]["fes"] if f["name"] == "Test FE One")
-    assert fe1_row["doneGps"] >= 1 and fe1_row["proofFiles"] == 1 and fe1_row["recipient"] is True
+    assert fe1_row["doneGps"] >= 1 and fe1_row["proofFiles"] == 2 and fe1_row["recipient"] is True
     assert client.get(f"/api/v1/tickets/progress-files/{file_id}").status_code == 200
     all_rows = _sheet(client.get(f"/api/v1/tickets/{tid}/task/progress.xlsx").content)
     assert sorted(str(r[7]) for r in all_rows[5:] if r[7]) == all_codes and any(r[3] == "FE not mapped" for r in all_rows[5:] if r[7])
@@ -262,7 +263,7 @@ def test_admin_soft_deletes_a_ticket_everywhere(client, fe_org):
     # FE One reports a GP (kept as history after the delete)
     h1 = {"X-CSRF-Token": login(client, FE1)}
     gp = next(g for g in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"] if g["status"] == "PENDING")
-    assert client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": gp["id"], "status": "PENDING", "remark": "kept"}]}, headers=h1).status_code == 200
+    assert progress(client, tid, [{"taskGpId": gp["id"], "status": "PENDING", "remark": "kept"}], h1).status_code == 200
     # nobody but an admin may delete
     assert client.delete(f"/api/v1/tickets/{tid}", headers=h1).status_code == 403
     hv = {"X-CSRF-Token": login(client, VIEWER)}

@@ -186,6 +186,25 @@ def my_weeks(user: CurrentUser = Depends(get_current_user), db: Session = Depend
     return service.my_weeks(db, user.id)
 
 
+@router.get("/coh-gps")
+def coh_gps(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """COH: the Letter Submitted / AMC Converted GPs of their tickets (KPIs + lists); declared before /{ticket_id}."""
+    from ..tickets import coh
+
+    return coh.gp_lists(db, user)
+
+
+@router.get("/coh-gps.xlsx")
+def coh_gps_xlsx(kind: Literal["letter", "amc"], user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+    """COH: the Letter Submitted / AMC Converted GP list as Excel."""
+    from ..tickets import coh
+
+    data = coh.gp_lists(db, user)
+    body = coh.workbook(data["letter" if kind == "letter" else "amc"], kind, user.name)
+    name = f"{'Letter_Submitted' if kind == 'letter' else 'AMC_Converted'}_GPs_{dt.date.today():%Y%m%d}.xlsx"
+    return Response(body, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
 @router.get("/filter-options", dependencies=[Depends(require_admin)])
 def filter_options(db: Session = Depends(get_db)) -> dict:
     return service.filter_options(db)
@@ -470,6 +489,82 @@ def review_gps(ticket_id: int, body: ReviewIn, request: Request, background: Bac
     if notice:
         background.add_task(mailer.review_notice_mail, t.id, body.taskGpIds, body.action, user.name, (body.remark or "").strip() or None, body.date, notice)
     audit(db, "ticket_review", request, user.id, f"{t.code} {body.action} · {n} GPs" + (f" · e-mail to {len(ids)}" if ids else ""))
+    db.refresh(t)
+    return service.detail_json(db, t, user)
+
+
+@router.post("/{ticket_id}/review-form")
+def review_gps_form(
+    ticket_id: int,
+    request: Request,
+    payload: Annotated[str, Form(max_length=200_000)],
+    background: BackgroundTasks,
+    proofs: Annotated[list[UploadFile] | None, File()] = None,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """A review step with the reviewer's proof documents: `payload` = the JSON of /review; `proofs` = the AM's
+    verification proof (AM_APPROVE) / the SME's review proof (SME_FORWARD), attached to every selected GP of the step.
+    Sync endpoint (thread pool): files are validated and written without blocking."""
+    from ..tickets import review
+
+    try:
+        body = ReviewIn.model_validate_json(payload)
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The review step could not be read") from None
+    uploads = [Upload(f.filename, f.content_type, f.file) for f in (proofs or []) if f.filename]
+    try:
+        t = service.visible(db, ticket_id, user)
+        n, ids = review.apply(db, t, user, body.taskGpIds, body.action, body.remark, body.category, body.date, [x.model_dump() for x in body.to], uploads)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except review.ReviewError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+    if ids:
+        background.add_task(mailer.review_mail, ids, body.taskGpIds, body.action, user.name, (body.remark or "").strip() or None)
+    notice = review.notice_to(db, t, body.taskGpIds, body.action, user)
+    if notice:
+        background.add_task(mailer.review_notice_mail, t.id, body.taskGpIds, body.action, user.name, (body.remark or "").strip() or None, body.date, notice)
+    audit(db, "ticket_review", request, user.id, f"{t.code} {body.action} · {n} GPs · {len(uploads)} proof files" + (f" · e-mail to {len(ids)}" if ids else ""))
+    db.refresh(t)
+    return service.detail_json(db, t, user)
+
+
+class CohCloseIn(BaseModel):
+    comment: str | None = Field(default=None, max_length=5_000)
+
+
+@router.post("/{ticket_id}/coh-close")
+def coh_close(ticket_id: int, body: CohCloseIn, request: Request, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """COH of a GP-wise task: close the ticket once every GP is finished (letter / AMC / Non-Doable / achieved)."""
+    from ..tickets import coh
+
+    try:
+        t = coh.close(db, service.visible(db, ticket_id, user), user, body.comment)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except coh.CohError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+    audit(db, "ticket_close_coh", request, user.id, t.code)
+    return service.detail_json(db, t, user)
+
+
+class ReassignIn(BaseModel):
+    recipientId: int = Field(ge=1)  # the FE recipient of this ticket who takes the GP
+    remark: str | None = Field(default=None, max_length=tasks.MAX_REMARK)
+
+
+@router.post("/{ticket_id}/gps/{gp_id}/reassign")
+def reassign_gp(ticket_id: int, gp_id: int, body: ReassignIn, request: Request, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Area Manager / admin: give a GP of the ticket to another Field Engineer of the ticket (history kept)."""
+    try:
+        t = service.visible(db, ticket_id, user)
+        g = tasks.reassign_gp(db, t, user, gp_id, body.recipientId, body.remark)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except tasks.TaskError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+    audit(db, "ticket_gp_reassign", request, user.id, f"{t.code} GP {g.gp_code} → FE {g.fe_name}")
     db.refresh(t)
     return service.detail_json(db, t, user)
 

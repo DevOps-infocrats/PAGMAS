@@ -27,7 +27,7 @@ from ..ingestion import column_mapper, preview, staging
 from ..ingestion.column_map import load_column_map
 from ..ingestion.service import create_dataset, reprocess, run_ingestion, sha256_of
 from ..ingestion.workbook import ALLOWED_SUFFIXES, WorkbookError, check_file_signature
-from ..mail.audience import Assignment, assignments_of, check_assignments, location_tree, locations
+from ..mail.audience import LEVEL_LABELS, Assignment, assignments_of, check_assignments, location_tree, locations
 from ..models import AuditLog, Dataset, EscalationImport, ImportReport, User, UserScope, ValidationIssue
 from ..security.core import hash_password, password_problems
 from ..security.deps import CurrentUser, audit, require_admin
@@ -560,8 +560,8 @@ def reconciliation(store: Store = Depends(get_store)) -> dict:
 
 
 class ScopeIn(BaseModel):
-    # circle / block / gp (GP code) – User Management; district is still accepted for areas saved before
-    level: Literal["circle", "district", "block", "gp"]
+    # circle / ba (business area) / district / block / gp (GP code) – User Management
+    level: Literal["circle", "ba", "district", "block", "gp"]
     id: str = Field(min_length=1, max_length=120)
 
 
@@ -570,7 +570,7 @@ class UserCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     role: Literal["admin", "viewer"] = "viewer"
     password: str = Field(min_length=1, max_length=128)
-    # Circle / block / GP areas of a viewer: what they see on the dashboard and receive in the AMC Conversion e-mails
+    # Circle / BA / district / block / GP areas of a viewer: what they see on the dashboard and receive in the AMC Conversion e-mails
     # (security/access.py, mail/audience.py; a block / GP chosen inside a chosen circle narrows it); admins see everything
     scopes: list[ScopeIn] = Field(default_factory=list, max_length=500)
 
@@ -631,7 +631,7 @@ def list_users(db: Session = Depends(get_db)) -> list[dict]:
 
 @router.get("/users/locations")
 def user_locations() -> dict:
-    """Circles → districts → blocks of the active data, for assigning user areas."""
+    """Circles → business areas / districts → blocks of the active data, for assigning user areas."""
     st = _active_store()
     return {"circles": location_tree(st) if st is not None else [], "hasData": st is not None}
 
@@ -639,19 +639,29 @@ def user_locations() -> dict:
 @router.get("/users/locations/gps")
 def user_location_gps(
     circle: Annotated[list[str] | None, Query(max_length=50)] = None,
+    ba: Annotated[list[str] | None, Query(max_length=100)] = None,
+    district: Annotated[list[str] | None, Query(max_length=200)] = None,
     block: Annotated[list[str] | None, Query(max_length=500)] = None,
     q: Annotated[str | None, Query(max_length=80)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict:
-    """GPs for the User Management area picker: those of the chosen blocks, else of the chosen circles, else all –
-    matching `q` in the GP name or code (at most `limit`, by name)."""
+    """GPs for the User Management area picker: those of the chosen blocks, else of the chosen BAs / districts (both
+    chosen: either), else of the chosen circles, else all – matching `q` in the GP name or code (at most `limit`, by name)."""
+    from ..analytics.store import ba_ids
     from ..mail.audience import gp_label
 
     st = _active_store()
     if st is None:
         return {"items": [], "total": 0}
     g = st.gps
-    m = g["block_id"].isin(block) if block else g["circle_id"].isin(circle) if circle else pd.Series(True, index=g.index)
+    if block:
+        m = g["block_id"].isin(block)
+    elif ba or district:
+        m = (ba_ids(g).isin(ba) if ba else pd.Series(False, index=g.index)) | (g["district_id"].isin(district) if district else False)
+    elif circle:
+        m = g["circle_id"].isin(circle)
+    else:
+        m = pd.Series(True, index=g.index)
     sub = g[m.to_numpy()]
     text = " ".join((q or "").split()).lower()
     if text:
@@ -685,6 +695,17 @@ def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends
 USER_IMPORT_MAX_MB = 5
 
 
+@router.get("/users/import/template.xlsx")
+def user_import_template() -> Response:
+    """The Import users file to fill in: the columns the import reads (Name, Email, Password, Circle, BA, District,
+    Block, GP) with example rows (@example.com – never imported) spelt from the active data, and an Instructions sheet."""
+    from ..ingestion.users import TEMPLATE_FILE, build_template
+
+    st = _active_store()
+    data = build_template(st.gps if st is not None else None, get_settings().user_import_password)
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{TEMPLATE_FILE}"', "Cache-Control": "no-store"})
+
+
 @router.post("/users/import")
 def import_users(
     file: UploadFile,
@@ -693,9 +714,13 @@ def import_users(
     admin: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Create Viewer accounts from an Excel / CSV file with Name and Email columns, all with the temporary password
-    USER_IMPORT_PASSWORD. Existing e-mail addresses are skipped (never changed). dryRun=true only previews."""
-    from ..ingestion.users import USER_IMPORT_SUFFIXES, read_users
+    """Create Viewer accounts from an Excel / CSV file with Name and Email columns. An optional Password column gives
+    each user their own initial password (same strength rule as Add user; a weak one skips the row); an empty cell =
+    the temporary password USER_IMPORT_PASSWORD. The passwords are never sent back. Optional Circle / BA / District / Block / GP columns give each user the areas they may see
+    (the same as choosing them in User Management; a row whose area is not in the active data is skipped – never
+    created with wider access; empty = every area, as for a viewer without areas). Existing e-mail addresses are
+    skipped (never changed). dryRun=true only previews."""
+    from ..ingestion.users import USER_IMPORT_SUFFIXES, AreaResolver, has_area_columns, has_password_column, read_users
 
     s = get_settings()
     suffix = Path(file.filename or "users").suffix.lower()
@@ -719,17 +744,27 @@ def import_users(
     finally:
         target.unlink(missing_ok=True)
 
+    with_areas = has_area_columns(rows)
+    st = _active_store() if with_areas else None
+    resolver = AreaResolver(st.gps if st is not None else None) if with_areas else None
+    labels = locations(st) if st is not None else {}
     existing = {e.lower() for e in db.scalars(select(User.email).where(func.lower(User.email).in_([r.email for r in rows if not r.problem])))}
     items, new = [], []
     for r in rows:
-        status_, reason = ("SKIPPED", r.problem) if r.problem else ("EXISTS", "Already a dashboard user – not changed") if r.email in existing else ("NEW", None)
-        items.append({"row": r.row, "name": r.name, "email": r.email, "status": status_, "reason": reason})
+        areas, area_problem = resolver.resolve(r.areas) if resolver is not None and not r.problem else ([], None)
+        problem = r.problem or area_problem
+        status_, reason = ("SKIPPED", problem) if problem else ("EXISTS", "Already a dashboard user – not changed (areas too)") if r.email in existing else ("NEW", None)
+        area_text = [f"{LEVEL_LABELS[lvl]}: {labels.get(lvl, {}).get(i, i)}" for lvl, i in areas]
+        items.append({"row": r.row, "name": r.name, "email": r.email, "status": status_, "reason": reason, "areas": area_text, "password": "FILE" if r.password is not None else "TEMPORARY"})
         if status_ == "NEW":
-            new.append(r)
+            new.append((r, areas))
     created = 0
     if not dry_run and new:
-        pw = hash_password(s.user_import_password)  # same known temporary password -> hashed once
-        db.add_all(User(email=r.email, name=r.name, role="viewer", password_hash=pw) for r in new)
+        temp = hash_password(s.user_import_password) if any(r.password is None for r, _ in new) else None  # hashed once
+        users = [(User(email=r.email, name=r.name, role="viewer", password_hash=hash_password(r.password) if r.password is not None else temp), areas) for r, areas in new]
+        db.add_all(u for u, _ in users)
+        db.flush()
+        db.add_all(UserScope(user_id=u.id, level=lvl, scope_id=i) for u, areas in users for lvl, i in areas)
         db.commit()
         created = len(new)
         for it in items:
@@ -746,6 +781,10 @@ def import_users(
         "exists": count("EXISTS"),
         "skipped": count("SKIPPED"),
         "temporaryPassword": s.user_import_password,
+        "withPasswords": has_password_column(rows),
+        # new users without a password in the file (they get the temporary password)
+        "temporaryCount": sum(1 for r, _ in new if r.password is None),
+        "withAreas": with_areas,
         "items": items,
     }
 
@@ -789,6 +828,24 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
         changes["areas"] = len(body.scopes) if u.role == "viewer" else 0
     audit(db, "user_updated", request, admin.id, f"{u.email}: {changes}{' +password' if body.password else ''}")
     return _users_json(db, [u])[0]
+
+
+@router.post("/users/{user_id}/delete")
+def delete_user(user_id: int, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Permanently remove an account. Its areas, notifications and MGG membership go with it (ON DELETE CASCADE);
+    tickets, reviews, uploads and the audit log keep their rows with the user reference cleared (ON DELETE SET NULL),
+    so no dashboard or ticket data is lost. Ticket recipient rows keep the e-mail, so a re-created account with the
+    same e-mail sees those tickets again. You cannot delete your own account."""
+    u = db.get(User, user_id)
+    if not u:
+        raise HTTPException(404, "User not found")
+    if u.id == admin.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
+    email, role = u.email, u.role
+    db.delete(u)
+    db.commit()
+    audit(db, "user_deleted", request, admin.id, f"{email} ({role})")
+    return {"deleted": user_id}
 
 
 @router.get("/audit")

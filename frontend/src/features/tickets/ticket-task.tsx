@@ -1,11 +1,12 @@
 "use client";
 
-import { ChevronDown, Download, FileSpreadsheet, ListChecks, Loader2, Paperclip, Plus, Send, X } from "lucide-react";
+import { ChevronDown, Download, FileSpreadsheet, ListChecks, Loader2, OctagonAlert, Paperclip, Plus, Send, UserCog, X } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/overlays";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
 import { Card, Input } from "@/components/ui/primitives";
-import { ticketApi, type GpCategory, type GpStage, type NewTaskGp, type TicketDetail, type TicketTask } from "@/lib/api";
+import { ticketApi, type GpCategory, type GpStage, type NewTaskGp, type TicketDetail, type TicketTask, type TicketTaskGp } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 import { TEXTAREA, fileSize, ticketDay, ticketTime, type Notice } from "./ticket-parts";
@@ -23,12 +24,16 @@ const NO_FE = "__none";
 
 const ALL_STAGES = "__all";
 const GP_CODE = /^[A-Za-z0-9][A-Za-z0-9/_.-]{0,39}$/; // backend: task.GP_CODE_RE
+// Daily Achievement evidence (backend: task.MIN_REMARK / PHOTO_EXTS): a remark and at least one photo per GP
+const MIN_REMARK = 3;
+const isPhoto = (f: File) => /\.(jpe?g|png)$/i.test(f.name);
+const EVIDENCE_HINT = "Remark + photo (JPG / PNG) required";
 
 /** Unsubmitted change of a GP: Daily Achievement category (A / C / D, null = unchanged), remark, proof files to attach,
  * corrected GP Name / Block (undefined = unchanged). */
 type Draft = Record<number, { category: GpCategory | null; remark: string; files: File[]; gpName?: string; block?: string }>;
-/** A GP row added by the FE / Area Manager, sent with the next submission. */
-type NewRow = { key: number; gpCode: string; gpName: string; block: string; category: "A" | "C" | "D" | null; remark: string };
+/** A GP row added by the FE / Area Manager, sent with the next submission (with its photos). */
+type NewRow = { key: number; gpCode: string; gpName: string; block: string; category: "A" | "C" | "D" | null; remark: string; files: File[] };
 
 /**
  * GP-wise weekly task of a ticket (backend: app/tickets/task.py). Admin and Area Manager see the same figures, with the
@@ -60,6 +65,12 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [rows, setRows] = useState<NewRow[]>([]);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [moving, setMoving] = useState<TicketTaskGp | null>(null);
+  // Area Manager / admin: give a GP to another FE of the ticket (not once approved / in a Non-Doable case)
+  const canReassign = !!t.can.reassign && !scoped && !smeView && (task.feOptions?.length ?? 0) > 0;
+  const showFeCol = showFe || canReassign;
+  // Non-Doable cases waiting for this user's E1 / E2 forms: the Daily Achievement is locked until they are submitted
+  const ndPending = editable ? (task.ndPending ?? []) : [];
   const shown = task.gps.filter(
     (g) => (feFilter === ALL_FES || (feFilter === NO_FE ? !g.feName : g.feName === feFilter)) && (stage === ALL_STAGES || stageOf(g) === stage),
   );
@@ -86,9 +97,19 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const proofs = useMemo(() => Object.entries(draft).flatMap(([id, d]) => d.files.map((file) => ({ taskGpId: Number(id), file }))), [draft]);
   const classified = changed.filter((c) => c.category).length;
   const edits = changed.filter((c) => "gpName" in c || "block" in c).length;
-  const newGps: NewTaskGp[] = rows
-    .filter((r) => r.gpCode.trim())
-    .map((r) => ({ gpCode: r.gpCode.trim(), gpName: r.gpName.trim() || undefined, block: r.block.trim() || undefined, category: r.category ?? undefined, remark: r.remark.trim() || undefined }));
+  const filledRows = rows.filter((r) => r.gpCode.trim());
+  const newGps: NewTaskGp[] = filledRows.map((r) => ({ gpCode: r.gpCode.trim(), gpName: r.gpName.trim() || undefined, block: r.block.trim() || undefined, category: r.category ?? undefined, remark: r.remark.trim() || undefined }));
+  // photos of an added GP: proofGps = -(its index + 1) in newGps (the backend links them once the GP exists)
+  const allProofs = [...proofs, ...filledRows.flatMap((r, i) => r.files.map((file) => ({ taskGpId: -(i + 1), file })))];
+  // Daily Achievement evidence: a new / changed category (or a returned GP sent back) needs a remark and a photo
+  const byId = new Map(task.gps.map((g) => [g.id, g]));
+  const lacking = [
+    ...changed
+      .filter((c) => c.category || byId.get(c.taskGpId)?.review === "RETURNED")
+      .filter((c) => (c.remark ?? "").trim().length < MIN_REMARK || !(draft[c.taskGpId]?.files ?? []).some(isPhoto))
+      .map((c) => byId.get(c.taskGpId)?.gpCode ?? String(c.taskGpId)),
+    ...filledRows.filter((r) => r.category && (r.remark.trim().length < MIN_REMARK || !r.files.some(isPhoto))).map((r) => r.gpCode.trim()),
+  ];
   const badRow = rows.find((r) => r.gpCode.trim() && !GP_CODE.test(r.gpCode.trim()));
   const emptyName = changed.some((c) => "gpName" in c && !c.gpName);
 
@@ -112,10 +133,10 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
 
   const submit = async () => {
     setBusy(true);
-    setSent(proofs.length ? 0 : null);
+    setSent(allProofs.length ? 0 : null);
     setError(null);
     try {
-      const next = await ticketApi.submitProgressForm(t.id, changed, note.trim() || undefined, proofs, proofs.length ? (f) => setSent(f) : undefined, newGps);
+      const next = await ticketApi.submitProgressForm(t.id, changed, note.trim() || undefined, allProofs, allProofs.length ? (f) => setSent(f) : undefined, newGps);
       setDraft({});
       setRows([]);
       setNote("");
@@ -284,6 +305,34 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       </div>
       )}
 
+      {ndPending.length > 0 && t.status !== "CLOSED" && (
+        <div role="alert" className="border-b-2 border-critical bg-critical-soft px-5 py-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-2.5">
+              <OctagonAlert className="mt-0.5 size-5 shrink-0 text-critical-text" aria-hidden />
+              <div className="text-[0.8125rem] text-critical-text">
+                <p className="text-sm font-bold">
+                  Non-Doable case{ndPending.length === 1 ? "" : "s"} waiting for you – Daily Achievement is locked
+                </p>
+                <p>
+                  Open {ndPending.length === 1 ? "the case" : "each case"} and submit the <b>E1 Physical Verification</b> and the <b>E2 Justification</b>. After that you can submit the
+                  Daily Achievement again.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {ndPending.map((c) => (
+                <Button key={c.caseId} asChild size="sm" variant="primary" className="bg-critical hover:bg-critical/90">
+                  <Link href={`/dashboard/tickets/non-doable?case=${c.caseId}`} title={c.label}>
+                    <OctagonAlert /> Open {c.ref} · GP {c.gpCode}
+                  </Link>
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {roles.length > 0 && t.status !== "CLOSED" && <ReviewBar t={t} roles={roles} selected={selected} onClear={() => setPicked(new Set())} onChanged={onChanged} />}
 
       {/* Non-Doable cases of this ticket waiting for the user (e.g. COH: Forward → Corporate Team – MGG), same actions as Non-Doable Cases */}
@@ -321,7 +370,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                   />
                 </th>
               )}
-              {["GP Code", "GP Name", "Block", ...(showFe ? ["FE"] : []), "Type", "Weekly Target", "Achieved", "Remaining Gap", "Daily Achievement", "Remarks", "Proof", "Review", "Action"].map((h) => (
+              {["GP Code", "GP Name", "Block", ...(showFeCol ? ["FE"] : []), "Type", "Weekly Target", "Achieved", "Remaining Gap", "Daily Achievement", "Remarks", "Proof", "Review", "Action"].map((h) => (
                 <th key={h} scope="col" className={cn("px-3 py-2", ["Weekly Target", "Achieved", "Remaining Gap"].includes(h) && "text-right", ["Daily Achievement", "Action"].includes(h) && "text-center")}>
                   {h}
                 </th>
@@ -335,7 +384,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
               const cat = d?.category ?? g.gpCategory ?? null;
               // achieved as it will be after the submission: only E counts (plus an AMC Date in the master data)
               const cum = d?.category ? Math.min(g.target, g.baseAchieved + (d.category === "E" ? 1 : 0)) : g.cumulative;
-              const rowEdit = editable && !g.locked && !g.ndCase?.open; // approved by the Area Manager / in a Non-Doable case = no daily changes
+              // approved by the Area Manager / in a Non-Doable case = no daily changes; an FE's GP is reported by the FE only
+              // (the Area Manager reviews it – same rule as the backend)
+              const rowEdit = editable && !g.locked && !g.ndCase?.open && (scoped !== null || !g.feAssigned);
+              const catChanged = !!d?.category && d.category !== (g.gpCategory ?? null);
+              const needsEvidence = rowEdit && !!d && (catChanged || g.review === "RETURNED") && ((d.remark ?? "").trim().length < MIN_REMARK || !d.files.some(isPhoto));
               const pickable = reviewable(g, roles);
               return (
                 <tr key={g.id} className={cn("border-b border-border/70 last:border-0", d && "bg-primary-soft/30", g.review === "RETURNED" && !d && "bg-critical-soft/30")}>
@@ -377,7 +430,21 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       (g.block ?? "—")
                     )}
                   </td>
-                  {showFe && <td className={cn("px-3 py-2", !g.feName && "text-warning-text")}>{g.feName ?? "Not mapped"}</td>}
+                  {showFeCol && (
+                    <td className={cn("px-3 py-2", !g.feName && "text-warning-text")}>
+                      {g.feName ?? "Not mapped"}
+                      {canReassign && !g.locked && !g.ndCase?.open && t.status !== "CLOSED" && (
+                        <button
+                          type="button"
+                          onClick={() => setMoving(g)}
+                          className="mt-0.5 flex items-center gap-1 rounded px-1 py-0.5 text-[0.71875rem] font-medium text-primary hover:bg-primary-soft"
+                          title="Give this GP to another Field Engineer of the ticket"
+                        >
+                          <UserCog className="size-3.5" aria-hidden /> Reassign FE
+                        </button>
+                      )}
+                    </td>
+                  )}
                   <td className="px-3 py-2">
                     <span
                       className={cn("rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold", g.kind === "WEEK" ? "bg-primary-soft text-primary" : g.kind === "ADDED" ? "bg-muted text-foreground" : "bg-warning-soft text-warning-text")}
@@ -423,6 +490,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         </button>
                       </span>
                     ))}
+                    {needsEvidence && <span className="block text-[0.6875rem] font-medium text-critical-text">{EVIDENCE_HINT}</span>}
                     {rowEdit ? (
                       <label className={cn("mt-0.5 inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[0.75rem] font-medium text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}>
                         <Paperclip className="size-3.5" aria-hidden /> Attach
@@ -472,6 +540,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       </div>
       )}
       {!smeView && <GpDetailDialog t={t} g={task.gps.find((g) => g.id === detailId) ?? null} roles={roles} onClose={() => setDetailId(null)} onChanged={onChanged} />}
+      {canReassign && <ReassignDialog t={t} g={moving} onClose={() => setMoving(null)} onChanged={onChanged} />}
 
       {/* GP rows added by the FE / Area Manager (target 1 each, sent with the submission) */}
       {editable && (
@@ -484,7 +553,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
               size="sm"
               variant="outline"
               disabled={busy || rows.length >= 50}
-              onClick={() => setRows((cur) => [...cur, { key: Date.now() + cur.length, gpCode: "", gpName: "", block: "", category: null, remark: "" }])}
+              onClick={() => setRows((cur) => [...cur, { key: Date.now() + cur.length, gpCode: "", gpName: "", block: "", category: null, remark: "", files: [] }])}
             >
               <Plus /> Add GP row
             </Button>
@@ -494,7 +563,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
               <table className="w-full min-w-[60rem] text-[0.8125rem]">
                 <thead>
                   <tr className="text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {["GP Code", "GP Name", "Block", "Daily Achievement", "Remarks", ""].map((h) => (
+                    {["GP Code", "GP Name", "Block", "Daily Achievement", "Remarks", "Photo", ""].map((h) => (
                       <th key={h} scope="col" className="px-2 py-1">
                         {h}
                       </th>
@@ -522,6 +591,40 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         <td className="px-2 py-1.5">
                           <Input value={r.remark} maxLength={500} disabled={busy} onChange={(e) => upd({ remark: e.target.value })} placeholder="Remark" className="h-8 text-[0.8125rem]" aria-label="New GP remark" />
                         </td>
+                        <td className="min-w-[10rem] px-2 py-1.5">
+                          {r.files.map((f, i) => (
+                            <span key={`${f.name}-${i}`} className="flex items-center gap-1 text-[0.75rem] text-[var(--series-7)]">
+                              <Paperclip className="size-3.5 shrink-0" aria-hidden />
+                              <span className="min-w-0 flex-1 truncate" title={f.name}>
+                                {f.name}
+                              </span>
+                              <button type="button" disabled={busy} onClick={() => upd({ files: r.files.filter((_, j) => j !== i) })} className="rounded p-0.5 hover:bg-accent" aria-label={`Remove ${f.name}`}>
+                                <X className="size-3" />
+                              </button>
+                            </span>
+                          ))}
+                          {r.category && (r.remark.trim().length < MIN_REMARK || !r.files.some(isPhoto)) && <span className="block text-[0.6875rem] font-medium text-critical-text">{EVIDENCE_HINT}</span>}
+                          <label className={cn("inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[0.75rem] font-medium text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}>
+                            <Paperclip className="size-3.5" aria-hidden /> Attach
+                            <input
+                              type="file"
+                              multiple
+                              accept={PROOF_ACCEPT}
+                              className="sr-only"
+                              disabled={busy}
+                              onChange={(e) => {
+                                const picked = Array.from(e.target.files ?? []);
+                                e.target.value = "";
+                                const big = picked.find((f) => f.size > MAX_FILE_MB * 1024 * 1024);
+                                if (big) return setError(`${big.name}: larger than ${MAX_FILE_MB} MB`);
+                                if (r.files.length + picked.length > MAX_GP_FILES) return setError(`New GP: at most ${MAX_GP_FILES} proof documents per submission`);
+                                setError(null);
+                                upd({ files: [...r.files, ...picked] });
+                              }}
+                              aria-label="Attach a photo for the new GP"
+                            />
+                          </label>
+                        </td>
                         <td className="px-2 py-1.5 text-right">
                           <button type="button" disabled={busy} onClick={() => setRows((cur) => cur.filter((x) => x.key !== r.key))} className="rounded p-1 hover:bg-accent" aria-label="Remove this GP row">
                             <X className="size-3.5" />
@@ -548,15 +651,19 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
             <span className="text-xs text-muted-foreground">
               {sent !== null
                 ? `Uploading proof documents… ${Math.round(sent * 100)}%`
-                : badRow
+                : ndPending.length
+                  ? `Locked – submit E1 / E2 of ${ndPending.map((c) => c.ref).join(", ")} first`
+                  : badRow
                   ? `"${badRow.gpCode.trim()}" is not a valid GP code`
+                  : lacking.length
+                    ? `${EVIDENCE_HINT}: ${lacking.slice(0, 5).join(", ")}${lacking.length > 5 ? ` (+${lacking.length - 5})` : ""}`
                   : emptyName
                     ? "A GP name cannot be empty"
                     : changed.length || newGps.length
-                      ? `${classified} status change${classified === 1 ? "" : "s"} · ${edits} corrected · ${changed.length - classified} other line${changed.length - classified === 1 ? "" : "s"} · ${proofs.length} proof file${proofs.length === 1 ? "" : "s"} · ${newGps.length} new GP${newGps.length === 1 ? "" : "s"}`
+                      ? `${classified} status change${classified === 1 ? "" : "s"} · ${edits} corrected · ${changed.length - classified} other line${changed.length - classified === 1 ? "" : "s"} · ${allProofs.length} proof file${allProofs.length === 1 ? "" : "s"} · ${newGps.length} new GP${newGps.length === 1 ? "" : "s"}`
                       : "Choose a status for the GPs, correct their details, write a remark, attach proof or add a GP"}
             </span>
-            <Button variant="primary" onClick={submit} disabled={busy || (changed.length === 0 && newGps.length === 0) || !!badRow || emptyName}>
+            <Button variant="primary" onClick={submit} disabled={busy || ndPending.length > 0 || (changed.length === 0 && newGps.length === 0) || !!badRow || emptyName || lacking.length > 0}>
               {busy ? <Loader2 className="animate-spin" /> : <Send />} Submit Daily Progress
             </Button>
           </div>
@@ -724,5 +831,100 @@ function ProgressHistory({ task }: { task: TicketTask }) {
         </ul>
       )}
     </div>
+  );
+}
+
+/** Area Manager / admin: give one GP to another Field Engineer of the ticket. Only the GP's FE changes – target,
+ * category, daily history, proof and review steps stay; the step is kept in the GP's history (backend: task.reassign_gp). */
+function ReassignDialog({ t, g, onClose, onChanged }: { t: TicketDetail; g: TicketTaskGp | null; onClose: () => void; onChanged: (next: TicketDetail, notice: Notice) => void }) {
+  const options = (t.task?.feOptions ?? []).filter((o) => o.name !== g?.feName);
+  const [to, setTo] = useState("");
+  const [remark, setRemark] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const close = () => {
+    setTo("");
+    setRemark("");
+    setError(null);
+    onClose();
+  };
+  const save = async () => {
+    if (!g || !to) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await ticketApi.reassignGp(t.id, g.id, { recipientId: Number(to), remark: remark.trim() || undefined });
+      const name = options.find((o) => String(o.recipientId) === to)?.name ?? "the new FE";
+      close();
+      onChanged(next, { ok: true, text: `GP ${g.gpCode} reassigned to FE ${name}. Both FEs have been notified; its history is kept.` });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not reassign the GP");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open={g !== null} onOpenChange={(o) => !o && !busy && close()}>
+      <DialogContent className="max-w-lg">
+        {g && (
+          <form
+            className="space-y-4 p-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <div>
+              <DialogTitle className="text-lg font-bold">Reassign FE</DialogTitle>
+              <DialogDescription className="mt-1 text-sm text-muted-foreground">
+                The GP moves to the chosen Field Engineer. Its target, category, daily history, proof and review steps stay as they are.
+              </DialogDescription>
+            </div>
+            <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-[0.8125rem]">
+              <dt className="text-muted-foreground">GP Code</dt>
+              <dd className="font-semibold">{g.gpCode}</dd>
+              <dt className="text-muted-foreground">GP Name</dt>
+              <dd>{g.gpName}</dd>
+              <dt className="text-muted-foreground">Current FE</dt>
+              <dd className={cn(!g.feName && "text-warning-text")}>{g.feName ?? "Not mapped"}</dd>
+            </dl>
+            <label className="block space-y-1">
+              <span className="text-[0.8125rem] font-medium">
+                New FE <span className="text-critical-text">*</span>
+              </span>
+              {options.length ? (
+                <Select
+                  ariaLabel="New Field Engineer"
+                  value={to}
+                  onValueChange={(v) => setTo(v ?? "")}
+                  placeholder="Choose the Field Engineer"
+                  options={options.map((o) => ({ value: String(o.recipientId), label: `${o.name} · ${o.email}` }))}
+                  className="w-full"
+                />
+              ) : (
+                <p className="text-[0.8125rem] text-warning-text">No other Field Engineer with a dashboard account is on this ticket.</p>
+              )}
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[0.8125rem] font-medium">Reason (optional)</span>
+              <textarea value={remark} onChange={(e) => setRemark(e.target.value)} rows={2} maxLength={500} disabled={busy} className={TEXTAREA} placeholder="e.g. FE on leave this week" />
+            </label>
+            {error && (
+              <p role="alert" className="rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical-text">
+                {error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={close} disabled={busy}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" disabled={busy || !to}>
+                {busy ? <Loader2 className="animate-spin" /> : <UserCog />} Confirm Reassignment
+              </Button>
+            </div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

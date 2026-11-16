@@ -14,6 +14,7 @@ from app.models import TicketProgress, TicketTaskGp, User
 from app.tickets import task as tasks
 
 from .conftest import ADMIN, VIEWER, login
+from .evidence import progress
 
 
 def _uid(email):
@@ -112,7 +113,7 @@ def test_task_workflow(imported, client, am_week):
     open_gp = next((g for g in d["task"]["gps"] if g["gap"] > 0), None)
     other = next((g for g in d["task"]["gps"] if g is not open_gp), None)
     items = [{"taskGpId": open_gp["id"], "achievedToday": 1, "remark": "Converted today"}] if open_gp else [{"taskGpId": d["task"]["gps"][0]["id"], "achievedToday": 0, "remark": "Checked"}]
-    r = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": items, "note": "Day 1"}, headers=h)
+    r = progress(client, tid, items, h, note="Day 1")  # a Daily Achievement carries a remark and a photo
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["status"] == "IN_PROGRESS"  # started by the first submission, NOT closed
@@ -120,7 +121,7 @@ def test_task_workflow(imported, client, am_week):
         g = next(x for x in d["task"]["gps"] if x["id"] == open_gp["id"])
         assert g["cumulative"] == 1 and g["gap"] == 0 and g["remarks"] == "Converted today"
         # counting the same GP again is refused
-        again = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": open_gp["id"], "achievedToday": 1}]}, headers=h)
+        again = progress(client, tid, [{"taskGpId": open_gp["id"], "achievedToday": 1}], h)
         assert again.status_code == 422
     # an empty submission is refused; a second day with a remark is kept as its own record
     assert client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": d["task"]["gps"][0]["id"], "achievedToday": 0}]}, headers=h).status_code == 422

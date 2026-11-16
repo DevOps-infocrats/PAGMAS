@@ -13,6 +13,7 @@ from app.db import SessionLocal
 from app.models import NdCase, NdEvent, NdMggMember, NdRecord, Ticket, TicketNotification, TicketTaskGp, User
 
 from .conftest import VIEWER, login
+from .evidence import progress
 from .test_ticket_fe import FE1, FE2, PDF, _fe, _gen, fe_org  # noqa: F401 - shared fixture
 from .test_ticket_recipients import mail  # noqa: F401
 from .test_ticket_tasks import am_week  # noqa: F401
@@ -48,7 +49,7 @@ def _h(client, creds=None):
 
 
 def _propose(client, tid, gid, remark="Not doable – flooded"):
-    return client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": gid, "category": "D", "remark": remark}]}, headers=_h(client, FE1))
+    return progress(client, tid, [{"taskGpId": gid, "category": "D", "remark": remark}], _h(client, FE1))  # remark + photo, like every Daily Achievement
 
 
 def _case_of(client, gid):
@@ -366,3 +367,31 @@ def test_tc6_only_the_chosen_sme_and_coh(client, nd, mail):  # noqa: F811
         db.execute(delete(NdForward).where(NdForward.case_id == cid))
         db.commit()
     assert sees(SME) and sees(SME2)
+
+
+def test_pending_nd_forms_lock_the_fes_daily_achievement(client, nd, mail):  # noqa: F811
+    """A Non-Doable case waiting for the FE's E1 / E2 forms is shown on the ticket (ndPending) and locks that FE's next
+    Daily Achievement – on every GP – until the forms are submitted. Another FE is not affected."""
+    tid, g = nd["tid"], nd["gps"][0]
+    nxt = {"gpCode": "ZZNDLOCK1", "gpName": "Lock test GP", "category": "A", "remark": "Rectified"}  # the FE's next Daily Achievement
+    assert _propose(client, tid, g["id"]).status_code == 200
+    h1 = _h(client, FE1)
+    d = client.get(f"/api/v1/tickets/{tid}").json()
+    pend = d["task"]["ndPending"]
+    assert [p["gpId"] for p in pend] == [g["id"]] and pend[0]["ref"].startswith("ND-")
+    r = progress(client, tid, headers=h1, new_gps=[nxt])
+    assert r.status_code == 409 and pend[0]["ref"] in r.json()["detail"] and "E1" in r.json()["detail"]
+    # FE Two (own GPs, no case) can still report
+    login(client, FE2)
+    other = client.get(f"/api/v1/tickets/{tid}").json()["task"]
+    assert other["ndPending"] == []
+    assert progress(client, tid, [{"taskGpId": other["gps"][0]["id"], "category": "C", "remark": "Revisit"}], _h(client, FE2)).status_code == 200
+    # E1 + E2 submitted -> the case goes to the AM, the FE reports again
+    h1 = _h(client, FE1)
+    c = _case_of(client, g["id"])
+    assert _form(client, h1, c["id"], "verification", E1, evidence=[("survey.pdf", PDF, "application/pdf")], photos=[("site.png", PNG, "image/png")]).status_code == 200
+    assert client.get(f"/api/v1/tickets/{tid}").json()["task"]["ndPending"][0]["status"] == "E1_DONE"  # still waiting for E2
+    assert progress(client, tid, headers=h1, new_gps=[nxt]).status_code == 409
+    assert _form(client, h1, c["id"], "justification", E2).status_code == 200
+    assert client.get(f"/api/v1/tickets/{tid}").json()["task"]["ndPending"] == []
+    assert progress(client, tid, headers=h1, new_gps=[nxt]).status_code == 200

@@ -106,3 +106,44 @@ def test_bad_files_are_refused(client):
 def test_viewer_cannot_import(client):
     csrf = login(client, VIEWER)
     assert _post(client, csrf, _xlsx([["Name", "Email"], ["X Y", "x@imp-test.in"]])).status_code == 403
+
+
+def test_password_column_gives_each_user_their_own_password(client):
+    csrf = login(client)
+    data = _xlsx(
+        [
+            ["Name", "Email", "Password"],
+            ["Own Pass", "own@imp-test.in", "Strong!Pass-2026"],
+            ["No Pass", "nopass@imp-test.in", None],
+            ["Weak Pass", "weak@imp-test.in", "abc123"],
+        ]
+    )
+    try:
+        p = _post(client, csrf, data).json()
+        assert p["withPasswords"] and (p["new"], p["skipped"], p["temporaryCount"]) == (2, 1, 1)
+        by = {it["email"]: it for it in p["items"]}
+        assert by["own@imp-test.in"]["password"] == "FILE" and by["nopass@imp-test.in"]["password"] == "TEMPORARY"
+        assert by["weak@imp-test.in"]["reason"].startswith("Password needs")
+        assert "Strong!Pass-2026" not in str(p)  # never sent back
+        assert _post(client, csrf, data, dry=False).json()["created"] == 2
+        with SessionLocal() as db:
+            own = db.scalars(select(User).where(User.email == "own@imp-test.in")).one()
+            assert verify_password("Strong!Pass-2026", own.password_hash) and not verify_password(get_settings().user_import_password, own.password_hash)
+            nop = db.scalars(select(User).where(User.email == "nopass@imp-test.in")).one()
+            assert verify_password(get_settings().user_import_password, nop.password_hash)
+            assert db.scalars(select(User).where(User.email == "weak@imp-test.in")).first() is None
+        login(client, ("own@imp-test.in", "Strong!Pass-2026"))
+    finally:
+        _cleanup("own@imp-test.in", "nopass@imp-test.in", "weak@imp-test.in")
+
+
+def test_template_downloads_and_its_examples_are_never_imported(client):
+    csrf = login(client)
+    r = client.get(f"{URL}/template.xlsx")
+    assert r.status_code == 200 and r.headers["content-disposition"].endswith('user-import-template.xlsx"')
+    # the template itself, uploaded unchanged: the columns are recognised, every example row is skipped
+    p = _post(client, csrf, r.content).json()
+    assert p["total"] == 3 and p["new"] == 0 and p["skipped"] == 3
+    assert all("Example row" in it["reason"] for it in p["items"])
+    login(client, VIEWER)
+    assert client.get(f"{URL}/template.xlsx").status_code == 403

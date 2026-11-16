@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Pencil, Plus, Search, Upload, UserPlus, X } from "lucide-react";
+import { Loader2, Pencil, Plus, Search, Trash2, Upload, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
@@ -17,32 +17,45 @@ import { cn } from "@/lib/utils/cn";
 import { formatDateTime } from "@/lib/utils/format";
 import { ImportUsersDialog } from "./import-users-dialog";
 
-/** Levels offered when adding an area (districts saved before stay valid and are shown, but not offered) */
+/** Levels offered when adding an area */
 const LEVELS: { value: UserScopeLevel; label: string }[] = [
   { value: "circle", label: "Circle" },
+  { value: "ba", label: "BA" },
+  { value: "district", label: "District" },
   { value: "block", label: "Block" },
   { value: "gp", label: "GP" },
 ];
-const LEVEL_LABEL: Record<UserScopeLevel, string> = { circle: "Circle", district: "District", block: "Block", gp: "GP" };
+const LEVEL_LABEL: Record<UserScopeLevel, string> = { circle: "Circle", ba: "BA", district: "District", block: "Block", gp: "GP" };
 type Scope = { level: UserScopeLevel; id: string };
 type BlockOption = SearchableOption & { circleId: string };
+/** a BA / district: its circle and the ids of its blocks (so the block list follows it) */
+type GroupOption = SearchableOption & { circleId: string; blocks: string[] };
 interface AreaOptions {
   circles: SearchableOption[];
+  bas: GroupOption[];
+  districts: GroupOption[];
   blocks: BlockOption[];
-  /** labels of every circle / district / block, for the chips */
+  /** labels of every circle / BA / district / block, for the chips */
   labels: Record<string, string>;
 }
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-/** Circle and block options (blocks know their circle, so the block list follows the chosen circles), labelled with
- * their parents so same-named blocks stay distinguishable. GPs are searched on the server (thousands of them). */
+/** Circle, BA, district and block options (each knows its circle; BAs and districts know their blocks, so the lists
+ * follow what is chosen above them), labelled with their parents so same-named places stay distinguishable. GPs are
+ * searched on the server (thousands of them). */
 function scopeOptions(loc: UserLocations | undefined): AreaOptions {
-  const out: AreaOptions = { circles: [], blocks: [], labels: {} };
+  const out: AreaOptions = { circles: [], bas: [], districts: [], blocks: [], labels: {} };
   for (const c of loc?.circles ?? []) {
     out.circles.push({ value: c.id, label: c.name });
     out.labels[`circle:${c.id}`] = c.name;
+    for (const b of c.bas ?? []) {
+      const label = `${b.name} BA (${c.name})`;
+      out.bas.push({ value: b.id, label, circleId: c.id, blocks: b.blocks });
+      out.labels[`ba:${b.id}`] = label;
+    }
     for (const d of c.districts) {
       out.labels[`district:${d.id}`] = `${d.name} (${c.name})`;
+      out.districts.push({ value: d.id, label: `${d.name} (${c.name})`, circleId: c.id, blocks: d.blocks.map((b) => b.id) });
       for (const b of d.blocks) {
         const label = `${b.name} (${d.name}, ${c.name})`;
         out.blocks.push({ value: b.id, label, circleId: c.id });
@@ -51,6 +64,8 @@ function scopeOptions(loc: UserLocations | undefined): AreaOptions {
     }
   }
   out.blocks.sort((a, b) => a.label.localeCompare(b.label));
+  out.bas.sort((a, b) => a.label.localeCompare(b.label));
+  out.districts.sort((a, b) => a.label.localeCompare(b.label));
   return out;
 }
 
@@ -82,6 +97,20 @@ function UsersContent() {
       setTick((n) => n + 1);
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed" });
+    }
+  };
+
+  const remove = async (u: AppUser) => {
+    if (!window.confirm(`Delete the user "${u.name}" (${u.email}) permanently?
+
+The account and its areas are removed. Tickets and history stay. This cannot be undone – use Deactivate to only block the sign-in.`)) return;
+    setMsg(null);
+    try {
+      await adminApi.deleteUser(u.id);
+      setMsg({ ok: true, text: `${u.name} deleted.` });
+      setTick((n) => n + 1);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Delete failed" });
     }
   };
 
@@ -165,6 +194,11 @@ function UsersContent() {
                           {u.isActive ? "Deactivate" : "Activate"}
                         </Button>
                       )}
+                      {u.email !== session?.email && (
+                        <Button size="sm" variant="ghost" className="ml-1 text-critical-text hover:bg-critical-soft" onClick={() => void remove(u)} aria-label={`Delete ${u.name}`}>
+                          <Trash2 /> Delete
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -234,11 +268,18 @@ function UserDialog({
 
   const label = (l: UserScopeLevel, id: string) =>
     (l === "gp" ? gpLabels[id] : options.labels[`${l}:${id}`]) ?? user?.scopes.find((s) => s.level === l && s.id === id)?.label ?? id;
-  // the picker follows what is already chosen: blocks of the chosen circles; GPs of the chosen blocks, else circles
-  const chosenCircles = scopes.filter((s) => s.level === "circle").map((s) => s.id);
-  const chosenBlocks = scopes.filter((s) => s.level === "block").map((s) => s.id);
-  const blockOptions = chosenCircles.length ? options.blocks.filter((b) => chosenCircles.includes(b.circleId)) : options.blocks;
-  const pickOptions = level === "circle" ? options.circles : blockOptions;
+  // the picker follows what is already chosen: BAs / districts of the chosen circles; blocks of the chosen BAs /
+  // districts, else circles; GPs of the chosen blocks, else BAs / districts, else circles
+  const chosen = (l: UserScopeLevel) => scopes.filter((s) => s.level === l).map((s) => s.id);
+  const chosenCircles = chosen("circle");
+  const chosenBas = chosen("ba");
+  const chosenDistricts = chosen("district");
+  const chosenBlocks = chosen("block");
+  const inCircles = <T extends { circleId: string }>(list: T[]) => (chosenCircles.length ? list.filter((x) => chosenCircles.includes(x.circleId)) : list);
+  const groupBlocks = new Set([...options.bas.filter((b) => chosenBas.includes(b.value)), ...options.districts.filter((d) => chosenDistricts.includes(d.value))].flatMap((x) => x.blocks));
+  const blockOptions = groupBlocks.size ? options.blocks.filter((b) => groupBlocks.has(b.value)) : inCircles(options.blocks);
+  const pickOptions = level === "circle" ? options.circles : level === "ba" ? inCircles(options.bas) : level === "district" ? inCircles(options.districts) : blockOptions;
+  const chosenGroups = [...chosenBas.map((i) => label("ba", i)), ...chosenDistricts.map((i) => label("district", i))];
   const emailOk = EMAIL_RE.test(email.trim());
   const valid = name.trim().length >= 2 && emailOk && (user ? true : password.length > 0);
 
@@ -336,6 +377,8 @@ function UserDialog({
                 {level === "gp" ? (
                   <GpPicker
                     circles={chosenCircles}
+                    bas={chosenBas}
+                    districts={chosenDistricts}
                     blocks={chosenBlocks}
                     picked={new Set(scopes.filter((s) => s.level === "gp").map((s) => s.id))}
                     onPick={(gp) => {
@@ -354,16 +397,24 @@ function UserDialog({
               </div>
               {level !== "circle" && (
                 <p className="text-[0.75rem] text-muted-foreground">
-                  {level === "block"
+                  {level === "ba" || level === "district"
                     ? chosenCircles.length
-                      ? `Blocks of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
-                      : "Every block – choose a circle first to see only its blocks."
-                    : chosenBlocks.length
-                      ? `GPs of the chosen block${chosenBlocks.length === 1 ? "" : "s"} only.`
-                      : chosenCircles.length
-                        ? `GPs of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
-                        : "Every GP – choose a circle or block first to narrow the list."}{" "}
-                  A block or GP inside a chosen circle limits the access to it.
+                      ? `${level === "ba" ? "BAs" : "Districts"} of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
+                      : `Every ${level === "ba" ? "BA" : "district"} – choose a circle first to see only its ${level === "ba" ? "BAs" : "districts"}.`
+                    : level === "block"
+                      ? chosenGroups.length
+                        ? `Blocks of ${chosenGroups.join(", ")}.`
+                        : chosenCircles.length
+                          ? `Blocks of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
+                          : "Every block – choose a circle, BA or district first to see only its blocks."
+                      : chosenBlocks.length
+                        ? `GPs of the chosen block${chosenBlocks.length === 1 ? "" : "s"} only.`
+                        : chosenGroups.length
+                          ? `GPs of ${chosenGroups.join(", ")}.`
+                          : chosenCircles.length
+                            ? `GPs of ${chosenCircles.map((c) => label("circle", c)).join(", ")}.`
+                            : "Every GP – choose a circle, BA, district or block first to narrow the list."}{" "}
+                  A BA, district, block or GP inside a chosen area limits the access to it.
                 </p>
               )}
               {scopes.length ? (
@@ -423,16 +474,30 @@ function Field({
 }
 
 /** GP area picker: GPs are searched on the server (thousands of them) – those of the chosen blocks, else of the chosen
- * circles, else all – by GP name or code; a click adds the GP. */
-function GpPicker({ circles, blocks, picked, onPick }: { circles: string[]; blocks: string[]; picked: Set<string>; onPick: (gp: UserGpOption) => void }) {
+ * BAs / districts, else circles, else all – by GP name or code; a click adds the GP. */
+function GpPicker({
+  circles,
+  bas,
+  districts,
+  blocks,
+  picked,
+  onPick,
+}: {
+  circles: string[];
+  bas: string[];
+  districts: string[];
+  blocks: string[];
+  picked: Set<string>;
+  onPick: (gp: UserGpOption) => void;
+}) {
   const [text, setText] = useState("");
   const [q, setQ] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setQ(text.trim()), 250);
     return () => clearTimeout(t);
   }, [text]);
-  const scope = blocks.length ? `b:${blocks.join(",")}` : `c:${circles.join(",")}`;
-  const res = useApiQuery(`user-gps:${scope}:${q}`, () => adminApi.searchUserGps({ circles, blocks, q, limit: 50 }));
+  const scope = blocks.length ? `b:${blocks.join(",")}` : bas.length || districts.length ? `g:${bas.join(",")}|${districts.join(",")}` : `c:${circles.join(",")}`;
+  const res = useApiQuery(`user-gps:${scope}:${q}`, () => adminApi.searchUserGps({ circles, bas, districts, blocks, q, limit: 50 }));
   const items = res.data?.items ?? [];
   return (
     <div className="min-w-0 flex-1 space-y-1">

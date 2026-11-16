@@ -397,28 +397,43 @@ _scoped: OrderedDict[tuple, tuple[Store, Store]] = OrderedDict()
 _scoped_lock = threading.Lock()
 
 
-AREA_LEVELS = ("circle", "district", "block", "gp")
+AREA_LEVELS = ("circle", "ba", "district", "block", "gp")
+
+
+def ba_ids(g: pd.DataFrame) -> pd.Series:
+    """Business area id of every GP: "<circle id>~<BA slug>" (e.g. "rajasthan~jaipur") from the master data's BA column
+    – the same BA the Escalation Matrix carries; None for a GP without a BA (it then matches no BA area)."""
+    if "ba" not in g.columns:
+        return pd.Series(None, index=g.index, dtype=object)
+    text_ = g["ba"].map(lambda v: " ".join(str(v).split()) if isinstance(v, str) and v.strip() and v.strip() != "0" else None)
+    return (g["circle_id"] + "~" + text_.map(lambda v: slug(v) if v else "")).where(text_.notna(), None)
 
 
 def area_mask(g: pd.DataFrame, areas) -> tuple[np.ndarray, set[str]]:
-    """The GPs of a user's areas (level, id) – circle / district / block ids as in User Management, gp = GP code – and
-    the circles given in full. An area is the union of everything chosen, except that a more specific area chosen
+    """The GPs of a user's areas (level, id) – circle / BA / district / block ids as in User Management, gp = GP code –
+    and the circles given in full. An area is the union of everything chosen, except that a more specific area chosen
     INSIDE another one narrows it: Rajasthan + one Rajasthan block = that block only; Rajasthan + a block of Assam =
-    all of Rajasthan and that Assam block; a block + GPs of that block = those GPs. Ids not in the data match nothing
-    (never widened). Used for the dashboard data (scoped_store) and the AMC Conversion e-mail (mail.audience)."""
+    all of Rajasthan and that Assam block; a BA / district + a block or GPs inside it = those only; a block + GPs of
+    that block = those GPs. BA and district are both inside a circle but not inside each other – chosen together they
+    add up. Ids not in the data match nothing (never widened). Used for the dashboard data (scoped_store) and the AMC
+    Conversion e-mail (mail.audience)."""
     ids = {lvl: {i for l, i in areas if l == lvl} for lvl in AREA_LEVELS}
     gp_in = g.index.isin(list(ids["gp"]))
     blk_in = g["block_id"].isin(ids["block"]).to_numpy()
     dist_in = g["district_id"].isin(ids["district"]).to_numpy()
     circ_in = g["circle_id"].isin(ids["circle"]).to_numpy()
+    ba = ba_ids(g) if ids["ba"] else None
+    ba_in = ba.isin(ids["ba"]).to_numpy() if ba is not None else np.zeros(len(g), dtype=bool)
     # parents holding a chosen, more specific area are narrowed to it
     narrowed_blocks = set(g.loc[gp_in, "block_id"])
     narrowed_districts = set(g.loc[gp_in | blk_in, "district_id"])
-    narrowed_circles = set(g.loc[gp_in | blk_in | dist_in, "circle_id"])
+    narrowed_bas = set(ba[gp_in | blk_in].dropna()) if ba is not None else set()
+    narrowed_circles = set(g.loc[gp_in | blk_in | dist_in | ba_in, "circle_id"])
     mask = (
         gp_in
         | (blk_in & ~g["block_id"].isin(narrowed_blocks).to_numpy())
         | (dist_in & ~g["district_id"].isin(narrowed_districts).to_numpy())
+        | (ba_in & ~ba.isin(narrowed_bas).to_numpy() if ba is not None else ba_in)
         | (circ_in & ~g["circle_id"].isin(narrowed_circles).to_numpy())
     )
     full = {c for c in ids["circle"] if c not in narrowed_circles}

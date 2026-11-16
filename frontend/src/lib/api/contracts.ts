@@ -647,9 +647,9 @@ export interface RunIssuesResponse {
 export type ScopeLevel = "circle" | "district" | "block";
 /** User Management areas: circle / block / GP (GP code); "district" only for areas saved before. A block / GP chosen
  * inside a chosen circle narrows it (the same rule for the dashboard data and the AMC Conversion e-mail). */
-export type UserScopeLevel = ScopeLevel | "gp";
+export type UserScopeLevel = ScopeLevel | "ba" | "gp";
 
-/** One circle / block / GP a viewer may see (dashboard) and receives in the AMC Conversion e-mails. */
+/** One circle / BA (business area) / district / block / GP a viewer may see (dashboard) and receives in the AMC Conversion e-mails. */
 export interface UserScope {
   level: UserScopeLevel;
   id: string;
@@ -672,7 +672,13 @@ export interface AppUser {
 
 export interface UserLocations {
   hasData: boolean;
-  circles: { id: string; name: string; districts: { id: string; name: string; blocks: { id: string; name: string }[] }[] }[];
+  circles: {
+    id: string;
+    name: string;
+    /** business areas with the ids of their blocks (a block can be in two BAs) */
+    bas?: { id: string; name: string; blocks: string[] }[];
+    districts: { id: string; name: string; blocks: { id: string; name: string }[] }[];
+  }[];
 }
 
 export interface UserCreateBody {
@@ -692,6 +698,10 @@ export interface UserImportItem {
   /** NEW = will be created (preview), CREATED = created, EXISTS = already a user (not changed), SKIPPED = problem in the row */
   status: "NEW" | "CREATED" | "EXISTS" | "SKIPPED";
   reason: string | null;
+  /** areas from the Circle / BA / District / Block / GP columns (readable); empty = every area */
+  areas?: string[];
+  /** FILE = own password from the Password column, TEMPORARY = the temporary password (the password itself is never sent) */
+  password?: "FILE" | "TEMPORARY";
 }
 
 export interface UserImportResult {
@@ -703,6 +713,12 @@ export interface UserImportResult {
   exists: number;
   skipped: number;
   temporaryPassword: string;
+  /** the file has Circle / BA / District / Block / GP columns */
+  withAreas?: boolean;
+  /** the file has a Password column */
+  withPasswords?: boolean;
+  /** new users who get the temporary password (no password in the file) */
+  temporaryCount?: number;
   items: UserImportItem[];
 }
 
@@ -1679,11 +1695,13 @@ export interface AdminApi {
   listUsers(): Promise<AppUser[]>;
   createUser(body: UserCreateBody): Promise<AppUser>;
   updateUser(id: number, body: UserUpdateBody): Promise<AppUser>;
+  /** permanently removes the account (tickets and history stay, without the user link) */
+  deleteUser(id: number): Promise<{ deleted: number }>;
   /** dryRun = preview only; otherwise creates the new Viewer accounts with the temporary password */
   importUsers(file: File, dryRun: boolean): Promise<UserImportResult>;
   getUserLocations(): Promise<UserLocations>;
-  /** GPs of the chosen blocks (else circles, else all) matching `q` – the GP picker of User Management */
-  searchUserGps(q: { circles?: string[]; blocks?: string[]; q?: string; limit?: number }): Promise<{ items: UserGpOption[]; total: number }>;
+  /** GPs of the chosen blocks (else BAs / districts, else circles, else all) matching `q` – the GP picker of User Management */
+  searchUserGps(q: { circles?: string[]; bas?: string[]; districts?: string[]; blocks?: string[]; q?: string; limit?: number }): Promise<{ items: UserGpOption[]; total: number }>;
   getMailStatus(): Promise<MailStatus>;
   getMailOptions(): Promise<MailOptions>;
   sendTestMail(to: string): Promise<{ ok: boolean; message: string }>;
@@ -1878,7 +1896,10 @@ export interface TicketDetail extends TicketSummary {
   myRole: TicketRecipientRole | "ASSIGNEE" | null;
   /** progress = daily GP progress (assigned Area Manager); close = an admin may close now; email = send / retry e-mails */
   /** reviewAs = review steps of the GPs this user may do (AM approve / return, SME forward, COH letter / AMC; admins: all) */
-  can: { start: boolean; submit: boolean; review: boolean; progress: boolean; close: boolean; email: boolean; share?: boolean; reviewAs?: GpReviewRole[] };
+  /** reassign = the Area Manager (or an admin) may give a GP of the task to another FE of the ticket */
+  can: { start: boolean; submit: boolean; review: boolean; progress: boolean; close: boolean; email: boolean; share?: boolean; reviewAs?: GpReviewRole[]; reassign?: boolean;
+    /** COH of a GP-wise task: may close it now (every GP finished); cohCloseBlock = why not yet (shown to the COH) */
+    cohClose?: boolean; cohCloseBlock?: string | null };
 }
 
 export interface TicketTaskGp {
@@ -1937,6 +1958,8 @@ export interface TicketTaskGp {
   smeReview?: GpReviewRecord | null;
   /** the latest send-back while it is the GP's last step: SME → AM (SME_RETURN) or COH → SME (COH_RETURN) */
   sentBack?: (GpReviewRecord & { action: "SME_RETURN" | "COH_RETURN" }) | null;
+  /** an FE of this ticket (with an account) reports this GP – the Area Manager only reviews / reassigns it */
+  feAssigned?: boolean;
 }
 
 export type GpReviewRole = "AM" | "SME" | "COH";
@@ -1946,7 +1969,7 @@ export type GpStage = "NONE" | "PENDING_AM" | GpReviewState;
 export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "SME_RETURN" | "COH_LETTER" | "COH_AMC" | "COH_RETURN";
 export interface GpReviewStep {
   role: "FE" | "AM" | "SME" | "COH" | "ADMIN";
-  action: GpReviewAction | "EDIT" | "ADD";
+  action: GpReviewAction | "EDIT" | "ADD" | "REASSIGN" | "ND_REOPEN";
   label: string;
   category: GpCategory | null;
   date: string | null;
@@ -1994,6 +2017,39 @@ export interface GpReviewRecord {
   /** who the GP was forwarded to (empty = not recorded: approved before GP-level forwarding existed) */
   forwardedTo: { name: string; email: string }[];
   forwardedAt: string | null;
+  /** the reviewer's own proof attached to this step (AM verification proof / SME review proof) */
+  files?: TicketProofFile[];
+}
+
+/** One GP of the COH's Letter Submitted / AMC Converted lists */
+export interface CohGpRow {
+  ticketId: number;
+  ticket: string;
+  ticketStatus: TicketStatus;
+  week: string;
+  gpCode: string;
+  gpName: string;
+  circle: string;
+  district: string | null;
+  block: string | null;
+  areaManager: string | null;
+  fieldEngineer: string | null;
+  /** the GP's Planned Date (AMC plan); targetFromWeek = no Planned Date, the ticket week's last day is shown */
+  targetDate: string;
+  targetFromWeek: boolean;
+  letterDate: string | null;
+  amcDate: string | null;
+  status: GpReviewState | null;
+}
+
+export interface CohGpLists {
+  /** the user is COH on at least one live ticket */
+  isCoh: boolean;
+  tickets: number;
+  letterSubmitted: number;
+  amcConverted: number;
+  letter: CohGpRow[];
+  amc: CohGpRow[];
 }
 
 export interface ReviewContacts {
@@ -2179,6 +2235,10 @@ export interface TicketTask {
       smeReturned?: number; cohReturned?: number } };
   blocks: { block: string; gps: number; target: number; achieved: number; gap: number }[];
   gps: TicketTaskGp[];
+  /** Area Manager / admin: the FEs of the ticket a GP can be reassigned to */
+  feOptions?: { recipientId: number; name: string; email: string }[];
+  /** Non-Doable cases of the viewer's GPs waiting for the E1 / E2 forms – the Daily Achievement is locked until submitted */
+  ndPending?: { caseId: number; ref: string; gpId: number; gpCode: string; status: string; label: string }[];
   latestSubmission: string | null;
   history: { id: number; submittedAt: string; submittedBy: string; note: string | null; lines: { taskGpId: number; gpCode: string | null; gpName: string | null; block: string | null; achievedToday: number; cumulative: number; gap: number; remark: string | null; status: GpStatus; gpCategory?: GpCategory | null; files: TicketProofFile[] }[] }[];
 }
@@ -2330,7 +2390,15 @@ export interface TicketApi {
     newGps?: NewTaskGp[],
   ): Promise<TicketDetail>;
   /** Review step for GPs of a task ticket (AM approve / return, SME forward, COH letter / AMC) */
-  reviewGps(id: number, body: { taskGpIds: number[]; action: GpReviewAction; remark?: string; category?: "B"; date?: string; to?: { name?: string; email: string }[] }): Promise<TicketDetail>;
+  /** proofs = the reviewer's proof documents (required for AM_APPROVE / SME_FORWARD – sent as multipart) */
+  reviewGps(
+    id: number,
+    body: { taskGpIds: number[]; action: GpReviewAction; remark?: string; category?: "B"; date?: string; to?: { name?: string; email: string }[] },
+    proofs?: File[],
+    onProgress?: (fraction: number) => void,
+  ): Promise<TicketDetail>;
+  /** Area Manager / admin: give a GP of the task to another FE of the ticket (history kept) */
+  reassignGp(id: number, gpId: number, body: { recipientId: number; remark?: string }): Promise<TicketDetail>;
   /** SME (for the Area Manager's approval) / COH (for the SME's forward) of the ticket's circle */
   getReviewContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
   /** Same-origin URL of a GP proof document (download, or inline preview for PDF / images) */
@@ -2348,6 +2416,12 @@ export interface TicketApi {
   submit(id: number, description: string, files: File[], onProgress?: (fraction: number) => void): Promise<TicketDetail>;
   /** force = close a GP-wise task although GPs are not approved by the Area Manager (comment = the reason) */
   close(id: number, comment?: string, force?: boolean): Promise<TicketDetail>;
+  /** COH: close a GP-wise task ticket once every GP is finished */
+  cohClose(id: number, comment?: string): Promise<TicketDetail>;
+  /** COH: Letter Submitted / AMC Converted GPs of their tickets */
+  getCohGps(): Promise<CohGpLists>;
+  /** COH: the list as Excel (same-origin URL) */
+  cohGpsXlsxUrl(kind: "letter" | "amc"): string;
   /** admin only: soft delete (the ticket leaves every list; its records stay as history) */
   remove(id: number, reason?: string): Promise<{ deleted: boolean; id: number; code: string }>;
   /** Area Manager: CBH / SME of the ticket's circle (Escalation Matrix) to share the ticket with */

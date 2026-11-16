@@ -312,6 +312,9 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
 
     scope = view_of(db, t, user)  # FE: their GPs · SME / COH: the GPs forwarded to them · else the whole task
     task_block = task_json(db, t, scope)
+    from . import coh
+
+    coh_ok, coh_why = coh.can_close(db, t, user) if task_block is not None else (False, None)
     recs = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id).order_by(TicketRecipient.id)).all()
     mine = next((r for r in recs if r.user_id == user.id), None)
     if scope is not None:  # a Field Engineer does not see the other FEs of the ticket
@@ -365,6 +368,11 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
             "share": task_block is not None and mine is not None and mine.role == "AM",
             # review chain of the GPs (AM approve / return, SME forward, COH letter / AMC) – admins may do every step
             "reviewAs": sorted(review.roles_of(db, t, user)) if task_block is not None else [],
+            # Area Manager (admins too): give a GP of the task to another FE of the ticket
+            "reassign": task_block is not None and t.status != "CLOSED" and "AM" in review.roles_of(db, t, user),
+            # COH of a GP-wise task: may close it once every GP is finished; cohCloseBlock = why not yet (COH only)
+            "cohClose": coh_ok,
+            "cohCloseBlock": coh_why,
         },
     }
 

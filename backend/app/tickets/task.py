@@ -56,6 +56,11 @@ from .directory import split_emails
 MAX_REMARK = 500
 MAX_GP_FILES = 5  # proof documents per GP in one daily submission
 MAX_PROGRESS_FILES = 50  # proof documents in one daily submission (all GPs)
+# Daily Achievement evidence: a GP line that sets / changes the achievement (category, or the older Done / Pending), or
+# sends a returned GP back to the Area Manager, needs a remark AND at least one photo (JPG / PNG) in the same submission
+MIN_REMARK = 3
+PHOTO_EXTS = (".jpg", ".jpeg", ".png")
+EVIDENCE_MSG = "Daily Achievement needs a remark (at least 3 characters) and at least one photo (JPG / PNG) of the work in the same submission"
 
 # GP classification of the daily progress (code -> label); only ACHIEVED_CATEGORY counts as achieved
 CATEGORIES: dict[str, str] = {
@@ -139,6 +144,25 @@ class FeScope:
 
     def owns(self, g: Any) -> bool:
         return g.fe_name is not None and fe_key(g.fe_name, g.fe_email) == self.key()
+
+
+def fe_owner_keys(db: Session, t: Ticket) -> set[tuple[str, str]]:
+    """FE keys of the Field Engineers who work on this ticket with a dashboard account: their GPs are reported by them
+    only (the Area Manager reviews them). GPs without such an FE stay with the Area Manager."""
+    from ..models import TicketRecipient
+
+    rs = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE", TicketRecipient.user_id.is_not(None), TicketRecipient.can_work.is_(True)))
+    return {FeScope(r.name, r.fe_mail).key() for r in rs}
+
+
+def fe_assigned(g: Any, keys: set[tuple[str, str]]) -> bool:
+    return g is not None and g.fe_name is not None and fe_key(g.fe_name, g.fe_email) in keys
+
+
+def _is_photo(u: Any) -> bool:
+    from pathlib import Path
+
+    return Path(files.clean_name(getattr(u, "file_name", None))).suffix.lower() in PHOTO_EXTS
 
 
 def scope_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | None:
@@ -588,13 +612,27 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
 
     by_gp = {g.id: g for g in gps}
     at = {s.id: (s.submitted_at if s.submitted_at is None or s.submitted_at.tzinfo else s.submitted_at.replace(tzinfo=dt.UTC)) for s in subs}  # SQLite: naive UTC
-    proofs = [f for f in db.scalars(select(TicketProgressFile).where(TicketProgressFile.ticket_id == t.id).order_by(TicketProgressFile.id)) if f.task_gp_id in mine]
+    from . import review as rv
+
+    # review steps (AM approval, SME forward, …) write progress lines with the same user and time as their review row;
+    # proof attached to such a line is that reviewer's proof – never counted or shown as the FE's evidence
+    records, review_keys = rv.records(db, t, mine, iso)
+    review_subs = {s.id for s in subs if (s.submitted_by_id, _utc(s.submitted_at)) in review_keys}
+    sub_of_key = {(s.submitted_by_id, _utc(s.submitted_at)): s.id for s in subs if s.id in review_subs}
+    line_sub = {ln.id: ln.progress_id for ln in lines}
+    all_files = [f for f in db.scalars(select(TicketProgressFile).where(TicketProgressFile.ticket_id == t.id).order_by(TicketProgressFile.id)) if f.task_gp_id in mine]
+    proofs = [f for f in all_files if line_sub.get(f.progress_line_id) not in review_subs]
     files_of_line: dict[int, list[dict[str, Any]]] = {}
     files_of_gp: dict[int, list[dict[str, Any]]] = {}
-    for f in proofs:
+    review_files: dict[tuple[int, int], list[dict[str, Any]]] = {}  # (progress id of the review step, GP) -> files
+    for f in all_files:
         j = file_json(f, iso)
         files_of_line.setdefault(f.progress_line_id, []).append(j)
-        files_of_gp.setdefault(f.task_gp_id, []).append(j)
+        sid = line_sub.get(f.progress_line_id)
+        if sid in review_subs:
+            review_files.setdefault((sid, f.task_gp_id), []).append(j)
+        else:
+            files_of_gp.setdefault(f.task_gp_id, []).append(j)
     last_update: dict[int, Any] = {}
     last_by: dict[int, str] = {}  # who submitted the GP's latest line (Area Manager / FE)
     who = {s.id: s.submitted_by_name for s in subs}
@@ -622,10 +660,8 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         b["target"] += g.target
         b["achieved"] += cumulative(g)
     fe_recipients = {fe_key(r.name, r.fe_mail) for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE"))}
-    from . import review as rv
-
+    owner_keys = fe_owner_keys(db, t)
     trail = rv.trails(db, t, mine, iso)
-    records, review_keys = rv.records(db, t, mine, iso)
     from . import nondoable as nd
 
     nd_refs = nd.case_refs(db, t.id)
@@ -635,7 +671,6 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
     # an FE category (A / C / D) up to the Area Manager's approval, with the latest remark / submitter after it.
     # Lines written by the review steps themselves (same user and time as a review row) are not the FE's.
     sub_of = {s.id: s for s in subs}
-    review_subs = {s.id for s in subs if (s.submitted_by_id, _utc(s.submitted_at)) in review_keys}
     fe_users = set(db.scalars(select(TicketRecipient.user_id).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE", TicketRecipient.user_id.is_not(None))))
     lines_of_gp: dict[int, list[TicketProgressLine]] = {}
     for ln in lines:
@@ -664,8 +699,15 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
             "files": [f for ln in own for f in files_of_line.get(ln.id, [])],
         }
 
-    def public(r: dict[str, Any] | None) -> dict[str, Any] | None:
-        return {k: v for k, v in r.items() if not k.startswith("_")} if r else None
+    def public(r: dict[str, Any] | None, gp_id: int | None = None) -> dict[str, Any] | None:
+        """The record for the API, with the proof the reviewer attached to that step (AM / SME evidence)."""
+        if not r:
+            return None
+        out = {k: v for k, v in r.items() if not k.startswith("_")}
+        if gp_id is not None:
+            sid = sub_of_key.get(r.get("_key"))
+            out["files"] = review_files.get((sid, gp_id), []) if sid is not None else []
+        return out
 
     if isinstance(scope, FeScope):
         scope_out: dict[str, Any] | None = {"kind": "FE", "fieldEngineer": scope.name, "email": scope.mail}
@@ -720,11 +762,21 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
                 "stage": rv.stage_of(g, bool((nd_refs.get(g.id) or {}).get("open"))), "reviewLabel": rv.stage_label(rv.stage_of(g, bool((nd_refs.get(g.id) or {}).get("open")))),
                 "letterDate": g.letter_date.isoformat() if g.letter_date else None, "amcOn": g.amc_on.isoformat() if g.amc_on else None, "addedBy": g.added_by,
                 "trail": trail.get(g.id, []), "ndCase": nd_refs.get(g.id),
-                "feSubmission": fe_submission(g), "amApproval": public(records.get(g.id, {}).get("amApproval")), "smeReview": public(records.get(g.id, {}).get("smeReview")),
+                "feSubmission": fe_submission(g), "amApproval": public(records.get(g.id, {}).get("amApproval"), g.id), "smeReview": public(records.get(g.id, {}).get("smeReview"), g.id),
                 "sentBack": public(records.get(g.id, {}).get("sentBack")),
+                # an FE of this ticket (dashboard account) reports this GP – the Area Manager only reviews / reassigns it
+                "feAssigned": fe_assigned(g, owner_keys),
             }
             for g in gps
         ],
+        # Area Manager / admin: the FEs a GP can be reassigned to (none in an FE's / reviewer's view)
+        "feOptions": fe_options(db, t) if scope is None else [],
+        # Non-Doable cases of the GPs this viewer reports (FE: theirs; AM: those without an FE of the ticket) that wait
+        # for the E1 / E2 forms – the Daily Achievement is locked until they are submitted (submit_progress)
+        "ndPending": [
+            {"caseId": c.id, "ref": c.ref, "gpId": c.task_gp_id, "gpCode": c.gp_code, "status": c.status, "label": nd.STATUS_LABEL[c.status]}
+            for c in nd.forms_pending(db, t.id, {g.id for g in gps if (scope.owns(g) if isinstance(scope, FeScope) else not fe_assigned(g, owner_keys))})
+        ] if not isinstance(scope, ReviewerView) else [],
         "latestSubmission": iso(subs[0].submitted_at) if subs else None,
         "history": [{"id": s.id, "submittedAt": iso(s.submitted_at), "submittedBy": s.submitted_by_name, "note": s.note, "lines": by_sub.get(s.id, [])} for s in subs],
     }
@@ -785,10 +837,23 @@ def submit_progress(
     gps = {g.id: g for g in _gps(db, t.id)}
     scope = scope_of(db, t, user)
     role = "FE" if scope is not None else "AM"
+    fe_keys = fe_owner_keys(db, t) if scope is None else set()
+
+    # a Non-Doable case of the submitter's own GPs still waiting for their E1 / E2 forms: no Daily Achievement before
+    # those are submitted (the case is opened from Non-Doable Cases)
+    mine_ids = {g.id for g in gps.values() if (scope.owns(g) if scope is not None else not fe_assigned(g, fe_keys))}
+    waiting = nd.forms_pending(db, t.id, mine_ids)
+    if waiting:
+        refs = ", ".join(f"{c.ref} (GP {c.gp_code})" for c in waiting[:5]) + (f" … (+{len(waiting) - 5})" if len(waiting) > 5 else "")
+        raise TaskError(409, f"Non-Doable case {refs} is waiting for your E1 Physical Verification / E2 Justification – open it in Non-Doable Cases and submit the forms before the next Daily Achievement")
 
     def own(g: TicketTaskGp) -> None:
         if scope is not None and not scope.owns(g):
             raise TaskError(403, f"GP {g.gp_code} is not one of your GPs in this ticket")
+        if scope is None and fe_assigned(g, fe_keys):  # the Area Manager reviews an FE's GP, never reports it for them
+            raise TaskError(
+                403, f"GP {g.gp_code} is assigned to FE {g.fe_name} – only the FE submits its Daily Achievement. Review it with Approve / Return, or use Reassign FE."
+            )
         if g.review in rv.LOCKED:
             raise TaskError(409, f"GP {g.gp_code} is {rv.REVIEW_LABEL[g.review]} – it can no longer be changed in the daily progress")
         try:
@@ -800,7 +865,20 @@ def submit_progress(
     if len(uploads) > MAX_PROGRESS_FILES:
         raise TaskError(422, f"At most {MAX_PROGRESS_FILES} proof documents per daily submission")
     files_of: dict[int, list[Any]] = {}
+    files_new: dict[int, list[Any]] = {}  # proof of an added GP: proofGps = -(index + 1) of the GP in new_gps
     for gid, u in uploads:
+        if gid < 0:
+            idx = -gid - 1
+            if idx >= len(new_gps or []):
+                raise TaskError(422, "A proof document belongs to a GP that is not in this ticket")
+            files_new.setdefault(idx, []).append(u)
+            if len(files_new[idx]) > MAX_GP_FILES:
+                raise TaskError(422, f"New GP {str((new_gps or [])[idx].get('gpCode') or '')[:40]}: at most {MAX_GP_FILES} proof documents per submission")
+            try:
+                files.check_meta(u.file_name, u.content_type)
+            except files.AttachmentError as exc:
+                raise TaskError(exc.status, f"New GP: {exc}") from None
+            continue
         g = gps.get(gid)
         if g is None:
             raise TaskError(422, "A proof document belongs to a GP that is not in this ticket")
@@ -816,6 +894,11 @@ def submit_progress(
     fe_only = "choose Rectification Done, Revisit Required or Non-Doable – Proposed (Ready for Letter and Letter Submission come from the AM / SME / COH review)"
     # (GP, change of `reported` (+1 / 0 / -1), remark, new category or None = unchanged, GP Name / Block edits)
     changes: list[tuple[TicketTaskGp, int, str | None, str | None, list[tuple[str, str, str | None, str | None]]]] = []
+
+    def evidence(label: str, remark: str | None, proofs: list[Any]) -> None:
+        if remark is None or len(remark) < MIN_REMARK or not any(_is_photo(u) for u in proofs):
+            raise TaskError(422, f"{label}: {EVIDENCE_MSG}")
+
     for it in items:
         gid = int(it.get("taskGpId", 0))
         g = gps.get(gid)
@@ -843,6 +926,8 @@ def submit_progress(
                     raise TaskError(exc.status, exc.message) from None
             delta = ((1 if cat == ACHIEVED_CATEGORY else 0) - g.reported) if new_cat else 0
             if new_cat or gid in files_of or (remark and remark != (g.remarks or None)) or edits:
+                if new_cat or g.review == "RETURNED":  # a Daily Achievement (or a corrected returned GP back to the AM)
+                    evidence(f"GP {g.gp_code}", remark, files_of.get(gid, []))
                 changes.append((g, delta, remark, new_cat, edits))
             continue
         status = it.get("status")
@@ -861,6 +946,8 @@ def submit_progress(
         if status == "PENDING" and cumulative(g) >= g.target:
             raise TaskError(422, f"GP {g.gp_code} has already reached its target – it cannot be marked Pending")
         if today or status == "PENDING" or gid in files_of or (remark and remark != (g.remarks or None)) or edits:
+            if today or status is not None or g.review == "RETURNED":  # the older Done / Pending form is a Daily Achievement too
+                evidence(f"GP {g.gp_code}", remark, files_of.get(gid, []))
             changes.append((g, today, remark, None, edits))
     for gid in files_of:  # a proof for a GP without a status / remark change still makes a line of the day
         if gid not in seen:
@@ -891,7 +978,11 @@ def submit_progress(
         name = " ".join(str(n.get("gpName") or "").split())[:160]
         if m is None and not name:
             raise TaskError(422, f"GP {code} is not in the master data – enter its GP name")
-        added.append({"code": code, "name": name, "block": " ".join(str(n.get("block") or "").split())[:160] or None, "cat": cat, "remark": (n.get("remark") or "").strip()[:MAX_REMARK] or None, "m": m})
+        new_remark = (n.get("remark") or "").strip()[:MAX_REMARK] or None
+        idx = len(added)
+        if cat is not None:  # a Daily Achievement of the added GP: same evidence as any other GP
+            evidence(f"New GP {code}", new_remark, files_new.get(idx, []))
+        added.append({"code": code, "name": name, "block": " ".join(str(n.get("block") or "").split())[:160] or None, "cat": cat, "remark": new_remark, "m": m, "files": files_new.get(idx, [])})
     if not changes and not added:
         raise TaskError(422, "Nothing to submit – choose a category for a GP, write a new remark, correct its details, add a GP or attach a proof document")
 
@@ -923,6 +1014,8 @@ def submit_progress(
             db.add(g)
             db.flush()
             gps[g.id] = g
+            if a["files"]:
+                files_of[g.id] = a["files"]  # stored with the GP's line below, like the proof of any other GP
             rv.record(db, t, g, user, role, "ADD", f"Added by {user.name}" + ("" if m is not None else " – not in the master data"), at)
             changes.append((g, 0, a["remark"], a["cat"], []))
         returned = 0
@@ -990,6 +1083,67 @@ def submit_progress(
         files.remove(t.id, stored)
         raise
     return sub
+
+
+def fe_options(db: Session, t: Ticket) -> list[dict[str, Any]]:
+    """Field Engineers a GP of this ticket can be given to: the ticket's FE recipients with a dashboard account (they
+    are the FEs of this Area Manager's ticket – an FE outside it cannot see the ticket at all)."""
+    from ..models import TicketRecipient
+
+    rs = db.scalars(
+        select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE", TicketRecipient.user_id.is_not(None), TicketRecipient.can_work.is_(True)).order_by(TicketRecipient.name)
+    )
+    return [{"recipientId": r.id, "name": r.name, "email": r.email} for r in rs]
+
+
+def reassign_gp(db: Session, t: Ticket, user: CurrentUser, gp_id: int, recipient_id: int, remark: str | None) -> TicketTaskGp:
+    """Area Manager (or admin): give one GP of the ticket to another Field Engineer of the ticket. Only the GP's FE
+    changes (ticket_task_gps.fe_name / fe_email = the new FE's mapping) – the target, the category, every daily line,
+    proof and review step stay exactly as they are (they keep who submitted them). Recorded in the GP's history
+    (REASSIGN) and the ticket events; both FEs are notified. Not possible once the Area Manager approved the GP or while
+    it is in a Non-Doable case."""
+    from ..models import TicketRecipient
+    from . import nondoable as nd
+    from . import review as rv
+    from .service import _event, _notify, now
+
+    if "AM" not in rv.roles_of(db, t, user):
+        raise TaskError(403, "Only the Area Manager of this ticket can reassign a GP")
+    if t.status == "CLOSED":
+        raise TaskError(409, "This ticket is closed – GPs can no longer be reassigned")
+    g = db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id, TicketTaskGp.id == gp_id).with_for_update()).first()
+    if g is None:
+        raise TaskError(404, "This GP is not part of the ticket")
+    if g.review in rv.LOCKED:
+        raise TaskError(409, f"GP {g.gp_code} is {rv.REVIEW_LABEL[g.review]} – it can no longer be reassigned")
+    c = nd.open_case(db, g.id)
+    if c is not None:
+        raise TaskError(409, f"GP {g.gp_code} is in Non-Doable case {c.ref} – it cannot be reassigned while the case is open")
+    r = db.get(TicketRecipient, recipient_id)
+    if r is None or r.ticket_id != t.id or r.role != "FE" or r.user_id is None or not r.can_work:
+        raise TaskError(422, "Choose a Field Engineer of this ticket who has a dashboard account")
+    if len(r.name) > 120:
+        raise TaskError(422, "The Field Engineer's name is too long")
+    new = FeScope(r.name, r.fe_mail)
+    if new.owns(g):
+        raise TaskError(422, f"GP {g.gp_code} is already assigned to FE {r.name}")
+    text = (remark or "").strip()[:MAX_REMARK] or None
+    keys = {fe_key(x.name, x.fe_mail): x.user_id for x in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE", TicketRecipient.user_id.is_not(None)))}
+    old_user = keys.get(fe_key(g.fe_name, g.fe_email)) if g.fe_name else None
+    old = g.fe_name or "FE not mapped"
+    at = now()
+    g.fe_name, g.fe_email = r.name, r.fe_mail
+    role = "ADMIN" if user.is_admin and "AM" not in rv._ticket_roles(db, t, user) else "AM"
+    note = f"FE: {old} → {r.name}" + (f" · {text}" if text else "")
+    rv.record(db, t, g, user, role, "REASSIGN", note, at)
+    _event(db, t, user, "REASSIGN", t.status, t.status, f"GP {g.gp_code} reassigned – {note}")
+    body = f"{user.name} reassigned GP {g.gp_code} ({g.gp_name}) – {note}"
+    _notify(db, {r.user_id} - {user.id}, t, "REASSIGN", f"{t.code}: GP {g.gp_code} assigned to you", body)
+    if old_user is not None and old_user != r.user_id:
+        _notify(db, {old_user} - {user.id}, t, "REASSIGN", f"{t.code}: GP {g.gp_code} given to another FE", body)
+    t.updated_at = at
+    db.commit()
+    return g
 
 
 def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: FeScope | SmeView | None = None) -> bytes:

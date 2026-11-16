@@ -287,6 +287,19 @@ def open_case(db: Session, task_gp_id: int) -> NdCase | None:
     return db.scalars(select(NdCase).where(NdCase.task_gp_id == task_gp_id, NdCase.status.in_(OPEN)).limit(1)).first()
 
 
+# the FE still has to submit the case forms (E1 physical verification / E2 justification, or their correction): the
+# daily achievement of that FE waits until they are submitted (the revisit after a rejection is NOT blocked – it is
+# finished through the daily progress itself)
+FE_FORMS_PENDING = ("PROPOSED", "E1_DONE", "RETURNED_FE")
+
+
+def forms_pending(db: Session, ticket_id: int, gp_ids: set[int]) -> list[NdCase]:
+    """Cases of these GPs of the ticket that wait for the FE's E1 / E2 forms (oldest first)."""
+    if not gp_ids:
+        return []
+    return list(db.scalars(select(NdCase).where(NdCase.ticket_id == ticket_id, NdCase.task_gp_id.in_(gp_ids), NdCase.status.in_(FE_FORMS_PENDING)).order_by(NdCase.id)))
+
+
 def last_case(db: Session, task_gp_id: int) -> NdCase | None:
     return db.scalars(select(NdCase).where(NdCase.task_gp_id == task_gp_id).order_by(NdCase.id.desc()).limit(1)).first()
 

@@ -71,8 +71,8 @@ export function SmeGpTable({
     );
   }
   const headers = [
-    "Ticket ID", "GP Code", "GP Name", "Circle", "Block", "Target Week", "FE Name", "Original FE Category", "Original FE Remarks", "Supporting Evidence", "AM Verification Remarks", "AM Approval Date",
-    ...(coh ? ["SME Review Remarks", "SME Review Date"] : []), "Workflow Status", "Action",
+    "Ticket ID", "GP Code", "GP Name", "Circle", "Block", "Target Week", "FE Name", "Original FE Category", "Original FE Remarks", "FE Proof", "AM Verification Remarks", "AM Proof", "AM Approval Date",
+    ...(coh ? ["SME Review Remarks", "SME Proof", "SME Review Date"] : []), "Workflow Status", "Action",
   ];
   return (
     <>
@@ -131,10 +131,16 @@ export function SmeGpTable({
                     <ProofList files={g.files} compact />
                   </td>
                   <td className="min-w-[12rem] max-w-[16rem] px-3 py-2">{am?.remark ?? <Empty>—</Empty>}</td>
+                  <td className="min-w-[11rem] max-w-[15rem] px-3 py-2">
+                    <ProofList files={am?.files ?? []} compact emptyText="—" />
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2">{am?.at ? ticketTime(am.at) : <Empty>—</Empty>}</td>
                   {coh && (
                     <>
                       <td className="min-w-[12rem] max-w-[16rem] px-3 py-2">{g.smeReview?.remark ?? <Empty>—</Empty>}</td>
+                      <td className="min-w-[11rem] max-w-[15rem] px-3 py-2">
+                        <ProofList files={g.smeReview?.files ?? []} compact emptyText="—" />
+                      </td>
                       <td className="whitespace-nowrap px-3 py-2">{g.smeReview?.at ? ticketTime(g.smeReview.at) : <Empty>—</Empty>}</td>
                     </>
                   )}
@@ -253,7 +259,7 @@ export function GpDetailDialog({
                 )}
               </Section>
 
-              <Section n={3} title="Existing Supporting Evidence">
+              <Section n={3} title="FE Supporting Evidence">
                 <ProofList files={g.files} emptyText="No supporting document uploaded" />
               </Section>
 
@@ -263,6 +269,7 @@ export function GpDetailDialog({
                     rows={[
                       ["AM Name", `${g.amApproval.by} (${ROLE[g.amApproval.role]})`],
                       ["AM Verification Remarks", g.amApproval.remark ?? <Empty>—</Empty>],
+                      ["AM Uploaded Proof", <ProofList key="p" files={g.amApproval.files ?? []} emptyText="No AM proof (approved before proof was required)" />],
                       ["AM Approval Status", "Approved – Ready for Letter Submission"],
                       ["AM Approval Date and Time", g.amApproval.at ? ticketTime(g.amApproval.at) : "—"],
                       ["Current GP Category", <GpCategoryBadge key="c" code={g.gpCategory} />],
@@ -295,6 +302,7 @@ export function GpDetailDialog({
                       rows={[
                         ["SME Reviewer", `${g.smeReview.by} (${ROLE[g.smeReview.role]})`],
                         ["SME Review Remarks", g.smeReview.remark ?? <Empty>—</Empty>],
+                        ["SME Uploaded Proof", <ProofList key="p" files={g.smeReview.files ?? []} emptyText="No SME proof (forwarded before proof was required)" />],
                         ["Confirmed Category", g.smeReview.category ? CATEGORY[g.smeReview.category].label : "—"],
                         ["Review Date and Time", g.smeReview.at ? ticketTime(g.smeReview.at) : "—"],
                         ["Forwarded to COH", people(g.smeReview)],

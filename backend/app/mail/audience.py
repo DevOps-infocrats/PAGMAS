@@ -40,9 +40,10 @@ MATRIX_ROLES: dict[str, tuple[str, str, str]] = {  # audience -> (name column, e
     "coh": ("coh_name", "coh_email", "COH"),
 }
 AUDIENCES = (*MATRIX_ROLES, "users")
+LEVEL_LABELS = {"circle": "Circle", "ba": "BA", "district": "District", "block": "Block", "gp": "GP"}
 AUDIENCE_LABELS = {**{k: v[2] for k, v in MATRIX_ROLES.items()}, "users": "Dashboard user", "extra": "Extra recipient"}
 ROLE_ORDER = (*AUDIENCES, "extra")  # order of recipients in the preview / run (extra recipients last)
-LEVELS = ("circle", "district", "block", "gp")  # district: older assignments only (User Management offers circle / block / GP)
+LEVELS = ("circle", "ba", "district", "block", "gp")  # ba = business area ("<circle id>~<BA slug>", analytics.store.ba_ids)
 
 
 # ---------------------------------------------------------------- helpers
@@ -187,15 +188,19 @@ class Assignment:
 
 
 def locations(store: Store) -> dict[str, dict[str, str]]:
-    """level -> {id: label} for every circle, district, block and GP of the active data."""
+    """level -> {id: label} for every circle, business area, district, block and GP of the active data."""
+    from ..analytics.store import ba_ids
+
     g = store.gps
     circles = {cid: str(name).title() for cid, name in g.groupby("circle_id")["circle"].first().items()}
+    ba = g.assign(_ba=ba_ids(g)).dropna(subset=["_ba"]).groupby("_ba")[["circle", "ba"]].first()
+    bas = {bid: f"{' '.join(str(r.ba).split()).title()} BA ({str(r.circle).title()})" for bid, r in ba.iterrows()}
     d = g.groupby("district_id")[["circle", "district"]].first()
     districts = {did: f"{str(r.district).title()} ({str(r.circle).title()})" for did, r in d.iterrows()}
     b = g.groupby("block_id")[["circle", "block_name", "block_code"]].first()
     blocks = {bid: f"{str(r.block_name).title()} – {r.block_code} ({str(r.circle).title()})" for bid, r in b.iterrows()}
     gps = {str(code): gp_label(code, n, blk, c) for code, n, blk, c in zip(g.index, g["name"], g["block_name"], g["circle"])}
-    return {"circle": circles, "district": districts, "block": blocks, "gp": gps}
+    return {"circle": circles, "ba": bas, "district": districts, "block": blocks, "gp": gps}
 
 
 def gp_label(code, name, block, circle) -> str:
@@ -203,16 +208,24 @@ def gp_label(code, name, block, circle) -> str:
 
 
 def location_tree(store: Store) -> list[dict]:
-    """Circles with their districts and blocks, for the User Management area picker."""
-    g = store.gps
+    """Circles with their business areas, districts and blocks, for the User Management area picker (a BA lists the ids
+    of its blocks, so the block list can follow a chosen BA)."""
+    from ..analytics.store import ba_ids
+
+    g = store.gps.assign(_ba=ba_ids(store.gps))
     out = []
     for cid, cg in g.groupby("circle_id", sort=True):
+        bas = [
+            {"id": bid, "name": " ".join(str(bg["ba"].iloc[0]).split()).title(), "blocks": sorted(bg["block_id"].unique().tolist())}
+            for bid, bg in cg.dropna(subset=["_ba"]).groupby("_ba", sort=True)
+        ]
+        bas.sort(key=lambda x: x["name"])
         districts = []
         for did, dg in cg.groupby("district_id", sort=True):
             blocks = dg.groupby("block_id")[["block_name", "block_code"]].first().sort_values("block_name")
             districts.append({"id": did, "name": str(dg["district"].iloc[0]).title(), "blocks": [{"id": bid, "name": f"{str(r.block_name).title()} – {r.block_code}"} for bid, r in blocks.iterrows()]})
         districts.sort(key=lambda x: x["name"])
-        out.append({"id": cid, "name": str(cg["circle"].iloc[0]).title(), "districts": districts})
+        out.append({"id": cid, "name": str(cg["circle"].iloc[0]).title(), "bas": bas, "districts": districts})
     return out
 
 
@@ -255,7 +268,7 @@ def user_gps(store: Store, role: str, items: list[Assignment], locs: dict[str, d
         if label is None:  # not in the active data -> ignored, never widened
             continue
         valid.append((a.level, a.id))
-        labels.append(f"{'GP' if a.level == 'gp' else a.level.title()}: {label}")
+        labels.append(f"{LEVEL_LABELS.get(a.level, a.level.title())}: {label}")
     mask, _full = area_mask(g, valid)
     return g.index[mask], labels
 
