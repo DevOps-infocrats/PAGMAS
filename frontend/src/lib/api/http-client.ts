@@ -186,16 +186,21 @@ export const httpAdminApi: AdminApi = {
   listUsers: () => request("/users"),
   createUser: (body) => request("/users", { method: "POST", body: JSON.stringify(body) }),
   updateUser: (id, body) => request(`/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteUser: (id) => request(`/users/${id}/delete`, { method: "POST" }),
   importUsers: (file, dryRun) => {
     const body = new FormData();
     body.append("file", file);
     return upload(`/users/import?dryRun=${dryRun ? "true" : "false"}`, body);
   },
   getUserLocations: () => request("/users/locations"),
-  searchUserGps: ({ circles = [], blocks = [], q, limit = 50 }) => {
+  searchUserGps: ({ circles = [], bas = [], districts = [], blocks = [], q, limit = 50 }) => {
     const p = new URLSearchParams();
     for (const b of blocks) p.append("block", b);
-    if (!blocks.length) for (const c of circles) p.append("circle", c);
+    if (!blocks.length) {
+      for (const b of bas) p.append("ba", b);
+      for (const d of districts) p.append("district", d);
+      if (!bas.length && !districts.length) for (const c of circles) p.append("circle", c);
+    }
     if (q?.trim()) p.set("q", q.trim());
     p.set("limit", String(limit));
     return request(`/users/locations/gps?${p.toString()}`);
@@ -239,6 +244,9 @@ export const httpTicketApi: TicketApi = {
     return upload(`/tickets/${id}/submit`, body, onProgress);
   },
   close: (id, comment, force) => request(`/tickets/${id}/close`, { method: "POST", body: JSON.stringify({ comment: comment || null, force: !!force }) }),
+  cohClose: (id, comment) => request(`/tickets/${id}/coh-close`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
+  getCohGps: () => request("/tickets/coh-gps"),
+  cohGpsXlsxUrl: (kind) => `${API_BASE}/tickets/coh-gps.xlsx?kind=${kind}`,
   remove: (id, reason) => request(`/tickets/${id}`, { method: "DELETE", body: JSON.stringify({ reason: reason || null }) }),
   getShareContacts: (id) => request(`/tickets/${id}/share-contacts`),
   share: (id, recipients, remark) => request(`/tickets/${id}/share`, { method: "POST", body: JSON.stringify({ recipients, remark }) }),
@@ -259,7 +267,14 @@ export const httpTicketApi: TicketApi = {
     return upload(`/tickets/${id}/progress-form`, body, onProgress);
   },
   getReviewContacts: (id, role) => request(`/tickets/${id}/review-contacts${qs({ role })}`),
-  reviewGps: (id, body) => request(`/tickets/${id}/review`, { method: "POST", body: JSON.stringify(body) }),
+  reviewGps: (id, body, proofs, onProgress) => {
+    if (!proofs?.length) return request(`/tickets/${id}/review`, { method: "POST", body: JSON.stringify(body) });
+    const form = new FormData();
+    form.append("payload", JSON.stringify(body));
+    for (const f of proofs) form.append("proofs", f, f.name);
+    return upload(`/tickets/${id}/review-form`, form, onProgress);
+  },
+  reassignGp: (id, gpId, body) => request(`/tickets/${id}/gps/${gpId}/reassign`, { method: "POST", body: JSON.stringify(body) }),
   progressFileUrl: (id, inline) => `${API_BASE}/tickets/progress-files/${id}${inline ? "?inline=true" : ""}`,
   getGpMonitorSummary: (f, basis) => request(`/tickets/gp-monitor/summary${qs({ ...f, basis })}`),
   listGpMonitor: (q) =>

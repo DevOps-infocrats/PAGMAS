@@ -19,6 +19,7 @@ Create Date: 2026-11-13
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.schema import SchemaItem
 from alembic import op
 
 revision: str = "0001_baseline"
@@ -35,7 +36,7 @@ def _insp() -> sa.Inspector:
     return sa.inspect(op.get_bind())  # fresh every call: earlier steps of this migration change the schema
 
 
-def _table(name: str, *elements: sa.SchemaItem) -> None:
+def _table(name: str, *elements: SchemaItem) -> None:
     """CREATE TABLE when it is missing; on an existing table add only the missing (nullable) columns and unique rules."""
     insp = _insp()
     table = sa.Table(name, _META, *elements)

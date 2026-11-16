@@ -9,6 +9,7 @@
 """
 
 import datetime as dt
+import json
 
 from sqlalchemy import delete, select
 
@@ -17,6 +18,7 @@ from app.models import TicketGpForward, TicketProgressFile, TicketTaskGp, User
 from app.security.core import hash_password
 
 from .conftest import VIEWER, login
+from .evidence import JPG, progress, review
 from .test_ticket_fe import FE1, PDF, _fe, _gen, _sheet, fe_org  # noqa: F401 - shared fixture
 from .test_ticket_recipients import mail  # noqa: F401
 from .test_ticket_tasks import am_week  # noqa: F401
@@ -48,26 +50,25 @@ def _setup(client, fe_org):  # noqa: F811
     g1 = client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"][0]
     ok = client.post(
         f"/api/v1/tickets/{tid}/progress-form",
-        data={"payload": '{"items": [{"taskGpId": %d, "category": "A", "remark": "Fibre cut rectified with FRT"}]}' % g1["id"], "proofGps": [str(g1["id"])]},
-        files=[("proofs", ("after.pdf", PDF, "application/pdf"))],
+        data={"payload": '{"items": [{"taskGpId": %d, "category": "A", "remark": "Fibre cut rectified with FRT"}]}' % g1["id"], "proofGps": [str(g1["id"])] * 2},
+        files=[("proofs", ("after.pdf", PDF, "application/pdf")), ("proofs", ("site.jpg", JPG, "image/jpeg"))],
         headers=h1,
     )
     assert ok.status_code == 200, ok.text
 
     # the Area Manager adds three GPs (safe test codes) and classifies the others
     hv = {"X-CSRF-Token": login(client, VIEWER)}
-    d = client.post(
-        f"/api/v1/tickets/{tid}/progress",
-        json={"newGps": [
+    d = progress(
+        client, tid, headers=hv,
+        new_gps=[
             {"gpCode": "ZZSME3", "gpName": "Test GP Three", "category": "A", "remark": "GP-3 rectified"},
             {"gpCode": "ZZSME4", "gpName": "Test GP Four", "category": "C", "remark": "GP-4 revisit"},
             {"gpCode": "ZZSME5", "gpName": "Test GP Five", "category": "A", "remark": "GP-5 rectified"},
-        ]},
-        headers=hv,
+        ],
     )
     assert d.status_code == 200, d.text
     gps = {g["gpCode"]: g for g in d.json()["task"]["gps"]}
-    g2 = next(g for g in d.json()["task"]["gps"] if g["id"] != g1["id"] and g["kind"] != "ADDED")
+    g2 = next(g for g in d.json()["task"]["gps"] if g["id"] != g1["id"] and g["kind"] != "ADDED" and not g["feAssigned"])  # a GP the AM reports itself
     ids = {"g1": g1["id"], "g2": g2["id"], "g3": gps["ZZSME3"]["id"], "g4": gps["ZZSME4"]["id"], "g5": gps["ZZSME5"]["id"]}
     # a proof on GP-3 (not forwarded): an SME must not be able to download it
     pf = client.post(
@@ -79,10 +80,10 @@ def _setup(client, fe_org):  # noqa: F811
     assert pf.status_code == 200, pf.text
 
     def approve(gid, who):
-        return client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [gid], "action": "AM_APPROVE", "remark": f"Verified evidence for {who[0]}", "to": [{"name": who[0].split("@")[0], "email": who[0]}]}, headers=hv)
+        return review(client, tid, {"taskGpIds": [gid], "action": "AM_APPROVE", "remark": f"Verified evidence for {who[0]}", "to": [{"name": who[0].split("@")[0], "email": who[0]}]}, hv)
 
     # an untouched GP (GP-2) has nothing for the AM to review: it cannot be returned
-    r = client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [ids["g2"]], "action": "AM_RETURN", "remark": "Not submitted yet"}, headers=hv)
+    r = review(client, tid, {"taskGpIds": [ids["g2"]], "action": "AM_RETURN", "remark": "Not submitted yet"}, hv)
     assert r.status_code == 422 and "Rectification Done or Revisit Required" in r.json()["detail"]
     a = approve(ids["g1"], SME1)
     assert a.status_code == 200, a.text
@@ -91,7 +92,7 @@ def _setup(client, fe_org):  # noqa: F811
 
 
 def _review(client, h, tid, gids, **b):
-    return client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": gids, **b}, headers=h)
+    return review(client, tid, {"taskGpIds": gids, **b}, h)
 
 
 def test_sme_sees_only_the_gps_forwarded_to_them(client, fe_org, mail):  # noqa: F811
@@ -156,10 +157,12 @@ def test_fe_submission_and_am_approval_are_kept_separately(client, fe_org, mail)
     assert g["gpCategory"] == "B"  # current category after the AM approval
     fe = g["feSubmission"]
     assert fe["category"] == "A" and fe["remark"] == "Fibre cut rectified with FRT" and fe["submittedByRole"] == "FE" and fe["feName"] == "Test FE One"
-    assert fe["submittedAt"] and [f["fileName"] for f in fe["files"]] == ["after.pdf"]
+    assert fe["submittedAt"] and [f["fileName"] for f in fe["files"]] == ["after.pdf", "site.jpg"]
+    assert [f["fileName"] for f in g["files"]] == ["after.pdf", "site.jpg"]  # the AM's proof is not shown as the FE's evidence
     am = g["amApproval"]
     assert am["by"].lower() == VIEWER[0].split("@")[0] and am["role"] == "AM" and am["remark"] == f"Verified evidence for {SME1[0]}" and am["at"]
     assert am["category"] == "B" and am["forwardedTo"] == [{"name": SME1[0].split("@")[0], "email": SME1[0]}] and am["forwardedAt"]
+    assert [f["fileName"] for f in am["files"]] == ["am_approve_proof.pdf"]  # the AM's own verification proof
     assert g["smeReview"] is None and g["stage"] == "AM_APPROVED"
     step = g["trail"][-1]
     assert step["action"] == "AM_APPROVE" and step["fromStatus"] == "Pending AM Verification" and step["toStatus"] == "Ready for Letter Submission – AM Approved"
@@ -181,7 +184,7 @@ def test_sme_review_forwards_to_coh_with_sop_status(client, fe_org, mail):  # no
     assert g["review"] == "SME_FORWARDED" and g["stage"] == "SME_FORWARDED" and g["reviewLabel"] == "SME Reviewed – Forwarded to COH"
     s = g["smeReview"]
     assert s["by"] == SME1[0].split("@")[0] and s["role"] == "SME" and s["remark"] == "Reviewed AM remarks and evidence" and s["category"] == "B" and s["at"]
-    assert s["forwardedTo"] == [{"name": "COH One", "email": COH[0]}]
+    assert s["forwardedTo"] == [{"name": "COH One", "email": COH[0]}] and [f["fileName"] for f in s["files"]] == ["sme_forward_proof.pdf"]
     assert g["trail"][-1]["fromStatus"] == "Ready for Letter Submission – AM Approved" and g["trail"][-1]["toStatus"] == "SME Reviewed – Forwarded to COH"
     assert g["feSubmission"]["category"] == "A" and g["amApproval"]["remark"]  # earlier records unchanged
     assert [m["To"] for m in mail.sent] == [COH[0]]
@@ -208,16 +211,37 @@ def test_sme_review_forwards_to_coh_with_sop_status(client, fe_org, mail):  # no
     assert all("forwarded by the SME" not in n["title"] for n in notes)
 
 
-def test_am_approval_needs_no_photographs(client, fe_org, mail):  # noqa: F811
-    """No minimum number of photos for the Area Manager's approval (the remark and the SME remain required)."""
+def test_am_approval_and_sme_forward_need_the_reviewers_proof(client, fe_org, mail):  # noqa: F811
+    """The Area Manager's approval and the SME's forward need a remark AND the reviewer's own proof document; without
+    it nothing changes. The proof is stored per GP with that step, apart from the FE's evidence."""
     tid, ids = _setup(client, fe_org)
     hv = {"X-CSRF-Token": login(client, VIEWER)}
-    # GP-5 had no proof at all and was approved in the setup; GP-3 (only a PDF) is approved the same way
     body = {"taskGpIds": [ids["g3"]], "action": "AM_APPROVE", "remark": "Verified", "to": [{"name": "sme", "email": SME1[0]}]}
-    d = client.post(f"/api/v1/tickets/{tid}/review", json=body, headers=hv)
+    r = client.post(f"/api/v1/tickets/{tid}/review", json=body, headers=hv)  # the JSON step carries no proof
+    assert r.status_code == 422 and "AM verification proof" in r.json()["detail"]
+    assert review(client, tid, body, hv, proof=False).status_code == 422
+    bad = client.post(f"/api/v1/tickets/{tid}/review-form", data={"payload": json.dumps(body)}, files=[("proofs", ("x.exe", b"MZ", "application/octet-stream"))], headers=hv)
+    assert bad.status_code == 415  # the upload policy of the ticket files
+    fake = client.post(f"/api/v1/tickets/{tid}/review-form", data={"payload": json.dumps(body)}, files=[("proofs", ("x.jpg", b"not an image", "image/jpeg"))], headers=hv)
+    assert fake.status_code == 415
+    hv = {"X-CSRF-Token": login(client, VIEWER)}
+    assert next(g for g in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"] if g["id"] == ids["g3"])["review"] is None  # nothing changed
+    d = review(client, tid, body, hv)
     assert d.status_code == 200, d.text
-    assert next(g for g in d.json()["task"]["gps"] if g["id"] == ids["g3"])["review"] == "AM_APPROVED"
-    assert "evidence" not in d.json()["task"]["gps"][0]
+    g3 = next(g for g in d.json()["task"]["gps"] if g["id"] == ids["g3"])
+    assert g3["review"] == "AM_APPROVED" and [f["fileName"] for f in g3["amApproval"]["files"]] == ["am_approve_proof.pdf"]
+    assert "am_approve_proof.pdf" not in [f["fileName"] for f in g3["files"]]  # never mixed into the FE / daily evidence
+    # SME: remark and proof required to forward to the COH
+    hs = {"X-CSRF-Token": login(client, SME1)}
+    fwd = {"taskGpIds": [ids["g1"]], "action": "SME_FORWARD", "remark": "Reviewed AM remarks", "category": "B", "to": [{"name": "COH One", "email": COH[0]}]}
+    r = review(client, tid, fwd, hs, proof=False)
+    assert r.status_code == 422 and "SME review proof" in r.json()["detail"]
+    assert review(client, tid, {**fwd, "remark": "   "}, hs).status_code == 422  # whitespace is no remark
+    d = review(client, tid, fwd, hs)
+    assert d.status_code == 200, d.text
+    g1 = d.json()["task"]["gps"][0]
+    assert [f["fileName"] for f in g1["smeReview"]["files"]] == ["sme_forward_proof.pdf"] and [f["fileName"] for f in g1["amApproval"]["files"]] == ["am_approve_proof.pdf"]
+    assert g1["feSubmission"]["remark"] == "Fibre cut rectified with FRT"  # the FE's original stays unchanged
 
 
 def test_am_returns_revisit_required_gp_to_fe_for_recheck(client, fe_org, mail):  # noqa: F811
@@ -225,7 +249,7 @@ def test_am_returns_revisit_required_gp_to_fe_for_recheck(client, fe_org, mail):
     update it comes back to the AM. Non-Doable (own case) and untouched GPs cannot be returned."""
     tid, ids = _setup(client, fe_org)
     hv = {"X-CSRF-Token": login(client, VIEWER)}
-    rev = lambda gid, action, **b: client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [gid], "action": action, **b}, headers=hv)  # noqa: E731
+    rev = lambda gid, action, **b: review(client, tid, {"taskGpIds": [gid], "action": action, **b}, hv)  # noqa: E731
     g4 = ids["g4"]
     assert rev(g4, "AM_APPROVE", remark="Looks fine", to=[{"name": "sme", "email": SME1[0]}]).status_code == 422  # approve = Rectification Done only
     d = rev(g4, "AM_RETURN", remark="Recheck the fibre route with the FRT team")
@@ -236,11 +260,11 @@ def test_am_returns_revisit_required_gp_to_fe_for_recheck(client, fe_org, mail):
     assert step["action"] == "AM_RETURN" and step["remark"] == "Recheck the fibre route with the FRT team" and step["toStatus"] == "Returned to FE"
     assert rev(g4, "AM_RETURN", remark="Again").status_code == 409  # already returned
     # the FE / AM updates the GP again (still Revisit Required, new remark) -> back with the Area Manager
-    d = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": g4, "category": "C", "remark": "FRT revisit planned for Monday"}]}, headers=hv)
+    d = progress(client, tid, [{"taskGpId": g4, "category": "C", "remark": "FRT revisit planned for Monday"}], hv)  # corrected = remark + photo again
     assert d.status_code == 200, d.text
     assert next(g for g in d.json()["task"]["gps"] if g["id"] == g4)["review"] is None
     # Non-Doable: its own case workflow, not returned here
-    d = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": ids["g2"], "category": "D", "remark": "Site not reachable"}]}, headers=hv)
+    d = progress(client, tid, [{"taskGpId": ids["g2"], "category": "D", "remark": "Site not reachable"}], hv)
     assert d.status_code == 200, d.text
     assert rev(ids["g2"], "AM_RETURN", remark="Recheck please").status_code == 409
 
@@ -253,7 +277,7 @@ def test_sme_sends_back_to_am_and_coh_sends_back_to_sme(client, fe_org, mail):  
     to_coh = [{"name": "COH One", "email": COH[0]}]
 
     def rev(creds, action, **b):
-        return client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g1], "action": action, **b}, headers={"X-CSRF-Token": login(client, creds)})
+        return review(client, tid, {"taskGpIds": [g1], "action": action, **b}, {"X-CSRF-Token": login(client, creds)})
 
     def row(creds):
         login(client, creds)

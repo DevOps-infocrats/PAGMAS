@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileCheck2, Loader2, Plus, Send, Undo2, Workflow, X } from "lucide-react";
+import { CheckCircle2, FileCheck2, Loader2, Paperclip, Plus, Send, Undo2, Workflow, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,8 @@ import { useApiQuery } from "@/hooks/use-api-query";
 import { ticketApi, type GpReviewAction, type GpReviewRole, type GpStage, type ReviewContacts, type TicketDetail, type TicketTaskGp } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { CATEGORY } from "./gp-category";
-import { TEXTAREA, ticketDay, ticketTime, type Notice } from "./ticket-parts";
-import { ProofList } from "./ticket-proof";
+import { TEXTAREA, fileSize, ticketDay, ticketTime, type Notice } from "./ticket-parts";
+import { PROOF_ACCEPT, ProofList } from "./ticket-proof";
 
 /**
  * Review chain of the GPs of a task ticket (backend: app/tickets/review.py), with the SOP status wording:
@@ -70,6 +70,10 @@ const STEPS: Record<GpReviewAction, { role: GpReviewRole; label: string; title: 
 };
 /** The send-back steps (outline buttons; the reason is mandatory). */
 const BACK: GpReviewAction[] = ["AM_RETURN", "SME_RETURN", "COH_RETURN"];
+/** Steps that hand the GP on with the reviewer's own proof (backend: review.PROOF_REQUIRED) */
+const PROOF_STEP: Partial<Record<GpReviewAction, string>> = { AM_APPROVE: "AM Verification Proof", SME_FORWARD: "SME Review Proof" };
+const MAX_REVIEW_FILES = 5; // backend: review.MAX_REVIEW_FILES
+const MAX_FILE_MB = 20; // backend: TICKET_FILE_MAX_MB
 const ROLE_NAME: Record<string, string> = { FE: "FE", AM: "AM", SME: "SME", COH: "COH", ADMIN: "Admin" };
 
 /** Whether this GP can take any step of the given roles now (for the selection checkbox). */
@@ -90,10 +94,18 @@ export function ReviewCell({ g }: { g: TicketTaskGp }) {
         <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold leading-snug", stage.cls)}>{stage.label}</span>
         {stage.hint && <span className="text-[0.6875rem] font-medium text-muted-foreground">{stage.hint}</span>}
         {g.ndCase && (
-          <Link href={`/dashboard/tickets/non-doable?case=${g.ndCase.id}`} className="text-[0.71875rem] font-medium text-primary hover:underline" title={`Open the Non-Doable case – ${g.ndCase.label}`}>
-            {g.ndCase.ref}
+          <Link
+            href={`/dashboard/tickets/non-doable?case=${g.ndCase.id}`}
+            className={cn(
+              "inline-flex items-center rounded-md px-2 py-0.5 text-[0.71875rem] font-semibold",
+              g.ndCase.open ? "bg-critical text-white shadow-xs hover:bg-critical/90" : "text-primary hover:underline",
+            )}
+            title={`Open the Non-Doable case – ${g.ndCase.label}`}
+          >
+            {g.ndCase.open ? `Open ${g.ndCase.ref} →` : g.ndCase.ref}
           </Link>
         )}
+        {g.ndCase?.open && <span className="block w-full text-[0.6875rem] font-medium text-critical-text">{g.ndCase.label}</span>}
       </div>
       {last && (
         <p className="truncate text-[0.71875rem] leading-snug text-muted-foreground" title={lastText}>
@@ -333,23 +345,41 @@ function ReviewForm({ t, action, gps, onCancel, onDone }: { t: TicketDetail; act
   const noTo = toRole !== null && to.length === 0;
   const tooShort = s.remark && remark.trim().length < 3;
   const noCategory = sme && confirmed === "";
+  const proofLabel = PROOF_STEP[action];
+  const [proofs, setProofs] = useState<File[]>([]);
+  const [sent, setSent] = useState<number | null>(null);
+  const noProof = !!proofLabel && proofs.length === 0;
+  const addProofs = (list: FileList | null) => {
+    const picked = Array.from(list ?? []);
+    const big = picked.find((f) => f.size > MAX_FILE_MB * 1024 * 1024);
+    if (big) return setError(`${big.name}: larger than ${MAX_FILE_MB} MB`);
+    if (proofs.length + picked.length > MAX_REVIEW_FILES) return setError(`At most ${MAX_REVIEW_FILES} proof documents per review step`);
+    setError(null);
+    setProofs([...proofs, ...picked]);
+  };
   const send = async () => {
     setBusy(true);
     setError(null);
     try {
-      const next = await ticketApi.reviewGps(t.id, {
-        taskGpIds: gps.map((g) => g.id),
-        action,
-        remark: remark.trim() || undefined,
-        ...(sme && confirmed ? { category: confirmed } : {}),
-        ...(s.date ? { date } : {}),
-        ...(toRole ? { to } : {}),
-      });
+      const next = await ticketApi.reviewGps(
+        t.id,
+        {
+          taskGpIds: gps.map((g) => g.id),
+          action,
+          remark: remark.trim() || undefined,
+          ...(sme && confirmed ? { category: confirmed } : {}),
+          ...(s.date ? { date } : {}),
+          ...(toRole ? { to } : {}),
+        },
+        proofLabel ? proofs : undefined,
+        proofLabel && proofs.length ? (f) => setSent(f) : undefined,
+      );
       const whom = toRole ? ` E-mail sent to ${to.map((x) => x.email).join(", ")}.` : "";
       onDone(next, { ok: true, text: `${s.title}: ${gps.length} GP${gps.length === 1 ? "" : "s"} done. Everyone concerned has been notified.${whom}` });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the review step");
       setBusy(false);
+      setSent(null);
     }
   };
   return (
@@ -357,7 +387,7 @@ function ReviewForm({ t, action, gps, onCancel, onDone }: { t: TicketDetail; act
       className="space-y-4 p-5"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!tooShort && !noCategory && !busy) void send();
+        if (!tooShort && !noCategory && !noProof && !busy) void send();
       }}
     >
       <div>
@@ -376,16 +406,38 @@ function ReviewForm({ t, action, gps, onCancel, onDone }: { t: TicketDetail; act
           {action === "COH_LETTER" && " – the GP becomes Letter Submission Done (counted as achieved)."}
         </DialogDescription>
       </div>
-      {action === "AM_APPROVE" && (
+      {(action === "AM_APPROVE" || sme) && (
         <fieldset className="space-y-2 rounded-lg border border-border p-3">
-          <legend className="px-1 text-[0.8125rem] font-medium">Proof uploaded for these GPs</legend>
-          <ul className="max-h-60 space-y-2 overflow-y-auto">
+          <legend className="px-1 text-[0.8125rem] font-medium">{sme ? "FE submission and AM verification" : "FE original submission"}</legend>
+          <ul className="max-h-72 space-y-3 overflow-y-auto">
             {gps.map((g) => (
-              <li key={g.id} className="space-y-1">
+              <li key={g.id} className="space-y-1.5 border-b border-border/60 pb-2 last:border-0 last:pb-0">
                 <p className="text-[0.78125rem]">
                   <b className="font-semibold">{g.gpCode}</b> {g.gpName}
+                  {g.block && <span className="text-muted-foreground"> · {g.block}</span>}
+                  {g.feName && <span className="text-muted-foreground"> · FE {g.feName}</span>}
                 </p>
-                <ProofList files={g.files} compact emptyText="No proof uploaded" />
+                <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[0.75rem]">
+                  <p className="font-semibold text-subheading">FE Original Submission</p>
+                  <p>
+                    {g.feSubmission?.category ? CATEGORY[g.feSubmission.category]?.label : "—"}
+                    {g.feSubmission?.submittedBy && <span className="text-muted-foreground"> · {g.feSubmission.submittedBy}</span>}
+                    {g.feSubmission?.submittedAt && <span className="text-muted-foreground"> · {ticketTime(g.feSubmission.submittedAt)}</span>}
+                  </p>
+                  <p className="text-muted-foreground">{g.feSubmission?.remark ?? g.remarks ?? "No remark"}</p>
+                  <ProofList files={g.files} compact emptyText="No FE proof uploaded" />
+                </div>
+                {sme && g.amApproval && (
+                  <div className="rounded-md bg-primary-soft/40 px-2 py-1.5 text-[0.75rem]">
+                    <p className="font-semibold text-subheading">AM Verification</p>
+                    <p className="text-muted-foreground">
+                      {g.amApproval.by}
+                      {g.amApproval.at && ` · ${ticketTime(g.amApproval.at)}`}
+                    </p>
+                    <p>{g.amApproval.remark ?? "—"}</p>
+                    <ProofList files={g.amApproval.files ?? []} compact emptyText="No AM proof (approved before proof was required)" />
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -447,6 +499,43 @@ function ReviewForm({ t, action, gps, onCancel, onDone }: { t: TicketDetail; act
         />
         {s.remark && tooShort && remark.length > 0 && <span className="text-[0.75rem] text-critical-text">At least 3 characters.</span>}
       </label>
+      {proofLabel && (
+        <fieldset className="space-y-1.5 rounded-lg border border-border p-3">
+          <legend className="px-1 text-[0.8125rem] font-medium">
+            {proofLabel} <span className="text-critical-text">*</span>
+          </legend>
+          <p className="text-[0.75rem] text-muted-foreground">
+            Your own evidence for {gps.length === 1 ? "this GP" : `these ${gps.length} GPs`} (PDF, Word, Excel, JPG or PNG) – kept with your step, separate from the FE&apos;s proof.
+          </p>
+          {proofs.map((f, i) => (
+            <span key={`${f.name}-${i}`} className="flex items-center gap-1 text-[0.78125rem] text-[var(--series-7)]">
+              <Paperclip className="size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 truncate" title={`${f.name} (${fileSize(f.size)})`}>
+                {f.name}
+              </span>
+              <button type="button" disabled={busy} onClick={() => setProofs(proofs.filter((_, j) => j !== i))} className="rounded p-0.5 hover:bg-accent" aria-label={`Remove ${f.name}`}>
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+          <label className={cn("inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[0.78125rem] font-medium text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}>
+            <Paperclip className="size-3.5" aria-hidden /> Attach proof
+            <input
+              type="file"
+              multiple
+              accept={PROOF_ACCEPT}
+              className="sr-only"
+              disabled={busy}
+              onChange={(e) => {
+                addProofs(e.target.files);
+                e.target.value = "";
+              }}
+              aria-label={`Attach the ${proofLabel}`}
+            />
+          </label>
+          {noProof && <p className="text-[0.75rem] text-critical-text">Attach at least one proof document.</p>}
+        </fieldset>
+      )}
       {sme && (
         <p className="rounded-md bg-muted/60 px-3 py-2 text-[0.75rem] text-muted-foreground">
           Recorded automatically: reviewer <b className="font-semibold text-foreground">{session?.name ?? "you"}</b> ({reviewerRole}) · review date and time = when you submit.
@@ -464,10 +553,10 @@ function ReviewForm({ t, action, gps, onCancel, onDone }: { t: TicketDetail; act
         <Button
           type="submit"
           variant="primary"
-          disabled={busy || tooShort || noCategory || (s.date === true && !date) || noTo || typedBad}
-          title={noCategory ? "Choose the confirmed category" : noTo ? `Choose or type the ${toRole} e-mail` : undefined}
+          disabled={busy || tooShort || noCategory || noProof || (s.date === true && !date) || noTo || typedBad}
+          title={noCategory ? "Choose the confirmed category" : noProof ? `Attach the ${proofLabel}` : noTo ? `Choose or type the ${toRole} e-mail` : undefined}
         >
-          {busy && <Loader2 className="animate-spin" />} {s.label}
+          {busy && <Loader2 className="animate-spin" />} {busy && sent !== null ? `Uploading… ${Math.round(sent * 100)}%` : s.label}
         </Button>
       </div>
     </form>

@@ -33,6 +33,7 @@ import {
   type Notice,
   type TicketColumn,
 } from "./ticket-parts";
+import { CohCloseCard, CohKpis } from "./coh-panel";
 import { RecipientsCard } from "./ticket-recipients";
 import { ShareCard } from "./ticket-share";
 import { TaskPanel } from "./ticket-task";
@@ -106,7 +107,7 @@ export function UserTicketsView() {
   );
 }
 
-function UserKpis({ k }: { k?: TicketKpis }) {
+function UserKpis({ k, extra }: { k?: TicketKpis; extra?: React.ReactNode }) {
   const L = !k;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -140,6 +141,7 @@ function UserKpis({ k }: { k?: TicketKpis }) {
         unit="tickets"
         caption="Approved by the admin"
       />
+      {extra}
     </div>
   );
 }
@@ -153,6 +155,9 @@ function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) =
   const week = chosenWeek ?? (weeksQ.data ? (weeks[0]?.id ?? ALL_WEEKS) : weeksQ.error ? ALL_WEEKS : null);
   const q = { ...listQuery(filters), week: week && week !== ALL_WEEKS ? week : undefined };
   const kpis = useApiQuery(`tickets-kpis:mine:${tick}`, () => ticketApi.getKpis("mine"));
+  // COH: Letter Submitted Done / AMC Converted KPIs (with the GP lists) instead of the ticket counts
+  const coh = useApiQuery(`tickets-coh:${tick}`, () => ticketApi.getCohGps());
+  const isCoh = !!coh.data?.isCoh;
   // wait for the weeks (the default week) before the first list request
   const list = useApiQuery(week === null ? null : `tickets:mine:${tick}:${JSON.stringify(q)}`, () => ticketApi.list({ scope: "mine", ...q }));
   const filtered = !!(filters.search || filters.status !== "all" || filters.priority !== "all" || (week && week !== ALL_WEEKS));
@@ -164,7 +169,8 @@ function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) =
           <ErrorState error={kpis.error} onRetry={kpis.reload} />
         </Card>
       ) : (
-        <UserKpis k={kpis.data} />
+        // COH: the ticket KPIs plus Letter Submitted Done / AMC Converted (with the GP lists) in the same row
+        <UserKpis k={kpis.data} extra={isCoh ? <CohKpis data={coh.data} loading={coh.loading && !coh.data} /> : null} />
       )}
       <TicketTable
         title="Tickets assigned to or shared with you"
@@ -270,6 +276,13 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
         </div>
       )}
       <TicketInfo t={t} showAssignee={false} />
+      <CohCloseCard
+        t={t}
+        onChanged={(next, n) => {
+          setLocal(next);
+          onChanged(n);
+        }}
+      />
       {reviewer && t.status !== "CLOSED" && (
         <p role="note" className="rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-[0.8125rem] text-muted-foreground">
           {t.myRole === "SME"
@@ -279,7 +292,7 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
       )}
       {(t.myRole === "CBH" || t.myRole === "USER" || ((t.myRole === "SME" || t.myRole === "COH") && !reviewer)) && !t.can.start && !t.can.submit && !t.can.progress && t.status !== "CLOSED" && (
         <p role="note" className="rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-[0.8125rem] text-muted-foreground">
-          This ticket is shared with you for monitoring (view only){t.task ? ` – ${t.task.areaManager} reports the daily GP progress` : ""}. Only the admin can close it.
+          This ticket is shared with you for monitoring (view only){t.task ? ` – ${t.task.areaManager} reports the daily GP progress` : ""}. Only the admin{t.task ? " or the COH" : ""} can close it.
         </p>
       )}
       <FeedbackCallout t={t} />

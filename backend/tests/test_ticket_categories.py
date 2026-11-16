@@ -11,13 +11,14 @@ from app.models import TicketProgressLine, TicketTaskGp
 from app.tickets import task as tasks
 
 from .conftest import VIEWER, login
+from .evidence import JPG, progress, review
 from .test_ticket_fe import FE1, FE2, PDF, _fe, _gen, fe_org  # noqa: F401 - shared fixture
 from .test_ticket_recipients import mail  # noqa: F401
 from .test_ticket_tasks import am_week  # noqa: F401
 
 
-def _progress(client, h, tid, items):
-    return client.post(f"/api/v1/tickets/{tid}/progress", json={"items": items}, headers=h)
+def _progress(client, h, tid, items, photo=True):
+    return progress(client, tid, items, h, photo=photo)  # a Daily Achievement carries a remark and a photo
 
 
 def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail):  # noqa: F811
@@ -50,7 +51,7 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     # changed to A -> the same record is updated; same category again = nothing new
     d = _progress(client, h1, tid, [{"taskGpId": g["id"], "category": "A"}]).json()
     assert next(x for x in d["task"]["gps"] if x["id"] == g["id"])["gpCategory"] == "A"
-    assert _progress(client, h1, tid, [{"taskGpId": g["id"], "category": "A"}]).status_code == 422
+    assert _progress(client, h1, tid, [{"taskGpId": g["id"], "category": "A"}], photo=False).status_code == 422
     assert d["task"]["totals"]["categories"]["A"] == 1 and d["task"]["totals"]["notClassified"] == len(mine) - 1
     assert d["task"]["totals"]["review"]["awaiting"] == 1
 
@@ -58,7 +59,7 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     today = dt.date.today().isoformat()
 
     def rev(hh, **b):
-        return client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g["id"]], **b}, headers=hh)
+        return review(client, tid, {"taskGpIds": [g["id"]], **b}, hh)
 
     hv = {"X-CSRF-Token": login(client, VIEWER)}
     assert client.get(f"/api/v1/tickets/{tid}").json()["can"]["reviewAs"] == ["AM"]
@@ -99,8 +100,8 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     g2 = client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"][0]
     ok = client.post(
         f"/api/v1/tickets/{tid}/progress-form",
-        data={"payload": '{"items": [{"taskGpId": %d, "category": "D", "remark": "Not doable"}]}' % g2["id"], "proofGps": [str(g2["id"])]},
-        files=[("proofs", ("proposal.pdf", PDF, "application/pdf"))],
+        data={"payload": '{"items": [{"taskGpId": %d, "category": "D", "remark": "Not doable"}]}' % g2["id"], "proofGps": [str(g2["id"])] * 2},
+        files=[("proofs", ("proposal.pdf", PDF, "application/pdf")), ("proofs", ("site.jpg", JPG, "image/jpeg"))],
         headers=h2,
     )
     assert ok.status_code == 200, ok.text
@@ -109,12 +110,13 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     login(client)
     s = client.get("/api/v1/tickets/gp-monitor/summary", params={"ticket": code}).json()
     assert s["categories"] == {"A": 0, "B": 0, "C": 0, "D": 1, "E": 1}
-    assert s["notClassified"] == s["total"] - 2 and s["categoryWithDocument"]["D"] == 1 and s["categoryWithDocument"]["E"] == 0
+    # every Daily Achievement now carries the FE's photo, so both classified GPs have documents
+    assert s["notClassified"] == s["total"] - 2 and s["categoryWithDocument"]["D"] == 1 and s["categoryWithDocument"]["E"] == 1
     c = client.get("/api/v1/tickets/gp-monitor", params={"category": "E", "ticket": code}).json()
     assert c["total"] == 1 and c["kpis"]["categories"]["E"] == 1
     x = c["items"][0]
     assert x["gpCode"] == g["gpCode"] and x["gpCategory"] == "E" and x["fieldEngineer"] == "Test FE One" and x["areaManager"] == fe_org["am"]
-    assert x["block"] == next(y["block"] for y in mine if y["id"] == g["id"]) and x["ticket"] == code and x["categoryTicket"] == code and x["files"] == []
+    assert x["block"] == next(y["block"] for y in mine if y["id"] == g["id"]) and x["ticket"] == code and x["categoryTicket"] == code and x["files"]
     dd = client.get("/api/v1/tickets/gp-monitor", params={"category": "D", "ticket": code}).json()["items"][0]
     assert dd["fieldEngineer"] == "Test FE Two" and dd["files"][0]["fileName"] == "proposal.pdf"
     assert client.get(f"/api/v1/tickets/progress-files/{dd['files'][0]['id']}").status_code == 200
@@ -169,7 +171,7 @@ def test_fe_edits_adds_gps_and_am_returns(client, fe_org, mail):  # noqa: F811
     body = mail.sent[0].get_body(("plain",)).get_content()
     assert [m["To"] for m in mail.sent] == [VIEWER[0]] and "Renamed GP" not in body and "To see which GPs are your target GPs" in body  # GP details: dashboard only
 
-    add = lambda gps: client.post(f"/api/v1/tickets/{tid}/progress", json={"newGps": gps}, headers=h1)  # noqa: E731
+    add = lambda gps: progress(client, tid, headers=h1, new_gps=gps)  # noqa: E731
     assert add([{"gpCode": "ZZNEW1"}]).status_code == 422  # not in the master data and no name
     assert add([{"gpCode": g["gpCode"], "gpName": "x"}]).status_code == 422  # already in the ticket
     assert add([{"gpCode": "bad code!", "gpName": "x"}]).status_code == 422
@@ -190,7 +192,7 @@ def test_fe_edits_adds_gps_and_am_returns(client, fe_org, mail):  # noqa: F811
     d = client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g["id"]], "action": "AM_RETURN", "remark": "Photo missing"}, headers=hv)
     assert d.status_code == 200, d.text
     assert next(x for x in d.json()["task"]["gps"] if x["id"] == g["id"])["review"] == "RETURNED"
-    assert client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g["id"]], "action": "AM_APPROVE", "remark": "Looks fine"}, headers=hv).status_code == 409
+    assert review(client, tid, {"taskGpIds": [g["id"]], "action": "AM_APPROVE", "remark": "Looks fine"}, hv).status_code == 409
     h1 = {"X-CSRF-Token": login(client, FE1)}
     assert any(n["kind"] == "REVIEW" for n in client.get("/api/v1/tickets/notifications").json()["items"])
     d = _progress(client, h1, tid, [{"taskGpId": g["id"], "category": "A", "remark": "After photo attached"}])
@@ -206,7 +208,7 @@ def test_sme_chosen_before_account_sees_ticket_on_dashboard(client, fe_org, mail
     g = client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"][0]
     assert _progress(client, h1, tid, [{"taskGpId": g["id"], "category": "A"}]).status_code == 200
     hv = {"X-CSRF-Token": login(client, VIEWER)}
-    d = client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g["id"]], "action": "AM_APPROVE", "remark": "Verified", "to": [{"name": "Late SME", "email": "late.sme@pratap-test.in"}]}, headers=hv)
+    d = review(client, tid, {"taskGpIds": [g["id"]], "action": "AM_APPROVE", "remark": "Verified", "to": [{"name": "Late SME", "email": "late.sme@pratap-test.in"}]}, hv)
     assert d.status_code == 200, d.text
     sme = next(r for r in d.json()["recipients"] if r["email"] == "late.sme@pratap-test.in")
     assert sme["role"] == "SME" and sme["access"] == "email"

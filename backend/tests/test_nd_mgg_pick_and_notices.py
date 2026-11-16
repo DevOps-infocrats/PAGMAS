@@ -10,6 +10,7 @@ from app.db import SessionLocal
 from app.models import NdMggPick, User
 
 from .conftest import VIEWER, login
+from .evidence import progress, review
 from .test_nondoable import COH, E1, E2, MGG, PNG, SME, _act, _case_of, _form, _h, _propose, nd  # noqa: F401 - shared fixture
 from .test_ticket_fe import FE1, FE2, PDF, fe_org  # noqa: F401
 from .test_ticket_recipients import mail  # noqa: F401
@@ -92,10 +93,10 @@ def test_return_to_fe_and_letter_amc_are_emailed(client, nd, mail):  # noqa: F81
     today = dt.date.today().isoformat()
 
     def rev(hh, **b):
-        return client.post(f"/api/v1/tickets/{tid}/review", json={"taskGpIds": [g["id"]], **b}, headers=hh)
+        return review(client, tid, {"taskGpIds": [g["id"]], **b}, hh)
 
     h1 = _h(client, FE1)
-    assert client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": g["id"], "category": "A"}]}, headers=h1).status_code == 200
+    assert progress(client, tid, [{"taskGpId": g["id"], "category": "A"}], h1).status_code == 200
     mail.sent.clear()
     hv = _h(client, VIEWER)
     assert rev(hv, action="AM_RETURN", remark="Photo missing").status_code == 200
@@ -104,7 +105,7 @@ def test_return_to_fe_and_letter_amc_are_emailed(client, nd, mail):  # noqa: F81
     assert "Photo missing" in fe_mail[0].get_body(("plain",)).get_content()
     assert FE2[0] not in {m["To"] for m in mail.sent}  # only the FE of the returned GP
 
-    assert client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": g["id"], "category": "A", "remark": "Photo added"}]}, headers=_h(client, FE1)).status_code == 200
+    assert progress(client, tid, [{"taskGpId": g["id"], "category": "A", "remark": "Photo added"}], _h(client, FE1)).status_code == 200
     assert rev(_h(client, VIEWER), action="AM_APPROVE", remark="Verified", to=[{"name": "Nd Sme", "email": SME[0]}]).status_code == 200
     assert rev(_h(client, SME), action="SME_FORWARD", remark="Confirmed", category="B", to=[{"name": "Nd Coh", "email": COH[0]}]).status_code == 200
     hc = _h(client, COH)

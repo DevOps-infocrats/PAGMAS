@@ -90,7 +90,14 @@ STEPS: dict[str, Step] = {
     "COH_AMC": Step("COH", "AMC converted (COH)", ("LETTER_SUBMITTED",), "AMC_CONVERTED", False, True),
     "COH_RETURN": Step("COH", "Returned to SME by COH", ("SME_FORWARDED",), "COH_RETURNED", True),
 }
-ACTION_LABEL = {**{k: s.label for k, s in STEPS.items()}, "EDIT": "GP details edited", "ADD": "GP added to the ticket", "ND_REOPEN": "Moved to the Non-Doable workflow"}
+ACTION_LABEL = {
+    **{k: s.label for k, s in STEPS.items()}, "EDIT": "GP details edited", "ADD": "GP added to the ticket", "ND_REOPEN": "Moved to the Non-Doable workflow",
+    "REASSIGN": "GP reassigned to another FE",
+}
+# steps that hand the GP on with the reviewer's own evidence: the AM's verification proof (to the SME) and the SME's
+# review proof (to the COH) – stored on the step's progress line, apart from the FE's proof
+PROOF_REQUIRED = {"AM_APPROVE": "AM verification proof", "SME_FORWARD": "SME review proof"}
+MAX_REVIEW_FILES = 5
 
 
 class ReviewError(Exception):
@@ -195,16 +202,32 @@ def _add_to(db: Session, t: Ticket, user: CurrentUser, role: str, to: list[dict[
 
 def apply(
     db: Session, t: Ticket, user: CurrentUser, gp_ids: list[int], action: str, remark: str | None, category: str | None, on: dt.date | None,
-    to: list[dict[str, str]] | None = None,
+    to: list[dict[str, str]] | None = None, uploads: list[Any] | None = None,
 ) -> tuple[int, list[int]]:
     """One review step for one or more GPs of the ticket (all or none). `to` = the SME (approval) / COH (forward) who
-    receive the GPs. Returns the number of GPs and the recipient ids whose e-mail is queued."""
+    receive the GPs. `uploads` = the reviewer's proof documents (required for AM_APPROVE / SME_FORWARD), attached to
+    every selected GP's line of this step. Returns the number of GPs and the recipient ids whose e-mail is queued."""
+    from . import files
     from . import task as tasks
+    from ..config import get_settings
+    from ..models import TicketProgressFile
     from .service import _event, _notify, _reviewers
 
     step = STEPS.get(action)
     if step is None:
         raise ReviewError(422, "Unknown review step")
+    uploads = [u for u in (uploads or []) if getattr(u, "file_name", None)]
+    if uploads and action not in PROOF_REQUIRED:
+        raise ReviewError(422, "This step takes no proof documents")
+    if action in PROOF_REQUIRED and not uploads:
+        raise ReviewError(422, f"Attach the {PROOF_REQUIRED[action]} (at least one document or photo)")
+    if len(uploads) > MAX_REVIEW_FILES:
+        raise ReviewError(422, f"At most {MAX_REVIEW_FILES} proof documents per review step")
+    for u in uploads:  # names and types first, before anything is written
+        try:
+            files.check_meta(u.file_name, u.content_type)
+        except files.AttachmentError as exc:
+            raise ReviewError(exc.status, str(exc)) from None
     if t.status == "CLOSED":
         raise ReviewError(409, "This ticket is closed – no more review steps")
     mine = roles_of(db, t, user)
@@ -276,6 +299,7 @@ def apply(
     db.add(sub)
     db.flush()
     steps: list[tuple[TicketTaskGp, TicketGpReview]] = []
+    step_lines: list[TicketProgressLine] = []
     for g in gps:
         new_cat: str | None = None
         if action == "AM_APPROVE" and g.gp_category == "A":
@@ -295,10 +319,12 @@ def apply(
         if action == "COH_AMC":
             g.amc_on = on
         g.review, g.review_at = step.to, at
-        db.add(TicketProgressLine(
+        ln = TicketProgressLine(
             progress_id=sub.id, task_gp_id=g.id, achieved_today=1 if tasks.cumulative(g) > before else 0, cumulative=tasks.cumulative(g), gap=g.target - tasks.cumulative(g),
             remark=f"{step.label}" + (f": {text}" if text else "") + (f" ({on:%d-%m-%Y})" if on else ""), category=new_cat,
-        ))
+        )
+        db.add(ln)
+        step_lines.append(ln)
         row = TicketGpReview(ticket_id=t.id, task_gp_id=g.id, role=role, action=action, category=g.gp_category, on_date=on, remark=text, actor_id=user.id, actor_name=user.name, at=at)
         db.add(row)
         steps.append((g, row))
@@ -331,8 +357,29 @@ def apply(
         _notify(db, (_handed_to(db, t, gps, "AM_APPROVE") | forwarders) - {user.id}, t, "REVIEW", f"{t.code}: {gp_word} sent back to the SME by the COH – review again", body)
     else:
         _notify(db, (_role_users(db, t, "AM") | _role_users(db, t, "SME") | _fe_users(db, t, gps) | _reviewers(db, t)) - {user.id}, t, "REVIEW", title, body)
-    t.updated_at = at
-    db.commit()
+    stored: list[str] = []
+    try:
+        if uploads:  # the reviewer's proof: stored once, linked to the step's line of every selected GP
+            db.flush()
+            budget = get_settings().ticket_upload_max_mb * 1024 * 1024
+            for u in uploads:
+                try:
+                    f = files.save(t.id, u.file_name, u.content_type, u.stream, budget)
+                except files.AttachmentError as exc:
+                    raise ReviewError(exc.status, str(exc)) from None
+                stored.append(f.stored_name)
+                budget -= f.size
+                for ln in step_lines:
+                    db.add(TicketProgressFile(
+                        ticket_id=t.id, progress_line_id=ln.id, task_gp_id=ln.task_gp_id, file_name=f.file_name, stored_name=f.stored_name, content_type=f.content_type,
+                        size=f.size, sha256=f.sha256, uploaded_at=at,
+                    ))
+        t.updated_at = at
+        db.commit()
+    except BaseException:
+        db.rollback()
+        files.remove(t.id, stored)
+        raise
     return n, [r.id for r in sent_to]
 
 
@@ -449,6 +496,7 @@ def records(db: Session, t: Ticket, gp_ids: set[int], iso) -> tuple[dict[int, di
         rec = {
             "by": r.actor_name, "role": r.role, "remark": r.remark, "at": iso(r.at), "category": r.category,
             "forwardedTo": [{"name": n, "email": e} for n, e, _ in to], "forwardedAt": iso(to[0][2]) if to else None,
+            "_key": (r.actor_id, _utc(r.at)),  # the step's progress record (its proof files) – for the caller only
         }
         slot = out.setdefault(r.task_gp_id, {})
         if r.action == "AM_APPROVE":

@@ -11,6 +11,7 @@ from app.models import TicketProgressFile, TicketProgressLine, User
 from app.security.core import hash_password
 
 from .conftest import ADMIN, VIEWER, login
+from .evidence import progress
 from .test_ticket_tasks import _create, am_week  # noqa: F401 - shared fixture
 
 PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
@@ -57,14 +58,14 @@ def test_user_done_pending_with_proof_and_admin_monitoring(imported, client, am_
     r = _form(
         client, hu, tid,
         [{"taskGpId": g1["id"], "status": "DONE", "remark": "Letter accepted"}, {"taskGpId": g2["id"], "status": "PENDING", "remark": "OTDR test pending"}],
-        [(g1["id"], "letter.pdf", PDF, "application/pdf"), (g2["id"], "site.png", PNG, "image/png")],
+        [(g1["id"], "letter.pdf", PDF, "application/pdf"), (g1["id"], "g1.png", PNG, "image/png"), (g2["id"], "site.png", PNG, "image/png")],  # every Daily Achievement: a photo
         note="Day 1",
     )
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["status"] == "IN_PROGRESS"
     gp = {g["id"]: g for g in d["task"]["gps"]}
-    assert gp[g1["id"]]["status"] == "DONE" and gp[g1["id"]]["remarks"] == "Letter accepted" and [f["fileName"] for f in gp[g1["id"]]["files"]] == ["letter.pdf"]
+    assert gp[g1["id"]]["status"] == "DONE" and gp[g1["id"]]["remarks"] == "Letter accepted" and [f["fileName"] for f in gp[g1["id"]]["files"]] == ["letter.pdf", "g1.png"]
     assert gp[g2["id"]]["status"] == "PENDING" and gp[g2["id"]]["remarks"] == "OTDR test pending" and gp[g2["id"]]["lastUpdated"]
     line = {ln["taskGpId"]: ln for ln in d["task"]["history"][0]["lines"]}
     assert line[g1["id"]]["status"] == "DONE" and line[g1["id"]]["files"][0]["fileName"] == "letter.pdf"
@@ -129,7 +130,7 @@ def test_user_done_pending_with_proof_and_admin_monitoring(imported, client, am_
     # all GPs done -> the ticket still is not closed (only the admin closes)
     hu = {"X-CSRF-Token": login(client, VIEWER)}
     rest = [g for g in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"] if g["status"] == "PENDING"]
-    r = _form(client, hu, tid, [{"taskGpId": g["id"], "status": "DONE"} for g in rest])
+    r = progress(client, tid, [{"taskGpId": g["id"], "status": "DONE"} for g in rest], hu)  # each with its remark and photo
     assert r.status_code == 200 and r.json()["status"] == "IN_PROGRESS" and r.json()["task"]["totals"]["openGps"] == 0
     with SessionLocal() as db:
-        assert db.scalar(select(func.count()).where(TicketProgressFile.ticket_id == tid)) == 2
+        assert db.scalar(select(func.count()).where(TicketProgressFile.ticket_id == tid)) == 3 + len(rest)  # day 1 (3) + one photo per GP

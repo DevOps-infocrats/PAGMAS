@@ -18,6 +18,7 @@ from app.tickets import directory
 from app.tickets import task as tasks
 
 from .conftest import ADMIN, VIEWER, login
+from .evidence import progress
 from .test_ticket_tasks import am_week  # noqa: F401 - shared fixture
 
 SME = ("sme@pratap-test.in", "Sme!Secure-Pass-91")
@@ -240,7 +241,7 @@ def test_task_one_ticket_per_area_manager(client, org, mail):
     assert client.get(f"/api/v1/tickets/{tid}").json()["can"]["progress"] is True
     assert client.get(f"/api/v1/tickets/{second['id']}").status_code == 404  # another AM's task
     open_gp = next(g for g in first["task"]["gps"] if g["gap"] > 0)
-    r = client.post(f"/api/v1/tickets/{tid}/progress", json={"items": [{"taskGpId": open_gp["id"], "achievedToday": 1, "remark": "Done"}]}, headers=ha)
+    r = progress(client, tid, [{"taskGpId": open_gp["id"], "achievedToday": 1, "remark": "Done"}], ha)  # remark + photo
     assert r.status_code == 200 and r.json()["status"] == "IN_PROGRESS"
     assert client.post(f"/api/v1/tickets/{tid}/close", json={}, headers=ha).status_code == 403
 
