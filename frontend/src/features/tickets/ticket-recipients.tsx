@@ -8,7 +8,7 @@ import { ticketApi, type TicketDetail, type TicketRecipient } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { ticketTime, type Notice } from "./ticket-parts";
 
-export const ROLE_LABEL: Record<TicketRecipient["role"], string> = { CBH: "CBH", SME: "SME", COH: "COH", AM: "Area Manager", FE: "Field Engineer", USER: "Dashboard user", OTHER: "Other recipient" };
+export const ROLE_LABEL: Record<TicketRecipient["role"], string> = { CBH: "CBH", SME: "SME", COH: "COH", AM: "Area Manager", FE: "Field Engineer", FRT: "FRT", USER: "Dashboard user", OTHER: "Other recipient" };
 
 const MAIL_META: Record<TicketRecipient["emailStatus"], { label: string; cls: string }> = {
   NONE: { label: "Not e-mailed", cls: "text-muted-foreground" },

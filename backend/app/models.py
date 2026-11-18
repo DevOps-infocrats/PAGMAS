@@ -32,6 +32,9 @@ class User(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # FRT team login: the Escalation Matrix "FRT Code" this account works for (None = not an FRT). The FRT reports the
+    # Daily Achievement of the GPs with that code; their FE verifies it and sends it to the Area Manager (app.tickets.task)
+    frt_code: Mapped[str | None] = mapped_column(String(60), nullable=True, index=True)
 
 
 class UserScope(Base):
@@ -482,6 +485,8 @@ class TicketRecipient(Base):
     # True = name / e-mail typed by the admin at Generate Ticket (the role had nobody, or not this person, in the
     # Escalation Matrix) – the person works in that role like one from the matrix; None / False = from the database
     typed: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # FRT only: the FRT code of the account (users.frt_code) – the FRT sees and reports the task GPs with this code
+    frt_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
 class TicketSubmission(Base):
@@ -616,6 +621,12 @@ class TicketTaskGp(Base):
     amc_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # COH: AMC converted on
     # A GP the FE / Area Manager added to the ticket (kind ADDED, target 1) – who added it
     added_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # FRT team of the GP in the Escalation Matrix at creation (None = no FRT – the FE reports the GP as before)
+    frt_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # FRT → FE step before the Area Manager (only for GPs an FRT of the ticket reports): None = with the FRT ·
+    # PENDING_FE = the FRT submitted, the FE checks it · RETURNED_FRT = the FE sent it back to the FRT · FE_VERIFIED =
+    # the FE checked it and sent it to the Area Manager (the review chain above starts from there)
+    frt_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class TicketGpReview(Base):

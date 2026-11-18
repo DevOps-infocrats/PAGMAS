@@ -275,6 +275,7 @@ export const httpTicketApi: TicketApi = {
     return upload(`/tickets/${id}/review-form`, form, onProgress);
   },
   reassignGp: (id, gpId, body) => request(`/tickets/${id}/gps/${gpId}/reassign`, { method: "POST", body: JSON.stringify(body) }),
+  feCheck: (id, body) => request(`/tickets/${id}/fe-check`, { method: "POST", body: JSON.stringify(body) }),
   progressFileUrl: (id, inline) => `${API_BASE}/tickets/progress-files/${id}${inline ? "?inline=true" : ""}`,
   getGpMonitorSummary: (f, basis) => request(`/tickets/gp-monitor/summary${qs({ ...f, basis })}`),
   listGpMonitor: (q) =>

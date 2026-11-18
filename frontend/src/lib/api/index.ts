@@ -92,6 +92,7 @@ export const ticketApi: TicketApi = IS_LIVE
       submitProgressForm: unavailable,
       reviewGps: unavailable,
       reassignGp: unavailable,
+      feCheck: unavailable,
       cohClose: unavailable,
       getCohGps: unavailable,
       cohGpsXlsxUrl: () => "#",

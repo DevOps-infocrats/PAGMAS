@@ -1,12 +1,12 @@
 "use client";
 
-import { ChevronDown, Download, FileSpreadsheet, ListChecks, Loader2, OctagonAlert, Paperclip, Plus, Send, UserCog, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, Download, FileSpreadsheet, ListChecks, Loader2, OctagonAlert, Paperclip, Plus, Send, Undo2, UserCog, X } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
 import { Card, Input } from "@/components/ui/primitives";
-import { ticketApi, type GpCategory, type GpStage, type NewTaskGp, type TicketDetail, type TicketTask, type TicketTaskGp } from "@/lib/api";
+import { ticketApi, type FeCheckAction, type GpCategory, type GpStage, type NewTaskGp, type TicketDetail, type TicketTask, type TicketTaskFrt, type TicketTaskGp } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 import { TEXTAREA, fileSize, ticketDay, ticketTime, type Notice } from "./ticket-parts";
@@ -52,13 +52,18 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // FE view = only their GPs; SME view = only the GPs the Area Manager forwarded to this SME (both cut by the backend)
-  const reviewer = task.scope && task.scope.kind !== "FE" ? task.scope.kind : null; // "SME" | "COH" view
-  const kpis = task.scope && task.scope.kind !== "FE" ? task.scope.kpis : undefined;
+  // FE / FRT view = only their GPs; SME view = only the GPs the Area Manager forwarded to this SME (cut by the backend)
+  const reviewer = task.scope && (task.scope.kind === "SME" || task.scope.kind === "COH") ? task.scope.kind : null; // "SME" | "COH" view
+  const kpis = task.scope && (task.scope.kind === "SME" || task.scope.kind === "COH") ? task.scope.kpis : undefined;
   const smeView = reviewer !== null;
   const scoped = task.scope && task.scope.kind === "FE" ? task.scope : null;
+  // FRT view: the FRT reports the Daily Achievement of their GPs, their FE verifies it before the Area Manager
+  const frtScope = task.scope && task.scope.kind === "FRT" ? task.scope : null;
   const fes = task.fes ?? [];
-  const showFe = !scoped && !smeView && task.gps.some((g) => g.feName);
+  const frts = task.frts ?? [];
+  const showFe = !scoped && !frtScope && !smeView && task.gps.some((g) => g.feName);
+  const showFrtCol = !frtScope && !smeView && task.gps.some((g) => g.frtCode);
+  const [checking, setChecking] = useState<{ g: TicketTaskGp; action: FeCheckAction } | null>(null);
   const [feFilter, setFeFilter] = useState(ALL_FES);
   const [stage, setStage] = useState(ALL_STAGES);
   const roles = t.can.reviewAs ?? [];
@@ -67,7 +72,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const [detailId, setDetailId] = useState<number | null>(null);
   const [moving, setMoving] = useState<TicketTaskGp | null>(null);
   // Area Manager / admin: give a GP to another FE of the ticket (not once approved / in a Non-Doable case)
-  const canReassign = !!t.can.reassign && !scoped && !smeView && (task.feOptions?.length ?? 0) > 0;
+  const canReassign = !!t.can.reassign && !scoped && !frtScope && !smeView && (task.feOptions?.length ?? 0) > 0;
+  // the FE (or an admin) checks the FRT's Daily Achievement: verify → Area Manager, or return → FRT (backend: task.fe_check)
+  const canCheck = (scoped !== null || admin) && t.status !== "CLOSED";
+  const canVerify = (g: TicketTaskGp) => canCheck && !g.locked && !g.ndCase?.open && g.frtStage === "PENDING_FE" && (!g.review || g.review === "RETURNED");
+  const canReturnFrt = (g: TicketTaskGp) => canVerify(g) || (canCheck && !g.locked && !g.ndCase?.open && g.frtStage === "FE_VERIFIED" && g.review === "RETURNED");
   const showFeCol = showFe || canReassign;
   // Non-Doable cases waiting for this user's E1 / E2 forms: the Daily Achievement is locked until they are submitted
   const ndPending = editable ? (task.ndPending ?? []) : [];
@@ -105,7 +114,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const byId = new Map(task.gps.map((g) => [g.id, g]));
   const lacking = [
     ...changed
-      .filter((c) => c.category || byId.get(c.taskGpId)?.review === "RETURNED")
+      .filter((c) => c.category || byId.get(c.taskGpId)?.review === "RETURNED" || (!!frtScope && byId.get(c.taskGpId)?.frtStage === "RETURNED_FRT"))
       .filter((c) => (c.remark ?? "").trim().length < MIN_REMARK || !(draft[c.taskGpId]?.files ?? []).some(isPhoto))
       .map((c) => byId.get(c.taskGpId)?.gpCode ?? String(c.taskGpId)),
     ...filledRows.filter((r) => r.category && (r.remark.trim().length < MIN_REMARK || !r.files.some(isPhoto))).map((r) => r.gpCode.trim()),
@@ -142,7 +151,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       setNote("");
       onChanged(next, {
         ok: true,
-        text: `Daily progress saved: ${classified} GP status${classified === 1 ? "" : "es"} updated, ${changed.length} GP line${changed.length === 1 ? "" : "s"}${proofs.length ? `, ${proofs.length} proof document${proofs.length === 1 ? "" : "s"}` : ""}${newGps.length ? `, ${newGps.length} GP${newGps.length === 1 ? "" : "s"} added` : ""}${edits ? `, ${edits} GP${edits === 1 ? "" : "s"} corrected` : ""}. ${scoped ? "Your Area Manager and the admin have" : "The admin has"} been notified.`,
+        text: `Daily progress saved: ${classified} GP status${classified === 1 ? "" : "es"} updated, ${changed.length} GP line${changed.length === 1 ? "" : "s"}${proofs.length ? `, ${proofs.length} proof document${proofs.length === 1 ? "" : "s"}` : ""}${newGps.length ? `, ${newGps.length} GP${newGps.length === 1 ? "" : "s"} added` : ""}${edits ? `, ${edits} GP${edits === 1 ? "" : "s"} corrected` : ""}. ${frtScope ? "Your FE verifies it and sends it to the Area Manager." : scoped ? "Your Area Manager and the admin have been notified." : "The admin has been notified."}`,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the daily progress");
@@ -160,7 +169,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
         <div className="min-w-0">
           <h3 className="flex items-center gap-2 text-base font-bold text-subheading">
             <ListChecks className="size-4 text-primary" aria-hidden /> GP-wise Weekly Task
-            {scoped && <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">Your GPs only</span>}
+            {(scoped || frtScope) && <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">Your GPs only</span>}
             {smeView && (
               <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">
                 GPs forwarded to you by the {reviewer === "COH" ? "SME" : "Area Manager"}
@@ -171,6 +180,12 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
             {scoped && (
               <>
                 FE <b className="font-semibold text-foreground">{scoped.fieldEngineer}</b> · Area Manager{" "}
+              </>
+            )}
+            {frtScope && (
+              <>
+                FRT <b className="font-semibold text-foreground">{frtScope.frtCode ?? "—"}</b> ({frtScope.frtName})
+                {frtScope.fes.length > 0 && <> · FE {frtScope.fes.join(", ")}</>} · Area Manager{" "}
               </>
             )}
             {smeView && <>Ticket {t.code} · Area Manager </>}
@@ -184,12 +199,12 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
         <div className="flex flex-wrap gap-2">
           <Button asChild size="sm" variant="outline">
             <a href={ticketApi.taskWorkbookUrl(t.id, "assignment")} download>
-              <FileSpreadsheet /> {scoped || smeView ? "My Assignment Excel" : "Assignment Excel"}
+              <FileSpreadsheet /> {scoped || frtScope || smeView ? "My Assignment Excel" : "Assignment Excel"}
             </a>
           </Button>
           <Button asChild size="sm" variant="outline">
             <a href={ticketApi.taskWorkbookUrl(t.id, "progress")} download>
-              <Download /> {scoped || smeView ? "My latest Excel" : "Download latest Excel"}
+              <Download /> {scoped || frtScope || smeView ? "My latest Excel" : "Download latest Excel"}
             </a>
           </Button>
         </div>
@@ -254,6 +269,12 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           <span className="font-semibold uppercase tracking-wide text-muted-foreground">Review</span>
           {(
             [
+              ...(frts.length || T.review.pendingFe || T.review.returnedFrt
+                ? ([
+                    ["Pending FE Verification", T.review.pendingFe ?? 0, "PENDING_FE"],
+                    ["Returned to FRT", T.review.returnedFrt ?? 0, "RETURNED_FRT"],
+                  ] as [string, number, GpStage][])
+                : []),
               ["Pending AM Verification", T.review.awaiting, "PENDING_AM"],
               ["Returned to FE", T.review.returned, "RETURNED"],
               ["AM Approved – Pending SME Review", T.review.amApproved, "AM_APPROVED"],
@@ -276,6 +297,16 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
 
       {/* Area Manager / admin: FE-wise allocation and progress */}
       {showFe && <FeSplit fes={fes} />}
+      {/* FRT-wise target and progress (Area Manager / admin: every FRT; FE: the FRTs of their GPs) */}
+      {frts.length > 0 && !frtScope && !smeView && <FrtSplit frts={frts} />}
+
+      {/* FRT: what happens to their Daily Achievement */}
+      {frtScope && editable && (
+        <p className="border-b border-border bg-primary-soft/40 px-5 py-2.5 text-[0.8125rem]">
+          Choose <b>Rectification Done</b> or <b>Revisit Required</b> for each GP with a remark and a photo, then <b>Submit Daily Progress</b>. Your FE
+          {frtScope.fes.length ? ` (${frtScope.fes.join(", ")})` : ""} checks it and sends it to the Area Manager, or returns it to you with the reason.
+        </p>
+      )}
 
       {!smeView && (
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2.5 text-[0.78125rem]">
@@ -370,7 +401,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                   />
                 </th>
               )}
-              {["GP Code", "GP Name", "Block", ...(showFeCol ? ["FE"] : []), "Type", "Weekly Target", "Achieved", "Remaining Gap", "Daily Achievement", "Remarks", "Proof", "Review", "Action"].map((h) => (
+              {["GP Code", "GP Name", "Block", ...(showFeCol ? ["FE"] : []), ...(showFrtCol ? ["FRT"] : []), "Type", "Weekly Target", "Achieved", "Remaining Gap", "Daily Achievement", "Remarks", "Proof", "Review", "Action"].map((h) => (
                 <th key={h} scope="col" className={cn("px-3 py-2", ["Weekly Target", "Achieved", "Remaining Gap"].includes(h) && "text-right", ["Daily Achievement", "Action"].includes(h) && "text-center")}>
                   {h}
                 </th>
@@ -385,10 +416,20 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
               // achieved as it will be after the submission: only E counts (plus an AMC Date in the master data)
               const cum = d?.category ? Math.min(g.target, g.baseAchieved + (d.category === "E" ? 1 : 0)) : g.cumulative;
               // approved by the Area Manager / in a Non-Doable case = no daily changes; an FE's GP is reported by the FE only
-              // (the Area Manager reviews it – same rule as the backend)
-              const rowEdit = editable && !g.locked && !g.ndCase?.open && (scoped !== null || !g.feAssigned);
+              // (the Area Manager reviews it), an FRT's GP by the FRT only (the FE verifies it) – same rules as the backend
+              const rowEdit =
+                editable && !g.locked && !g.ndCase?.open &&
+                (scoped !== null || frtScope !== null || (!g.feAssigned && !g.frtAssigned)) &&
+                !(frtScope && g.frtStage === "FE_VERIFIED");
+              // FE on an FRT's GP: only Non-Doable – Proposed (with its remark / photo); the FRT: A / C only
+              const ndOnly = rowEdit && scoped !== null && !!g.frtAssigned;
+              const fullEdit = rowEdit && !ndOnly;
+              const textEdit = fullEdit || (ndOnly && d?.category === "D");
+              const catOptions: GpCategory[] | undefined = frtScope ? ["A", "C"] : ndOnly ? ["D"] : undefined;
               const catChanged = !!d?.category && d.category !== (g.gpCategory ?? null);
-              const needsEvidence = rowEdit && !!d && (catChanged || g.review === "RETURNED") && ((d.remark ?? "").trim().length < MIN_REMARK || !d.files.some(isPhoto));
+              const needsEvidence =
+                rowEdit && !!d && (catChanged || g.review === "RETURNED" || (!!frtScope && g.frtStage === "RETURNED_FRT")) &&
+                ((d.remark ?? "").trim().length < MIN_REMARK || !d.files.some(isPhoto));
               const pickable = reviewable(g, roles);
               return (
                 <tr key={g.id} className={cn("border-b border-border/70 last:border-0", d && "bg-primary-soft/30", g.review === "RETURNED" && !d && "bg-critical-soft/30")}>
@@ -417,14 +458,14 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     </button>
                   </td>
                   <td className="min-w-[10.625rem] px-3 py-1.5">
-                    {rowEdit ? (
+                    {fullEdit ? (
                       <Input value={d?.gpName ?? g.gpName} maxLength={160} disabled={busy} onChange={(e) => set(g.id, { gpName: e.target.value })} className="h-8 text-[0.8125rem]" aria-label={`GP name of ${g.gpCode}`} />
                     ) : (
                       g.gpName
                     )}
                   </td>
                   <td className="min-w-[8.125rem] px-3 py-1.5 text-muted-foreground">
-                    {rowEdit ? (
+                    {fullEdit ? (
                       <Input value={d?.block ?? g.block ?? ""} maxLength={160} disabled={busy} onChange={(e) => set(g.id, { block: e.target.value })} className="h-8 text-[0.8125rem]" placeholder="Block" aria-label={`Block of ${g.gpCode}`} />
                     ) : (
                       (g.block ?? "—")
@@ -442,6 +483,18 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         >
                           <UserCog className="size-3.5" aria-hidden /> Reassign FE
                         </button>
+                      )}
+                    </td>
+                  )}
+                  {showFrtCol && (
+                    <td className="px-3 py-2">
+                      {g.frtCode ? (
+                        <>
+                          <span className="font-medium">{g.frtCode}</span>
+                          {!g.frtAssigned && <span className="block text-[0.6875rem] text-muted-foreground" title="No FRT login on this ticket – the FE reports this GP">no FRT login</span>}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
                       )}
                     </td>
                   )}
@@ -463,7 +516,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                   <td className={cn("px-3 py-2 text-right font-semibold", g.target - cum > 0 ? "text-critical-text" : "text-good-text")}>{g.target - cum}</td>
                   <td className="px-3 py-1.5 text-center">
                     {rowEdit ? (
-                      <GpCategorySelect value={cat} disabled={busy} onChange={(v) => set(g.id, { category: v === (g.gpCategory ?? null) ? null : v })} ariaLabel={`Daily achievement of ${g.gpCode}`} />
+                      <GpCategorySelect value={cat} disabled={busy} options={catOptions} onChange={(v) => set(g.id, { category: v === (g.gpCategory ?? null) ? null : v })} ariaLabel={`Daily achievement of ${g.gpCode}`} />
                     ) : cat || !done ? (
                       <GpCategoryBadge code={cat} />
                     ) : (
@@ -471,7 +524,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     )}
                   </td>
                   <td className="min-w-[12.5rem] px-3 py-1.5">
-                    {rowEdit ? (
+                    {textEdit ? (
                       <Input value={d?.remark ?? g.remarks ?? ""} maxLength={500} disabled={busy} onChange={(e) => set(g.id, { remark: e.target.value })} placeholder={done ? "Remark" : "Remark / reason if pending"} className="h-8 text-[0.8125rem]" aria-label={`Remark for ${g.gpCode}`} />
                     ) : (
                       <span className="text-[0.8125rem]">{g.remarks ?? <span className="text-muted-foreground">No Remarks</span>}</span>
@@ -491,7 +544,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       </span>
                     ))}
                     {needsEvidence && <span className="block text-[0.6875rem] font-medium text-critical-text">{EVIDENCE_HINT}</span>}
-                    {rowEdit ? (
+                    {textEdit ? (
                       <label className={cn("mt-0.5 inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[0.75rem] font-medium text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}>
                         <Paperclip className="size-3.5" aria-hidden /> Attach
                         <input
@@ -515,6 +568,28 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     <ReviewCell g={g} />
                   </td>
                   <td className="px-3 py-2 text-center">
+                    {(canVerify(g) || canReturnFrt(g)) && !d && (
+                      <span className="mb-1 flex flex-col items-center gap-1">
+                        {canVerify(g) && (
+                          <button
+                            type="button"
+                            onClick={() => setChecking({ g, action: "FE_VERIFY" })}
+                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-good px-2 py-0.5 text-[0.71875rem] font-semibold text-white hover:bg-good/90"
+                            title="The FRT's proof and remark are correct – send the GP to the Area Manager"
+                          >
+                            <CheckCircle2 className="size-3.5" aria-hidden /> Verify → AM
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setChecking({ g, action: "FE_RETURN" })}
+                          className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-critical/40 px-2 py-0.5 text-[0.71875rem] font-semibold text-critical-text hover:bg-critical-soft"
+                          title="Send the GP back to the FRT with the reason"
+                        >
+                          <Undo2 className="size-3.5" aria-hidden /> Return to FRT
+                        </button>
+                      </span>
+                    )}
                     {rowEdit && d ? (
                       <button
                         type="button"
@@ -541,9 +616,10 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
       )}
       {!smeView && <GpDetailDialog t={t} g={task.gps.find((g) => g.id === detailId) ?? null} roles={roles} onClose={() => setDetailId(null)} onChanged={onChanged} />}
       {canReassign && <ReassignDialog t={t} g={moving} onClose={() => setMoving(null)} onChanged={onChanged} />}
+      {canCheck && <FeCheckDialog t={t} check={checking} onClose={() => setChecking(null)} onChanged={onChanged} />}
 
-      {/* GP rows added by the FE / Area Manager (target 1 each, sent with the submission) */}
-      {editable && (
+      {/* GP rows added by the FE / Area Manager (target 1 each, sent with the submission) – not by an FRT */}
+      {editable && !frtScope && (
         <div className="border-t border-border px-5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -746,6 +822,154 @@ function FeSplit({ fes }: { fes: NonNullable<TicketTask["fes"]> }) {
         </table>
       </div>
     </div>
+  );
+}
+
+/** FRT-wise target and progress of the task (one row per FRT code; Area Manager / admin / FE view). */
+function FrtSplit({ frts }: { frts: TicketTaskFrt[] }) {
+  return (
+    <div className="border-b border-border px-5 py-3">
+      <p className="mb-2 text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">FRT-wise target</p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[62rem] text-[0.78125rem]">
+          <thead>
+            <tr className="text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
+              {["FRT", "FE", "GPs", "Target", "Achieved", "Gap", "Pending FE check", "Returned to FRT", "Verified by FE", "Not classified", "Proof files", "Last update"].map((h) => (
+                <th key={h} scope="col" className={cn("px-2 py-1", !["FRT", "FE", "Last update"].includes(h) && "text-right")}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="tabular">
+            {frts.map((f) => (
+              <tr key={f.code} className="border-t border-border/60">
+                <td className="px-2 py-1.5">
+                  <b className="font-semibold">{f.code}</b>
+                  {f.names.length > 0 ? (
+                    <span className="text-muted-foreground"> · {f.names.join(", ")}</span>
+                  ) : (
+                    <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[0.65625rem] font-semibold text-muted-foreground" title="No FRT login for this code – the FE reports these GPs">
+                      no FRT login
+                    </span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-muted-foreground">{f.fes.join(", ") || "—"}</td>
+                <td className="px-2 py-1.5 text-right">{f.gps}</td>
+                <td className="px-2 py-1.5 text-right">{f.target}</td>
+                <td className="px-2 py-1.5 text-right font-semibold text-good-text">{f.achieved}</td>
+                <td className={cn("px-2 py-1.5 text-right font-semibold", f.gap > 0 ? "text-critical-text" : "text-good-text")}>{f.gap}</td>
+                <td className={cn("px-2 py-1.5 text-right", f.pendingFe ? "font-semibold text-warning-text" : "text-muted-foreground")}>{f.pendingFe}</td>
+                <td className={cn("px-2 py-1.5 text-right", f.returnedFrt ? "font-semibold text-critical-text" : "text-muted-foreground")}>{f.returnedFrt}</td>
+                <td className={cn("px-2 py-1.5 text-right", f.verified ? "font-semibold text-good-text" : "text-muted-foreground")}>{f.verified}</td>
+                <td className="px-2 py-1.5 text-right text-muted-foreground">{f.notClassified}</td>
+                <td className="px-2 py-1.5 text-right">{f.proofFiles}</td>
+                <td className="px-2 py-1.5 text-muted-foreground">{f.lastUpdated ? ticketDay(f.lastUpdated) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** FE (or admin): check the FRT's Daily Achievement of one GP – Verify (to the Area Manager) or Return to FRT, with a
+ * remark (backend: task.fe_check). The FRT's remark and proof are shown to check against. */
+function FeCheckDialog({ t, check, onClose, onChanged }: { t: TicketDetail; check: { g: TicketTaskGp; action: FeCheckAction } | null; onClose: () => void; onChanged: (next: TicketDetail, notice: Notice) => void }) {
+  const [remark, setRemark] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const g = check?.g ?? null;
+  const verify = check?.action === "FE_VERIFY";
+  const close = () => {
+    setRemark("");
+    setError(null);
+    onClose();
+  };
+  const save = async () => {
+    if (!check || remark.trim().length < MIN_REMARK) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await ticketApi.feCheck(t.id, { taskGpIds: [check.g.id], action: check.action, remark: remark.trim() });
+      close();
+      onChanged(next, { ok: true, text: verify ? `GP ${check.g.gpCode} verified and sent to the Area Manager.` : `GP ${check.g.gpCode} returned to the FRT with your reason.` });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the check");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sub = g?.feSubmission;
+  return (
+    <Dialog open={check !== null} onOpenChange={(o) => !o && !busy && close()}>
+      <DialogContent className="max-w-lg">
+        {g && (
+          <form
+            className="space-y-4 p-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <div>
+              <DialogTitle className="text-lg font-bold">{verify ? "Verify FRT's Daily Achievement" : "Return to FRT"}</DialogTitle>
+              <DialogDescription className="mt-1 text-sm text-muted-foreground">
+                {verify
+                  ? "Check the FRT's photo and remark. Verified GPs go to the Area Manager for approval."
+                  : "The GP goes back to the FRT, who corrects it and submits it again with a new photo."}
+              </DialogDescription>
+            </div>
+            <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-[0.8125rem]">
+              <dt className="text-muted-foreground">GP</dt>
+              <dd className="font-semibold">
+                {g.gpCode} · {g.gpName}
+              </dd>
+              <dt className="text-muted-foreground">FRT</dt>
+              <dd>{g.frtCode ?? "—"}</dd>
+              <dt className="text-muted-foreground">Daily Achievement</dt>
+              <dd>
+                <GpCategoryBadge code={sub?.category ?? g.gpCategory ?? null} />
+              </dd>
+              <dt className="text-muted-foreground">FRT remark</dt>
+              <dd>{sub?.remark ?? g.remarks ?? "—"}</dd>
+              <dt className="text-muted-foreground">Submitted</dt>
+              <dd>{sub ? `${sub.submittedBy ?? "—"}${sub.submittedAt ? ` · ${ticketTime(sub.submittedAt)}` : ""}` : "—"}</dd>
+              <dt className="text-muted-foreground">Proof</dt>
+              <dd>{(sub?.files ?? g.files).length ? <ProofList files={sub?.files ?? g.files} compact /> : <span className="text-critical-text">No proof uploaded</span>}</dd>
+            </dl>
+            <label className="block space-y-1">
+              <span className="text-[0.8125rem] font-medium">
+                {verify ? "Your check remark" : "Reason for returning"} <span className="text-critical-text">*</span>
+              </span>
+              <textarea
+                value={remark}
+                onChange={(e) => setRemark(e.target.value)}
+                rows={3}
+                maxLength={500}
+                disabled={busy}
+                className={TEXTAREA}
+                placeholder={verify ? "e.g. Photo and remark checked – work is complete" : "e.g. Photo is not of this GP"}
+              />
+            </label>
+            {error && (
+              <p role="alert" className="rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical-text">
+                {error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={close} disabled={busy}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" disabled={busy || remark.trim().length < MIN_REMARK}>
+                {busy ? <Loader2 className="animate-spin" /> : verify ? <CheckCircle2 /> : <Undo2 />} {verify ? "Verify & send to AM" : "Return to FRT"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -668,6 +668,8 @@ export interface AppUser {
   locked: boolean;
   /** viewers only; admins receive every circle */
   scopes: UserScope[];
+  /** FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for (null = not an FRT) */
+  frtCode?: string | null;
 }
 
 export interface UserLocations {
@@ -687,6 +689,7 @@ export interface UserCreateBody {
   role: "admin" | "viewer";
   password: string;
   scopes?: { level: UserScopeLevel; id: string }[];
+  frtCode?: string | null;
 }
 
 /** Bulk import of dashboard users from an Excel / CSV file (Name + Email columns) */
@@ -729,6 +732,8 @@ export interface UserUpdateBody {
   isActive?: boolean;
   password?: string;
   scopes?: { level: UserScopeLevel; id: string }[];
+  /** "" = not an FRT any more */
+  frtCode?: string;
 }
 
 /** A GP for the User Management area picker */
@@ -1772,7 +1777,7 @@ export interface TicketWeek {
   open: number;
 }
 
-export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "USER" | "OTHER";
+export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "FRT" | "USER" | "OTHER";
 
 export interface TicketRecipient {
   id: number;
@@ -1960,16 +1965,48 @@ export interface TicketTaskGp {
   sentBack?: (GpReviewRecord & { action: "SME_RETURN" | "COH_RETURN" }) | null;
   /** an FE of this ticket (with an account) reports this GP – the Area Manager only reviews / reassigns it */
   feAssigned?: boolean;
+  /** FRT team of the GP (Escalation Matrix at creation) */
+  frtCode?: string | null;
+  /** an FRT account of this ticket reports this GP – the FE verifies it before the Area Manager */
+  frtAssigned?: boolean;
+  /** PENDING_FE = the FRT submitted, the FE checks it · RETURNED_FRT = the FE sent it back · FE_VERIFIED = sent to the AM */
+  frtStage?: "PENDING_FE" | "RETURNED_FRT" | "FE_VERIFIED" | null;
+  /** the FE's latest check of the FRT's Daily Achievement */
+  frtCheck?: { action: FeCheckAction; label: string; by: string; role: string; remark: string | null; at: string | null } | null;
+}
+
+export type FeCheckAction = "FE_VERIFY" | "FE_RETURN";
+
+/** FRT-wise target and progress of a task (one row per FRT code) */
+export interface TicketTaskFrt {
+  code: string;
+  /** FRT accounts on the ticket (empty = nobody has a login for this code – the FE reports these GPs) */
+  names: string[];
+  recipient: boolean;
+  fes: string[];
+  gps: number;
+  target: number;
+  achieved: number;
+  gap: number;
+  doneGps: number;
+  pendingGps: number;
+  proofFiles: number;
+  lastUpdated: string | null;
+  categories: Record<GpCategory, number>;
+  notClassified: number;
+  pendingFe: number;
+  returnedFrt: number;
+  verified: number;
 }
 
 export type GpReviewRole = "AM" | "SME" | "COH";
 /** SME_RETURNED = the SME sent it back to the Area Manager · COH_RETURNED = the COH sent it back to the SME */
 export type GpReviewState = "RETURNED" | "AM_APPROVED" | "SME_RETURNED" | "SME_FORWARDED" | "COH_RETURNED" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
-export type GpStage = "NONE" | "PENDING_AM" | GpReviewState;
+export type GpStage = "NONE" | "PENDING_FE" | "RETURNED_FRT" | "PENDING_AM" | GpReviewState;
 export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "SME_RETURN" | "COH_LETTER" | "COH_AMC" | "COH_RETURN";
 export interface GpReviewStep {
-  role: "FE" | "AM" | "SME" | "COH" | "ADMIN";
-  action: GpReviewAction | "EDIT" | "ADD" | "REASSIGN" | "ND_REOPEN";
+  role: "FRT" | "FE" | "AM" | "SME" | "COH" | "ADMIN";
+  action: GpReviewAction | FeCheckAction | "EDIT" | "ADD" | "REASSIGN" | "ND_REOPEN";
   label: string;
   category: GpCategory | null;
   date: string | null;
@@ -2000,7 +2037,7 @@ export interface GpFeSubmission {
   feName: string | null;
   /** who submitted the line (FE, or the Area Manager on the FE's behalf) */
   submittedBy: string | null;
-  submittedByRole: "FE" | "AM";
+  submittedByRole: "FRT" | "FE" | "AM";
   category: GpCategory | null;
   remark: string | null;
   submittedAt: string | null;
@@ -2222,9 +2259,15 @@ export interface TicketTask {
   amEmail: string | null;
   /** FE = a Field Engineer's view (only their GPs) · SME / COH = a reviewer's view (only the GPs the Area Manager /
    * the SME forwarded to them) · null = the whole task */
-  scope?: { kind: "FE"; fieldEngineer: string; email: string | null } | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis } | null;
+  scope?:
+    | { kind: "FE"; fieldEngineer: string; email: string | null }
+    | { kind: "FRT"; fieldEngineer: null; email: null; frtCode: string | null; frtName: string; fes: string[] }
+    | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis }
+    | null;
   /** FE-wise split (empty in a Field Engineer's view) */
   fes?: TicketTaskFe[];
+  /** FRT-wise split (whole task, or an FE's own GPs) */
+  frts?: TicketTaskFrt[];
   circle: string | null;
   cbhName: string | null;
   week: { id: string; start: string; end: string };
@@ -2232,7 +2275,7 @@ export interface TicketTask {
   sourceFile: string;
   totals: { gps: number; target: number; achieved: number; gap: number; pct: number | null; weekGps: number; pendingGps: number; doneGps: number; openGps: number; proofFiles: number; categories?: Record<GpCategory, number>; notClassified?: number;
     addedGps?: number; review?: { awaiting: number; returned: number; amApproved: number; smeForwarded: number; letterSubmitted: number; amcConverted: number; ndOpen?: number; ndApproved?: number;
-      smeReturned?: number; cohReturned?: number } };
+      smeReturned?: number; cohReturned?: number; pendingFe?: number; returnedFrt?: number } };
   blocks: { block: string; gps: number; target: number; achieved: number; gap: number }[];
   gps: TicketTaskGp[];
   /** Area Manager / admin: the FEs of the ticket a GP can be reassigned to */
@@ -2273,6 +2316,8 @@ export interface TaskPreviewRow {
   gap: number;
   feName?: string | null;
   feEmail?: string | null;
+  /** FRT team of the GP in the Escalation Matrix (null = none – the FE reports it) */
+  frtCode?: string | null;
 }
 
 export interface SharePerson {
@@ -2312,6 +2357,11 @@ export interface TaskBreakdown {
   fes: (TaskFigures & { name: string; email: string | null; emails: string[] })[];
   /** GPs without an FE in the Escalation Matrix (null = none) */
   unmapped: TaskFigures | null;
+  /** FRT-wise target: each FRT code of the GPs, its FE(s) and the FRT accounts that join the ticket (logins empty = no
+   * FRT login – the FE reports these GPs) */
+  frts?: (TaskFigures & { code: string; fes: string[]; logins: string[] })[];
+  /** GPs without an FRT code (shown only when some GPs have one) */
+  noFrt?: TaskFigures | null;
   /** the same AM on AMC Conversion → area manager-wise table (Ach / AMC Date inside the week) */
   page: { weekTarget: number; weekReady: number; weekConverted: number } | null;
   definitions: string[];
@@ -2399,6 +2449,8 @@ export interface TicketApi {
   ): Promise<TicketDetail>;
   /** Area Manager / admin: give a GP of the task to another FE of the ticket (history kept) */
   reassignGp(id: number, gpId: number, body: { recipientId: number; remark?: string }): Promise<TicketDetail>;
+  /** FE: verify the FRT's Daily Achievement (to the Area Manager) or return it to the FRT */
+  feCheck(id: number, body: { taskGpIds: number[]; action: FeCheckAction; remark: string }): Promise<TicketDetail>;
   /** SME (for the Area Manager's approval) / COH (for the SME's forward) of the ticket's circle */
   getReviewContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
   /** Same-origin URL of a GP proof document (download, or inline preview for PDF / images) */

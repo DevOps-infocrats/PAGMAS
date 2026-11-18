@@ -161,7 +161,14 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
                   <tr key={u.id} className="border-b border-border/60 align-top last:border-0">
                     <td className="py-2.5 pr-3 font-medium">{u.name}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{u.email}</td>
-                    <td className="py-2.5 pr-3 capitalize">{u.role}</td>
+                    <td className="py-2.5 pr-3">
+                      <span className="capitalize">{u.role}</span>
+                      {u.frtCode && (
+                        <span className="ml-1.5 rounded bg-primary-soft px-1.5 py-0.5 text-xs font-semibold text-primary" title="FRT login – reports the Daily Achievement of the GPs of this FRT code">
+                          FRT {u.frtCode}
+                        </span>
+                      )}
+                    </td>
                     <td className="max-w-[20rem] py-2.5 pr-3">
                       {u.role === "admin" ? (
                         <span className="text-muted-foreground">All circles</span>
@@ -259,6 +266,8 @@ function UserDialog({
   const [email, setEmail] = useState(user?.email ?? "");
   const [role, setRole] = useState<"admin" | "viewer">(user?.role ?? "viewer");
   const [password, setPassword] = useState("");
+  // FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for ("" = not an FRT)
+  const [frtCode, setFrtCode] = useState(user?.frtCode ?? "");
   const [scopes, setScopes] = useState<Scope[]>(user?.scopes.map((s) => ({ level: s.level, id: s.id })) ?? []);
   const [level, setLevel] = useState<UserScopeLevel>("circle");
   const [pick, setPick] = useState<string | undefined>();
@@ -296,6 +305,7 @@ function UserDialog({
     setError(null);
     try {
       const sc = role === "viewer" ? scopes : [];
+      const frt = role === "viewer" ? frtCode.trim() : "";
       if (user) {
         await adminApi.updateUser(user.id, {
           name: name.trim(),
@@ -303,10 +313,11 @@ function UserDialog({
           ...(self ? {} : { role }),
           ...(password ? { password } : {}),
           scopes: sc,
+          ...(frt !== (user.frtCode ?? "") ? { frtCode: frt } : {}),
         });
         onDone(`${name.trim()} saved.`);
       } else {
-        await adminApi.createUser({ name: name.trim(), email: email.trim(), role, password, scopes: sc });
+        await adminApi.createUser({ name: name.trim(), email: email.trim(), role, password, scopes: sc, ...(frt ? { frtCode: frt } : {}) });
         onDone(`User ${email.trim()} created.`);
       }
     } catch (err) {
@@ -351,6 +362,15 @@ function UserDialog({
           <Field id="u-pass" label={user ? "New password (optional)" : "Initial password"} type="password" value={password} onChange={setPassword} autoComplete="new-password" />
         </div>
         {self && <p className="text-xs text-muted-foreground">You cannot change your own role or e-mail address.</p>}
+        {role === "viewer" && (
+          <div className="space-y-1.5">
+            <Field id="u-frt" label="FRT code (FRT team login – optional)" value={frtCode} onChange={setFrtCode} />
+            <p className="text-xs text-muted-foreground">
+              Fill in only for an FRT team: the code exactly as in the Escalation Matrix (FRT Code column). The FRT then reports the Daily Achievement of those GPs in
+              the GP-wise tickets; their FE verifies it before the Area Manager. Leave empty for everyone else.
+            </p>
+          </div>
+        )}
 
         <fieldset className="space-y-2 rounded-lg border border-border p-3">
           <legend className="px-1 text-sm font-semibold">Areas – data access & AMC Conversion e-mail</legend>

@@ -1049,6 +1049,9 @@ function AmPreview({
   const s = q.data?.summary;
   const picked = new Set(fes.map((f) => feKey(f)));
   const feLines = (s?.fes ?? []).filter((f) => !feOnly || picked.has(feKey({ name: f.name, mappedEmail: f.email })));
+  // FRT-wise target (only the FRT codes of this ticket's GPs – an FE-only ticket shows the FRTs of those FEs)
+  const codes = new Set(rows.map((r) => r.frtCode).filter(Boolean));
+  const frtLines = (s?.frts ?? []).filter((f) => codes.has(f.code));
   const shown = rows.filter((r) => only === "all" || (only === "none" ? !r.feName : !!r.feName && feKey({ name: r.feName, mappedEmail: r.feEmail ?? null }) === only));
   const dmy = (iso?: string | null) => (iso ? new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" }) : "—");
   return (
@@ -1114,6 +1117,43 @@ function AmPreview({
         </div>
       )}
 
+      {s && rows.length > 0 && frtLines.length > 0 && (
+        <div className="overflow-x-auto border-t border-border">
+          <p className="px-2 pt-1.5 text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">FRT-wise target</p>
+          <table className="w-full min-w-[45rem] text-[0.75rem]">
+            <thead className="bg-muted">
+              <tr className="text-[0.6875rem] font-semibold text-muted-foreground">
+                <th className="px-2 py-1 text-left">FRT</th>
+                <th className="px-2 py-1 text-right">Weekly Target</th>
+                <th className="px-2 py-1 text-right">Ready (Ach Date)</th>
+                <th className="px-2 py-1 text-right">AMC Converted</th>
+                <th className="px-2 py-1 text-right">To be ready</th>
+                <th className="px-2 py-1 text-right">To convert</th>
+                <th className="px-2 py-1 text-right">Ticket GPs</th>
+                <th className="px-2 py-1 text-right">Backlog (not in target)</th>
+              </tr>
+            </thead>
+            <tbody className="tabular">
+              {frtLines.map((f) => (
+                <FigureRow
+                  key={f.code}
+                  label={`FRT ${f.code}`}
+                  hint={f.fes.length ? `FE ${f.fes.join(", ")}` : "no FE in the matrix"}
+                  f={f}
+                  badge={f.logins.length ? `login: ${f.logins.join(", ")}` : undefined}
+                  note={f.logins.length ? undefined : "no FRT login – the FE fills these GPs"}
+                />
+              ))}
+              {!feOnly && s.noFrt && <FigureRow label="No FRT code (Escalation Matrix) – FE fills" f={s.noFrt} warn />}
+            </tbody>
+          </table>
+          <p className="border-t border-border px-2 py-1.5 text-[0.6875rem] text-muted-foreground">
+            An FRT with a login (User Management → FRT code) joins this ticket automatically and reports only these GPs; their FE verifies it before the Area Manager.
+            {frtLines.some((f) => !f.logins.length) && " FRT codes without a login: the FE reports those GPs as before."}
+          </p>
+        </div>
+      )}
+
       {rows.length > 0 && (
         <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full items-center justify-between gap-2 border-t border-border px-3 py-1.5 text-left text-[0.75rem] font-medium text-primary">
           {open ? "Hide" : "Show"} the GP-wise details ({rows.length} GPs)
@@ -1143,7 +1183,7 @@ function AmPreview({
             <table className="w-full min-w-[51.25rem] text-[0.75rem]">
               <thead className="sticky top-0 bg-muted">
                 <tr className="text-left text-[0.6875rem] font-semibold text-muted-foreground">
-                  {["GP Code", "GP Name", "Block", "FE", "Type", "Planned Date", "Ach Date (Ready)", "AMC Date", "Target", "Achieved", "Gap"].map((h) => (
+                  {["GP Code", "GP Name", "Block", "FE", "FRT", "Type", "Planned Date", "Ach Date (Ready)", "AMC Date", "Target", "Achieved", "Gap"].map((h) => (
                     <th key={h} className={cn("px-2 py-1", ["Target", "Achieved", "Gap"].includes(h) && "text-right")}>
                       {h}
                     </th>
@@ -1157,6 +1197,7 @@ function AmPreview({
                     <td className="px-2 py-1">{r.gpName}</td>
                     <td className="px-2 py-1 text-muted-foreground">{r.block ?? "—"}</td>
                     <td className={cn("px-2 py-1", !r.feName && "text-warning-text")}>{r.feName ?? "Not mapped"}</td>
+                    <td className="px-2 py-1 text-muted-foreground">{r.frtCode ?? "—"}</td>
                     <td className="px-2 py-1">{r.kind === "WEEK" ? "Week" : "Pending"}</td>
                     <td className="px-2 py-1">{dmy(r.plannedDate)}</td>
                     <td className="px-2 py-1">{dmy(r.readyDate)}</td>
@@ -1176,7 +1217,7 @@ function AmPreview({
 }
 
 /** One line of the target / achievement table: the week's target GPs (= the ticket) and the backlog (information). */
-function FigureRow({ label, hint, f, strong, warn, badge }: { label: string; hint?: string; f: TaskFigures; strong?: boolean; warn?: boolean; badge?: string }) {
+function FigureRow({ label, hint, f, strong, warn, badge, note }: { label: string; hint?: string; f: TaskFigures; strong?: boolean; warn?: boolean; badge?: string; note?: string }) {
   const w = f.week;
   return (
     <tr className={cn("border-t border-border/60", strong && "font-semibold")}>
@@ -1184,6 +1225,7 @@ function FigureRow({ label, hint, f, strong, warn, badge }: { label: string; hin
         {label}
         {hint && <span className="ml-1 font-normal text-muted-foreground">· {hint}</span>}
         {badge && <span className="ml-1.5 rounded bg-primary-soft px-1.5 py-0.5 text-[0.625rem] font-semibold text-primary">{badge}</span>}
+        {note && <span className="ml-1.5 rounded bg-warning-soft px-1.5 py-0.5 text-[0.625rem] font-semibold text-warning-text">{note}</span>}
       </td>
       <td className="px-2 py-1 text-right">{w.gps}</td>
       <td className="px-2 py-1 text-right">{w.ready}</td>

@@ -29,6 +29,14 @@ No Area Manager    GPs whose matrix AM is blank or "Vacant…" form the circle's
                   is fixed per circle – a matrix with the AM moves the GPs to that AM for the next tickets.
 Zero target       an Area Manager / FE without a GP planned in the week still gets the ticket (0 GPs; the FE can add
                   GPs found in the field) – it is never refused.
+FRT team          Escalation Matrix "FRT Code" of each GP (snapshot on the task GP at creation). A dashboard account with
+                  that FRT code (User Management) is put on the ticket as FRT: it sees and reports ONLY the GPs with its
+                  code – Daily Achievement A Rectification Done / C Revisit Required with the same remark + photo – and
+                  that goes to the GP's FE (frt_stage PENDING_FE), not to the Area Manager. The FE checks the FRT's
+                  proof and remark: FE_VERIFY sends the GP to the Area Manager (FE_VERIFIED – the review chain starts
+                  as before), FE_RETURN sends it back to the FRT (RETURNED_FRT). A GP the Area Manager returns goes to
+                  the FE, who sends it back to the FRT. The FE still proposes Non-Doable (D) on such a GP. A GP without
+                  an FRT account on the ticket is reported by the FE exactly as before (tickets created earlier too).
 Nothing here closes a ticket – only an admin does (service.close).
 """
 
@@ -72,6 +80,19 @@ CATEGORIES: dict[str, str] = {
 }
 ACHIEVED_CATEGORY = "E"
 NO_AM = "No Area Manager"  # the circle's GPs whose matrix AM is blank / "Vacant…" (one group per circle)
+# FRT team: what the FRT may choose (Non-Doable – Proposed stays with the FE) and the FRT → FE steps before the AM
+FRT_CATEGORIES = ("A", "C")
+FRT_OPEN = ("PENDING_FE", "RETURNED_FRT")  # not yet verified by the FE – the Area Manager cannot act on the GP
+FRT_STAGE_LABEL = {"PENDING_FE": "Pending FE Verification (FRT submitted)", "RETURNED_FRT": "Returned to FRT by FE"}
+FE_STEPS = {"FE_VERIFY": "Verified by FE – sent to the Area Manager", "FE_RETURN": "Returned to FRT by FE"}
+
+
+def frt_norm(v: Any) -> str | None:
+    """FRT code as compared everywhere: spaces collapsed, upper case; blank / "0" / "Vacant…" = no FRT."""
+    from ..analytics.escalation import is_vacant
+
+    t = _text(v)
+    return None if t is None or t == "0.0" or is_vacant(t) else t.upper()[:60]
 
 
 def category_label(code: str | None) -> str | None:
@@ -117,7 +138,8 @@ def _directory(store: Store) -> tuple[pd.DataFrame, str]:
     ba = col("ba")
     ba = ba.where(ba.notna(), g["ba"] if "ba" in g.columns else None)
     return pd.DataFrame(
-        {"am": names, "email": col("am_email").map(_mail), "ba": ba, "fe": col("fe_name").map(fe_label), "fe_email": col("fe_email").map(_mail)}, index=g.index
+        {"am": names, "email": col("am_email").map(_mail), "ba": ba, "fe": col("fe_name").map(fe_label), "fe_email": col("fe_email").map(_mail), "frt": col("frt_code").map(frt_norm)},
+        index=g.index,
     ), source
 
 
@@ -159,19 +181,50 @@ def fe_assigned(g: Any, keys: set[tuple[str, str]]) -> bool:
     return g is not None and g.fe_name is not None and fe_key(g.fe_name, g.fe_email) in keys
 
 
+@dataclass(frozen=True)
+class FrtScope:
+    """One FRT team's part of a task: the GPs whose FRT code (Escalation Matrix, at creation) is the account's code."""
+
+    code: str
+    name: str
+
+    def owns(self, g: Any) -> bool:
+        return g is not None and frt_norm(g.frt_code) == self.code
+
+
+def frt_owner_codes(db: Session, t: Ticket) -> set[str]:
+    """FRT codes with a working FRT account on this ticket: their GPs are reported by the FRT and verified by the FE."""
+    from ..models import TicketRecipient
+
+    rs = db.scalars(select(TicketRecipient.frt_code).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FRT", TicketRecipient.user_id.is_not(None), TicketRecipient.can_work.is_(True)))
+    return {c for c in (frt_norm(x) for x in rs) if c}
+
+
+def frt_assigned(g: Any, codes: set[str]) -> bool:
+    return g is not None and frt_norm(g.frt_code) in codes if codes else False
+
+
+def frt_stage_open(g: Any) -> bool:
+    """The FRT's Daily Achievement is not verified by the FE yet (the Area Manager waits)."""
+    return g is not None and g.frt_stage in FRT_OPEN and g.review in (None, "RETURNED")
+
+
 def _is_photo(u: Any) -> bool:
     from pathlib import Path
 
     return Path(files.clean_name(getattr(u, "file_name", None))).suffix.lower() in PHOTO_EXTS
 
 
-def scope_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | None:
-    """The FE part a user may see of this ticket: None = the whole ticket (admins, Area Manager, CBH, SME, others)."""
+def scope_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | FrtScope | None:
+    """The FE / FRT part a user may see of this ticket: None = the whole ticket (admins, Area Manager, CBH, SME, others)."""
     if user.is_admin:
         return None
     from ..models import TicketRecipient
 
     r = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.user_id == user.id).limit(1)).first()
+    if r is not None and r.role == "FRT":
+        code = frt_norm(r.frt_code)
+        return FrtScope(code, r.name) if code else FrtScope("\0", r.name)  # no code = no GP (never the whole ticket)
     return FeScope(r.name, r.fe_mail) if r is not None and r.role == "FE" else None
 
 
@@ -235,7 +288,7 @@ def reviewer_view(db: Session, t: Ticket, user: CurrentUser) -> ReviewerView | N
 sme_view = reviewer_view  # used by review.apply: an SME / COH acts only on the GPs handed to them
 
 
-def view_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | ReviewerView | None:
+def view_of(db: Session, t: Ticket, user: CurrentUser) -> FeScope | FrtScope | ReviewerView | None:
     """What a user may SEE of a task (detail, proof documents, workbooks): a Field Engineer their GPs, an SME / COH the
     GPs forwarded to them, everyone else the whole task. (Daily progress keeps using scope_of – FE or Area Manager.)"""
     return scope_of(db, t, user) or reviewer_view(db, t, user)
@@ -273,7 +326,7 @@ def area_managers(db: Session, store: Store, week_code: str) -> dict[str, Any]:
 def _task_rows(store: Store, d: pd.DataFrame, am: str | None, start: dt.date, end: dt.date) -> pd.DataFrame:
     """GP rows of the plan that belong to a task of the week (all AMs when am is None)."""
     p = store.amc_plan
-    cols = ["am", "kind", "planned", "ready", "amc", "category", "fe", "fe_email"]
+    cols = ["am", "kind", "planned", "ready", "amc", "category", "fe", "fe_email", "frt"]
     if p.empty:
         return pd.DataFrame(columns=cols)
     amc = store.gps["amc_date"].reindex(p.index)
@@ -282,6 +335,7 @@ def _task_rows(store: Store, d: pd.DataFrame, am: str | None, start: dt.date, en
         {
             "am": d["am"].reindex(p.index), "planned": p["planned_date"].map(_d), "ready": p["ach_date"].map(_d), "amc": amc.map(_d), "category": p["category"],
             "fe": d["fe"].reindex(p.index) if "fe" in d.columns else none, "fe_email": d["fe_email"].reindex(p.index) if "fe_email" in d.columns else none,
+            "frt": d["frt"].reindex(p.index) if "frt" in d.columns else none,
         },
         index=p.index,
     )
@@ -392,6 +446,7 @@ def preview(
                 "gap": 1 - base,
                 "feName": _str(r["fe"]),
                 "feEmail": _str(r["fe_email"]),
+                "frtCode": frt_norm(r["frt"]),
             }
         )
     return out
@@ -432,6 +487,13 @@ def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: l
         fes.append({"name": s["name"], "email": s["mappedEmail"], "emails": s["emails"], **_figures([x for x in rows if owns(x)], ready_by, amc_by, [x for x in back if owns(x)])})
     unmapped = [x for x in rows if not x["feName"]]
     unmapped_back = [x for x in back if not x["feName"]]
+    # FRT-wise: the GPs of each FRT code (Escalation Matrix) – an FRT account with that code joins the ticket and reports
+    # them (the API adds who has a login); GPs without an FRT code stay with their FE
+    frts = []
+    for code in sorted({x.get("frtCode") for x in rows + back if x.get("frtCode")}):
+        mine, mine_back = [x for x in rows if x.get("frtCode") == code], [x for x in back if x.get("frtCode") == code]
+        frts.append({"code": code, "fes": sorted({x["feName"] for x in mine + mine_back if x["feName"]}), **_figures(mine, ready_by, amc_by, mine_back)})
+    no_frt, no_frt_back = [x for x in rows if not x.get("frtCode")], [x for x in back if not x.get("frtCode")]
     page = None
     if circle and am != NO_AM and not with_no_am:  # the AMC Conversion table knows only the matrix AMs' own GPs
         ckey = " ".join(circle.split()).lower()
@@ -447,6 +509,8 @@ def breakdown(store: Store, am: str, week_code: str, circle: str | None, rows: l
         "am": {"name": am, **_figures(rows, ready_by, amc_by, back)},
         "fes": fes,
         "unmapped": _figures(unmapped, ready_by, amc_by, unmapped_back) if unmapped or unmapped_back else None,
+        "frts": frts,
+        "noFrt": _figures(no_frt, ready_by, amc_by, no_frt_back) if frts and (no_frt or no_frt_back) else None,
         "page": page,
         "definitions": [
             f"Weekly Target = GPs whose Planned Date falls in Week {w.number} ({w.start:%d %b} – {w.end:%d %b %Y}) – only these GPs are in the ticket; Backlog = Planned Date before the week, no AMC Date before it (information only, not in the target).",
@@ -502,7 +566,7 @@ def attach(
             TicketTaskGp(
                 ticket_id=t.id, sort=r["sort"], gp_code=r["gpCode"], gp_name=r["gpName"], circle=r["circle"], business_area=r["businessArea"], district=r["district"], block=r["block"],
                 kind=r["kind"], category=r["category"], planned_date=_iso(r["plannedDate"]), ready_date=_iso(r["readyDate"]), amc_date=_iso(r["amcDate"]), target=1, base_achieved=r["achieved"], reported=0,
-                fe_name=r["feName"], fe_email=r["feEmail"],
+                fe_name=r["feName"], fe_email=r["feEmail"], frt_code=r.get("frtCode"),
             )
         )
     db.flush()
@@ -571,7 +635,7 @@ def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last
             r["returnedGps"] += 1
         elif g.review is not None:
             r["approvedGps"] += 1
-        elif g.gp_category == "A":
+        elif g.gp_category == "A" and not frt_stage_open(g):
             r["awaitingGps"] += 1
         r["addedGps"] += g.kind == "ADDED"
         if g.gp_category in CATEGORIES:
@@ -589,11 +653,46 @@ def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last
     return [r | {"gap": r["target"] - r["achieved"], "lastUpdated": iso(r["lastUpdated"])} for r in rows]
 
 
+def _frt_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last_update: dict[int, Any], frt_people: dict[str, list[str]], iso) -> list[dict[str, Any]]:
+    """FRT-wise target and progress of a task: one row per FRT code of the GPs (GPs without an FRT are not listed –
+    their FE reports them). `frt_people` = FRT code -> names of the FRT accounts on the ticket (empty = no account)."""
+    out: dict[str, dict[str, Any]] = {}
+    for g in gps:
+        code = frt_norm(g.frt_code)
+        if code is None:
+            continue
+        r = out.setdefault(
+            code,
+            {"code": code, "names": frt_people.get(code, []), "recipient": code in frt_people, "fes": set(), "gps": 0, "target": 0, "achieved": 0, "doneGps": 0, "pendingGps": 0,
+             "proofFiles": 0, "lastUpdated": None, "categories": dict.fromkeys(CATEGORIES, 0), "notClassified": 0, "pendingFe": 0, "returnedFrt": 0, "verified": 0},
+        )
+        r["gps"] += 1
+        if g.fe_name:
+            r["fes"].add(g.fe_name)
+        r["target"] += g.target
+        r["achieved"] += cumulative(g)
+        r["doneGps" if gp_status(g) == "DONE" else "pendingGps"] += 1
+        r["proofFiles"] += len(files_of_gp.get(g.id, []))
+        if g.gp_category in CATEGORIES:
+            r["categories"][g.gp_category] += 1
+        else:
+            r["notClassified"] += 1
+        if frt_stage_open(g):
+            r["pendingFe" if g.frt_stage == "PENDING_FE" else "returnedFrt"] += 1
+        elif g.frt_stage == "FE_VERIFIED":
+            r["verified"] += 1
+        when = last_update.get(g.id)
+        if when is not None and (r["lastUpdated"] is None or when > r["lastUpdated"]):
+            r["lastUpdated"] = when
+    rows = sorted(out.values(), key=lambda r: r["code"])
+    return [r | {"fes": sorted(r["fes"]), "gap": r["target"] - r["achieved"], "lastUpdated": iso(r["lastUpdated"])} for r in rows]
+
+
 def _utc(v: dt.datetime | None) -> dt.datetime | None:
     return None if v is None else (v if v.tzinfo else v.replace(tzinfo=dt.UTC))  # SQLite: naive UTC
 
 
-def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) -> dict[str, Any] | None:
+def task_json(db: Session, t: Ticket, scope: FeScope | FrtScope | SmeView | None = None) -> dict[str, Any] | None:
     """The task as one viewer sees it: `scope` = a Field Engineer (only their GPs, proof files and history lines) or an
     SME (only the GPs the Area Manager forwarded to them)."""
     task = db.get(TicketTask, t.id)
@@ -661,6 +760,21 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         b["achieved"] += cumulative(g)
     fe_recipients = {fe_key(r.name, r.fe_mail) for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FE"))}
     owner_keys = fe_owner_keys(db, t)
+    frt_recs = list(db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FRT").order_by(TicketRecipient.name)))
+    frt_people: dict[str, list[str]] = {}
+    for r in frt_recs:
+        if frt_norm(r.frt_code) and r.user_id is not None and r.can_work:
+            frt_people.setdefault(frt_norm(r.frt_code), []).append(r.name)
+    frt_codes = set(frt_people)
+    frt_users = {r.user_id for r in frt_recs if r.user_id is not None}
+    # the FE's latest check of the FRT's Daily Achievement per GP (FE_VERIFY / FE_RETURN)
+    from ..models import TicketGpReview
+
+    frt_check: dict[int, dict[str, Any]] = {}
+    if mine:
+        for x in db.scalars(select(TicketGpReview).where(TicketGpReview.ticket_id == t.id, TicketGpReview.action.in_(tuple(FE_STEPS))).order_by(TicketGpReview.at, TicketGpReview.id)):
+            if x.task_gp_id in mine:
+                frt_check[x.task_gp_id] = {"action": x.action, "label": FE_STEPS[x.action], "by": x.actor_name, "role": x.role, "remark": x.remark, "at": iso(x.at)}
     trail = rv.trails(db, t, mine, iso)
     from . import nondoable as nd
 
@@ -692,7 +806,7 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         return {
             "feName": g.fe_name,
             "submittedBy": last.submitted_by_name,
-            "submittedByRole": "FE" if last.submitted_by_id in fe_users else "AM",
+            "submittedByRole": "FRT" if last.submitted_by_id in frt_users else "FE" if last.submitted_by_id in fe_users else "AM",
             "category": own[idx].category,
             "remark": next((ln.remark for ln in reversed(window) if ln.remark), None),
             "submittedAt": iso(last.submitted_at),
@@ -711,6 +825,9 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
 
     if isinstance(scope, FeScope):
         scope_out: dict[str, Any] | None = {"kind": "FE", "fieldEngineer": scope.name, "email": scope.mail}
+    elif isinstance(scope, FrtScope):
+        scope_out = {"kind": "FRT", "fieldEngineer": None, "email": None, "frtCode": scope.code if scope.code != "\0" else None, "frtName": scope.name,
+                     "fes": sorted({g.fe_name for g in gps if g.fe_name})}
     elif isinstance(scope, ReviewerView):
         # the reviewer's KPIs: the ticket's GP count (a number only – no GP of others) against the GPs handed to them
         ticket_gps = db.scalar(select(func.count()).select_from(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id)) or 0
@@ -730,6 +847,8 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         # a Field Engineer's / SME's view: only their GPs; everyone else sees the whole task with the FE-wise split
         "scope": scope_out,
         "fes": [] if scope is not None else _fe_summary(gps, files_of_gp, last_update, fe_recipients, iso),
+        # FRT-wise target and progress (whole task, or an FE's own GPs; none in an FRT's / reviewer's view)
+        "frts": _frt_summary(gps, files_of_gp, last_update, frt_people, iso) if scope is None or isinstance(scope, FeScope) else [],
         "circle": task.circle,
         "cbhName": task.cbh_name,
         "week": {"id": task.week_code, "start": task.week_start.isoformat(), "end": task.week_end.isoformat()},
@@ -743,7 +862,8 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
             "addedGps": sum(g.kind == "ADDED" for g in gps),
             # review chain: awaiting = Rectification Done by the FE, not yet approved or returned by the Area Manager
             "review": {
-                "awaiting": sum(g.review is None and g.gp_category == "A" for g in gps), "returned": reviewed.count("RETURNED"),
+                "awaiting": sum(g.review is None and g.gp_category == "A" and not frt_stage_open(g) for g in gps), "returned": reviewed.count("RETURNED"),
+                "pendingFe": sum(frt_stage_open(g) and g.frt_stage == "PENDING_FE" for g in gps), "returnedFrt": sum(frt_stage_open(g) and g.frt_stage == "RETURNED_FRT" for g in gps),
                 "amApproved": reviewed.count("AM_APPROVED"), "smeForwarded": reviewed.count("SME_FORWARDED"),
                 "smeReturned": reviewed.count("SME_RETURNED"), "cohReturned": reviewed.count("COH_RETURNED"),
                 "letterSubmitted": reviewed.count("LETTER_SUBMITTED"), "amcConverted": reviewed.count("AMC_CONVERTED"),
@@ -766,6 +886,8 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
                 "sentBack": public(records.get(g.id, {}).get("sentBack")),
                 # an FE of this ticket (dashboard account) reports this GP – the Area Manager only reviews / reassigns it
                 "feAssigned": fe_assigned(g, owner_keys),
+                # FRT team of the GP: an FRT account of the ticket reports it, the FE verifies it (frtStage) before the AM
+                "frtCode": g.frt_code, "frtAssigned": frt_assigned(g, frt_codes), "frtStage": g.frt_stage, "frtCheck": frt_check.get(g.id),
             }
             for g in gps
         ],
@@ -776,7 +898,7 @@ def task_json(db: Session, t: Ticket, scope: FeScope | SmeView | None = None) ->
         "ndPending": [
             {"caseId": c.id, "ref": c.ref, "gpId": c.task_gp_id, "gpCode": c.gp_code, "status": c.status, "label": nd.STATUS_LABEL[c.status]}
             for c in nd.forms_pending(db, t.id, {g.id for g in gps if (scope.owns(g) if isinstance(scope, FeScope) else not fe_assigned(g, owner_keys))})
-        ] if not isinstance(scope, ReviewerView) else [],
+        ] if not isinstance(scope, (ReviewerView, FrtScope)) else [],  # the E1 / E2 forms are the FE's, never the FRT's
         "latestSubmission": iso(subs[0].submitted_at) if subs else None,
         "history": [{"id": s.id, "submittedAt": iso(s.submitted_at), "submittedBy": s.submitted_by_name, "note": s.note, "lines": by_sub.get(s.id, [])} for s in subs],
     }
@@ -836,12 +958,18 @@ def submit_progress(
         raise TaskError(404, "This ticket has no GP-wise task")
     gps = {g.id: g for g in _gps(db, t.id)}
     scope = scope_of(db, t, user)
-    role = "FE" if scope is not None else "AM"
+    frt = scope if isinstance(scope, FrtScope) else None
+    role = "FRT" if frt is not None else "FE" if scope is not None else "AM"
     fe_keys = fe_owner_keys(db, t) if scope is None else set()
+    frt_codes = frt_owner_codes(db, t) if frt is None else set()
+    if frt is not None and new_gps:
+        raise TaskError(403, "An FRT cannot add GPs to the ticket – ask your Field Engineer to add the GP")
+    # the FE proposes Non-Doable (D) on a GP the FRT reports – the only Daily Achievement the FE gives such a GP
+    nd_items = {int(it.get("taskGpId", 0)) for it in items if it.get("category") == "D"} if frt is None and scope is not None else set()
 
     # a Non-Doable case of the submitter's own GPs still waiting for their E1 / E2 forms: no Daily Achievement before
-    # those are submitted (the case is opened from Non-Doable Cases)
-    mine_ids = {g.id for g in gps.values() if (scope.owns(g) if scope is not None else not fe_assigned(g, fe_keys))}
+    # those are submitted (the case is opened from Non-Doable Cases). The forms are the FE's – an FRT is not blocked.
+    mine_ids = {g.id for g in gps.values() if (scope.owns(g) if scope is not None else not fe_assigned(g, fe_keys) and not frt_assigned(g, frt_codes))} if frt is None else set()
     waiting = nd.forms_pending(db, t.id, mine_ids)
     if waiting:
         refs = ", ".join(f"{c.ref} (GP {c.gp_code})" for c in waiting[:5]) + (f" … (+{len(waiting) - 5})" if len(waiting) > 5 else "")
@@ -854,6 +982,14 @@ def submit_progress(
             raise TaskError(
                 403, f"GP {g.gp_code} is assigned to FE {g.fe_name} – only the FE submits its Daily Achievement. Review it with Approve / Return, or use Reassign FE."
             )
+        if scope is None and frt_assigned(g, frt_codes):  # nor the GP of an FRT of the ticket
+            raise TaskError(403, f"GP {g.gp_code} is reported by FRT {g.frt_code} and verified by the FE – only the FRT submits its Daily Achievement")
+        if frt is None and scope is not None and frt_assigned(g, frt_codes) and g.id not in nd_items:
+            raise TaskError(
+                403, f"GP {g.gp_code} is reported by FRT {g.frt_code} – check the FRT's Daily Achievement with Verify / Return to FRT (you only propose Non-Doable on it)"
+            )
+        if frt is not None and g.frt_stage == "FE_VERIFIED":
+            raise TaskError(409, f"GP {g.gp_code} was verified by your FE and sent to the Area Manager – it comes back to you only if the FE returns it")
         if g.review in rv.LOCKED:
             raise TaskError(409, f"GP {g.gp_code} is {rv.REVIEW_LABEL[g.review]} – it can no longer be changed in the daily progress")
         try:
@@ -916,6 +1052,8 @@ def submit_progress(
                 raise TaskError(422, f"GP {g.gp_code}: choose one of the categories A–E")
             if cat not in rv.FE_CATEGORIES:
                 raise TaskError(422, f"GP {g.gp_code}: {fe_only}")
+            if frt is not None and cat not in FRT_CATEGORIES:
+                raise TaskError(422, f"GP {g.gp_code}: the FRT chooses Rectification Done or Revisit Required – Non-Doable is proposed by the FE")
             if it.get("status") is not None or it.get("achievedToday") is not None:
                 raise TaskError(422, f"GP {g.gp_code}: send either a category or Done / Pending, not both")
             new_cat = None if cat == g.gp_category else cat
@@ -926,10 +1064,13 @@ def submit_progress(
                     raise TaskError(exc.status, exc.message) from None
             delta = ((1 if cat == ACHIEVED_CATEGORY else 0) - g.reported) if new_cat else 0
             if new_cat or gid in files_of or (remark and remark != (g.remarks or None)) or edits:
-                if new_cat or g.review == "RETURNED":  # a Daily Achievement (or a corrected returned GP back to the AM)
+                # a Daily Achievement (or a corrected returned GP back to the AM / FE)
+                if new_cat or g.review == "RETURNED" or (frt is not None and g.frt_stage == "RETURNED_FRT"):
                     evidence(f"GP {g.gp_code}", remark, files_of.get(gid, []))
                 changes.append((g, delta, remark, new_cat, edits))
             continue
+        if frt is not None and (it.get("status") is not None or it.get("achievedToday") is not None):
+            raise TaskError(422, f"GP {g.gp_code}: choose the Daily Achievement (Rectification Done or Revisit Required)")
         status = it.get("status")
         today = int(it.get("achievedToday") or 0)
         if status is not None:
@@ -946,7 +1087,8 @@ def submit_progress(
         if status == "PENDING" and cumulative(g) >= g.target:
             raise TaskError(422, f"GP {g.gp_code} has already reached its target – it cannot be marked Pending")
         if today or status == "PENDING" or gid in files_of or (remark and remark != (g.remarks or None)) or edits:
-            if today or status is not None or g.review == "RETURNED":  # the older Done / Pending form is a Daily Achievement too
+            # the older Done / Pending form is a Daily Achievement too
+            if today or status is not None or g.review == "RETURNED" or (frt is not None and g.frt_stage == "RETURNED_FRT"):
                 evidence(f"GP {g.gp_code}", remark, files_of.get(gid, []))
             changes.append((g, today, remark, None, edits))
     for gid in files_of:  # a proof for a GP without a status / remark change still makes a line of the day
@@ -1019,6 +1161,7 @@ def submit_progress(
             rv.record(db, t, g, user, role, "ADD", f"Added by {user.name}" + ("" if m is not None else " – not in the master data"), at)
             changes.append((g, 0, a["remark"], a["cat"], []))
         returned = 0
+        to_fe: list[TicketTaskGp] = []  # FRT: GPs now waiting for the FE's verification
         cases: list[tuple[TicketTaskGp, Any]] = []
         for g, delta, remark, new_cat, edits in changes:
             before = cumulative(g)
@@ -1031,9 +1174,16 @@ def submit_progress(
                 for field, _label, _old, new in edits:
                     setattr(g, field, new)
                 rv.record(db, t, g, user, role, "EDIT", "; ".join(f"{label}: {old or '—'} → {new or '—'}" for _f, label, old, new in edits), at)
-            if g.review == "RETURNED":  # corrected by the FE: back to the Area Manager
+            if frt is not None:
+                # the FRT's Daily Achievement (or its correction) goes to the FE first – the FE sends it to the AM
+                if new_cat or g.frt_stage == "RETURNED_FRT":
+                    g.frt_stage = "PENDING_FE"
+                    to_fe.append(g)
+            elif g.review == "RETURNED":  # corrected by the FE: back to the Area Manager
                 g.review, g.review_at = None, at
                 returned += 1
+            if frt is None and new_cat == "D" and g.frt_stage is not None:  # the FE proposes Non-Doable: out of the FRT step
+                g.frt_stage = None
             today = 1 if cumulative(g) > before else 0  # 1 = became achieved with this line
             done += today
             ln = TicketProgressLine(progress_id=sub.id, task_gp_id=g.id, achieved_today=today, cumulative=cumulative(g), gap=g.target - cumulative(g), remark=remark, category=new_cat)
@@ -1062,7 +1212,15 @@ def submit_progress(
         extra += f" · Non-Doable proposed: {', '.join(f'{c.ref} (GP {g.gp_code})' for g, c in cases)}" if cases else ""
         _event(db, t, user, "PROGRESS", t.status, t.status, f"Daily progress: {what}, {len(changes)} GP line{'s' if len(changes) != 1 else ''}{proof}{extra} · {achieved}/{total} achieved")
         _notify(db, _reviewers(db, t), t, "PROGRESS", f"{t.code}: daily progress", f"{user.name} submitted daily progress – {achieved} of {total} GPs achieved.")
-        if scope is not None:  # an FE reported: their Area Manager follows it too (dashboard + e-mail)
+        if frt is not None:  # an FRT reported: their FE verifies it (dashboard notification)
+            fe_ids = rv._fe_users(db, t, to_fe or [g for g, *_ in changes]) - {user.id}
+            if to_fe:
+                codes = ", ".join(g.gp_code for g in to_fe[:10]) + (f" … (+{len(to_fe) - 10})" if len(to_fe) > 10 else "")
+                _notify(db, fe_ids, t, "PROGRESS", f"{t.code}: FRT {frt.code} – verify the Daily Achievement",
+                        f"FRT {frt.name} ({frt.code}) submitted the Daily Achievement of {len(to_fe)} GP{'s' if len(to_fe) != 1 else ''} ({codes}). Check the proof and remark, then Verify (to the Area Manager) or Return to FRT.")
+            else:
+                _notify(db, fe_ids, t, "PROGRESS", f"{t.code}: FRT {frt.code} daily progress", f"FRT {frt.name} ({frt.code}) updated {len(changes)} GP line{'s' if len(changes) != 1 else ''}{extra}.")
+        elif scope is not None:  # an FE reported: their Area Manager follows it too (dashboard + e-mail)
             from ..models import TicketRecipient
 
             ams = set(db.scalars(select(TicketRecipient.user_id).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "AM", TicketRecipient.user_id.is_not(None))))
@@ -1146,7 +1304,138 @@ def reassign_gp(db: Session, t: Ticket, user: CurrentUser, gp_id: int, recipient
     return g
 
 
-def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: FeScope | SmeView | None = None) -> bytes:
+MAX_FE_STEP_GPS = 500
+
+
+def fe_check(db: Session, t: Ticket, user: CurrentUser, gp_ids: list[int], action: str, remark: str | None) -> int:
+    """The FE checks the FRT's Daily Achievement (proof + remark) of one or more of their GPs (all or none):
+    FE_VERIFY  the GP goes to the Area Manager (frt_stage FE_VERIFIED; a GP the AM had returned is with the AM again)
+    FE_RETURN  back to the FRT with the reason (RETURNED_FRT) – also a GP the Area Manager returned to the FE.
+    A remark is required. Admins may do it too (recorded as ADMIN). Each step is a TicketGpReview row (GP history)."""
+    from ..models import TicketGpReview, TicketRecipient
+    from . import nondoable as nd
+    from . import review as rv
+    from .service import _event, _notify, _reviewers, now
+
+    if action not in FE_STEPS:
+        raise TaskError(422, "Unknown step")
+    if t.status == "CLOSED":
+        raise TaskError(409, "This ticket is closed – no more steps")
+    if db.get(TicketTask, t.id) is None:
+        raise TaskError(404, "This ticket has no GP-wise task")
+    scope = scope_of(db, t, user)
+    fe = scope if isinstance(scope, FeScope) else None
+    if fe is None and not user.is_admin:
+        raise TaskError(403, "Only the Field Engineer of these GPs verifies the FRT's Daily Achievement")
+    text = (remark or "").strip()[:MAX_REMARK] or None
+    if text is None or len(text) < MIN_REMARK:
+        raise TaskError(422, "Write your check remark (at least 3 characters)" if action == "FE_VERIFY" else "Write the reason for returning the GP to the FRT")
+    ids = list(dict.fromkeys(int(i) for i in gp_ids))
+    if not ids or len(ids) > MAX_FE_STEP_GPS:
+        raise TaskError(422, f"Select between 1 and {MAX_FE_STEP_GPS} GPs")
+    # FOR UPDATE (PostgreSQL): a GP is never verified / returned twice by two simultaneous requests
+    gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id, TicketTaskGp.id.in_(ids)).with_for_update()))
+    if len(gps) != len(ids) or (fe is not None and not all(fe.owns(g) for g in gps)):
+        raise TaskError(422, "A selected GP is not one of your GPs in this ticket")
+    for g in gps:
+        c = nd.open_case(db, g.id)
+        if c is not None:
+            raise TaskError(409, f"GP {g.gp_code} is in Non-Doable case {c.ref} – it is handled in Non-Doable Cases")
+        if g.review in rv.LOCKED:
+            raise TaskError(409, f"GP {g.gp_code} is {rv.REVIEW_LABEL[g.review]} – it can no longer be changed")
+        if action == "FE_VERIFY" and not (g.frt_stage == "PENDING_FE" and g.review in (None, "RETURNED")):
+            raise TaskError(409, f"GP {g.gp_code} is not waiting for your verification – the FRT has not submitted it (again). Reload the ticket.")
+        if action == "FE_RETURN" and not ((g.frt_stage == "PENDING_FE" and g.review in (None, "RETURNED")) or (g.frt_stage == "FE_VERIFIED" and g.review == "RETURNED")):
+            raise TaskError(409, f"GP {g.gp_code} cannot be returned to the FRT now – only a GP the FRT submitted, or one the Area Manager returned. Reload the ticket.")
+    at = now()
+    role = "FE" if fe is not None else "ADMIN"
+    for g in gps:
+        if action == "FE_VERIFY":
+            g.frt_stage = "FE_VERIFIED"
+            if g.review == "RETURNED":  # corrected and checked again: back with the Area Manager
+                g.review, g.review_at = None, at
+        else:
+            g.frt_stage = "RETURNED_FRT"
+        db.add(TicketGpReview(ticket_id=t.id, task_gp_id=g.id, role=role, action=action, category=g.gp_category, remark=text, actor_id=user.id, actor_name=user.name, at=at))
+    n = len(gps)
+    codes = ", ".join(g.gp_code for g in gps[:10]) + (f" … (+{n - 10})" if n > 10 else "")
+    word = f"{n} GP{'s' if n != 1 else ''}"
+    _event(db, t, user, "REVIEW", t.status, t.status, f"{FE_STEPS[action]}: {word} ({codes}) · {text}")
+    body = f"{user.name}: {FE_STEPS[action]} – {word} ({codes}). Remark: {text}"
+    if action == "FE_VERIFY":
+        _notify(db, rv._role_users(db, t, "AM") - {user.id}, t, "REVIEW", f"{t.code}: {word} verified by the FE – your verification", body)
+    else:
+        mine = {frt_norm(g.frt_code) for g in gps} - {None}
+        q = select(TicketRecipient.user_id, TicketRecipient.frt_code).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FRT", TicketRecipient.user_id.is_not(None))
+        frts = {u for u, c in db.execute(q) if frt_norm(c) in mine}
+        _notify(db, frts - {user.id}, t, "REVIEW", f"{t.code}: {word} returned to the FRT by the FE", body)
+    _notify(db, _reviewers(db, t) - {user.id}, t, "REVIEW", f"{t.code}: {FE_STEPS[action]}", body)
+    t.updated_at = at
+    db.commit()
+    return n
+
+
+def frt_users_for(db: Session, codes: set[str]) -> list[User]:
+    """Active dashboard accounts whose FRT code is one of these."""
+    if not codes:
+        return []
+    return [u for u in db.scalars(select(User).where(User.is_active.is_(True), User.frt_code.is_not(None)).order_by(User.name)) if frt_norm(u.frt_code) in codes]
+
+
+def add_frt_recipients(db: Session, t: Ticket, users: list[User] | None = None) -> list[Any]:
+    """Put the FRT accounts of the ticket's GPs on it (role FRT, may work, dashboard only – no e-mail): every active user
+    whose FRT code is the FRT code of a GP of the task. `users` = only these accounts. Somebody already on the ticket
+    (same e-mail, any role) is not added again. Returns the new recipients."""
+    from ..models import TicketRecipient
+
+    codes = {c for c in (frt_norm(x) for x in db.scalars(select(TicketTaskGp.frt_code).where(TicketTaskGp.ticket_id == t.id, TicketTaskGp.frt_code.is_not(None)).distinct())) if c}
+    cands = [u for u in (users if users is not None else frt_users_for(db, codes)) if u.is_active and frt_norm(u.frt_code) in codes]
+    if not cands:
+        return []
+    on = {e.lower() for e in db.scalars(select(TicketRecipient.email).where(TicketRecipient.ticket_id == t.id))}
+    out = []
+    for u in cands:
+        if u.email.lower() in on or u.id == t.created_by_id:
+            continue
+        r = TicketRecipient(
+            ticket_id=t.id, role="FRT", name=u.name[:160], email=u.email.lower(), user_id=u.id, can_work=True, attach_workbook=False, email_status="NONE", frt_code=frt_norm(u.frt_code),
+        )
+        db.add(r)
+        on.add(u.email.lower())
+        out.append(r)
+    db.flush()
+    return out
+
+
+def sync_frt_user(db: Session, user: User) -> int:
+    """After an admin set / changed / removed a user's FRT code (or (re)activated the account): the open task tickets
+    follow it – FRT rows of this account for another code are removed from open tickets, and the account is put on the
+    open tickets whose GPs have its code (notified once per ticket). Closed and deleted tickets are never changed.
+    Returns the number of tickets the user was added to."""
+    from ..models import TicketRecipient
+    from .service import _notify
+
+    code = frt_norm(user.frt_code) if user.is_active else None
+    open_ids = select(Ticket.id).where(Ticket.deleted_at.is_(None), Ticket.status != "CLOSED")
+    for r in db.scalars(select(TicketRecipient).where(TicketRecipient.user_id == user.id, TicketRecipient.role == "FRT", TicketRecipient.ticket_id.in_(open_ids))):
+        if frt_norm(r.frt_code) != code:
+            db.delete(r)
+    db.flush()
+    added = 0
+    if code:
+        tids = set(db.scalars(select(TicketTaskGp.ticket_id).where(TicketTaskGp.ticket_id.in_(open_ids), TicketTaskGp.frt_code.is_not(None))))
+        for tid in sorted(tids):
+            t = db.get(Ticket, tid)
+            if t is None or not any(frt_norm(c) == code for c in db.scalars(select(TicketTaskGp.frt_code).where(TicketTaskGp.ticket_id == tid))):
+                continue
+            if add_frt_recipients(db, t, [user]):
+                added += 1
+                _notify(db, {user.id}, t, "ASSIGNED", f"Ticket {t.code}: GPs of FRT {code}"[:200], f"You report the Daily Achievement of the GPs of FRT {code} in this ticket – your FE verifies it.")
+    db.commit()
+    return added
+
+
+def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: FeScope | FrtScope | SmeView | None = None) -> bytes:
     """GP-wise workbook: the original assignment (achieved as at creation) or the latest progress report (cumulative,
     latest remarks, proof documents, plus the daily history). Identification and target columns are protected; Remarks
     are editable. `scope` = one Field Engineer's workbook (only the GPs mapped to them and only their history lines) or
@@ -1172,7 +1461,11 @@ def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: Fe
     target_total = sum(g.target for g in gps)
     gap_total = sum(g.target - (g.base_achieved if original else cumulative(g)) for g in gps)
     fe = scope if isinstance(scope, FeScope) else None
-    who = f"FE {fe.name} ({task.am_name})" if fe is not None else (f"{scope.kind} – GPs forwarded to you ({task.am_name})" if isinstance(scope, ReviewerView) else task.am_name)
+    who = (
+        f"FE {fe.name} ({task.am_name})" if fe is not None
+        else f"FRT {scope.code} – {scope.name} ({task.am_name})" if isinstance(scope, FrtScope)
+        else f"{scope.kind} – GPs forwarded to you ({task.am_name})" if isinstance(scope, ReviewerView) else task.am_name
+    )
     ws.write_string(0, 0, f"{t.code} · {who} · Week {task.week_code[2:]} ({task.week_start:%d %b} – {task.week_end:%d %b %Y}) · {kind}", title)
     fe_part = f" · Field Engineer: {fe.name}{f' ({fe.mail})' if fe.mail else ''}" if fe is not None else ""
     ws.write_string(1, 0, f"Circle: {task.circle or '—'} · CBH: {task.cbh_name or '—'} · Area Manager: {task.am_name}{fe_part} · {len(gps)} GPs · total weekly target {target_total} · remaining gap {gap_total}", note)
@@ -1259,12 +1552,14 @@ def assignment_path(t: Ticket, task: TicketTask):
         return None
 
 
-def file_name(task: TicketTask, original: bool, scope: FeScope | SmeView | None = None) -> str:
+def file_name(task: TicketTask, original: bool, scope: FeScope | FrtScope | SmeView | None = None) -> str:
     def safe(v: str, fallback: str) -> str:
         return "".join(ch if ch.isalnum() else "_" for ch in v).strip("_")[:40] or fallback
 
     if isinstance(scope, FeScope):
         who = f"FE_{safe(scope.name, 'FieldEngineer')}"
+    elif isinstance(scope, FrtScope):
+        who = f"FRT_{safe(scope.code, 'FRT')}"
     elif isinstance(scope, ReviewerView):
         who = f"{scope.kind}_{safe(task.am_name, 'AreaManager')}"
     else:

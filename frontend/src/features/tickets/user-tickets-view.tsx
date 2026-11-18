@@ -232,6 +232,7 @@ function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) =
 const MY_ROLE: Record<Exclude<TicketDetail["myRole"], null | "ASSIGNEE">, string> = {
   AM: "Area Manager",
   FE: "FE",
+  FRT: "FRT",
   SME: "SME",
   COH: "COH",
   CBH: "CBH",

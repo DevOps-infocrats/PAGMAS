@@ -26,7 +26,7 @@ from ..analytics.store import Store
 from ..models import User
 
 ROLE_COLUMNS = {"CBH": ("cbh_name", "cbh_email"), "SME": ("shq_name", "shq_email"), "COH": ("coh_name", "coh_email")}
-ROLE_LABEL = {"CBH": "CBH", "SME": "SME", "COH": "COH", "AM": "Area Manager", "FE": "Field Engineer", "USER": "Dashboard user", "OTHER": "Other recipient"}
+ROLE_LABEL = {"CBH": "CBH", "SME": "SME", "COH": "COH", "AM": "Area Manager", "FE": "Field Engineer", "FRT": "FRT", "USER": "Dashboard user", "OTHER": "Other recipient"}
 
 
 def _key(circle: str | None) -> str:
