@@ -112,6 +112,7 @@ def test_category_is_saved_replaced_and_drives_achievement(client, fe_org, mail)
     assert s["categories"] == {"A": 0, "B": 0, "C": 0, "D": 1, "E": 1}
     # every Daily Achievement now carries the FE's photo, so both classified GPs have documents
     assert s["notClassified"] == s["total"] - 2 and s["categoryWithDocument"]["D"] == 1 and s["categoryWithDocument"]["E"] == 1
+    assert s["amcConverted"] == 1 and s["amcConvertedWithDocument"] == 1  # the GP the COH recorded as AMC converted (each GP once)
     c = client.get("/api/v1/tickets/gp-monitor", params={"category": "E", "ticket": code}).json()
     assert c["total"] == 1 and c["kpis"]["categories"]["E"] == 1
     x = c["items"][0]

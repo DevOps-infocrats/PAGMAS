@@ -88,10 +88,9 @@ def test_frt_reports_fe_verifies_am_approves(client, frt_org, mail):  # noqa: F8
     assert {x["gpCode"] for x in mine["task"]["gps"]} == set(frt_org["one"])
     assert not any(r["role"] == "FE" and r["email"] == FE2[0] for r in mine["recipients"])
     assert any(n["ticketId"] == tid for n in client.get("/api/v1/tickets/notifications").json()["items"])
-    # same evidence rule; Non-Doable and new GPs are the FE's
+    # same evidence rule (Non-Doable by the FRT: tests/test_nd_frt.py)
     assert progress(client, tid, [{"taskGpId": g, "category": "A", "remark": "Done"}], hf, photo=False).status_code == 422
-    assert progress(client, tid, [{"taskGpId": g, "category": "D"}], hf).status_code == 422
-    assert progress(client, tid, [], hf, new_gps=[{"gpCode": "ZZFRT1", "gpName": "X", "category": "A"}]).status_code == 403
+    # (the FRT may add GPs found in the field – test_frt_corrects_gp_details_and_adds_a_gp)
     other = next(x["id"] for x in d["task"]["gps"] if x["gpCode"] in frt_org["two"])
     assert progress(client, tid, [{"taskGpId": other, "category": "A"}], hf).status_code == 403  # not their GP
     r = progress(client, tid, [{"taskGpId": g, "category": "A", "remark": "Splicing done by FRT"}], hf)
@@ -106,6 +105,8 @@ def test_frt_reports_fe_verifies_am_approves(client, frt_org, mail):  # noqa: F8
     assert progress(client, tid, [{"taskGpId": g, "category": "C", "remark": "FE on behalf"}], h1).status_code == 403
     assert any("verify" in n["title"].lower() for n in client.get("/api/v1/tickets/notifications").json()["items"] if n["ticketId"] == tid)
     hv = {"X-CSRF-Token": login(client, VIEWER)}
+    am_fes = client.get(f"/api/v1/tickets/{tid}").json()["task"]["fes"]  # FE-wise table: waiting for the FE's verification
+    assert sum(f["pendingFeGps"] for f in am_fes) >= 1 and sum(f["awaitingGps"] for f in am_fes) == 0
     assert progress(client, tid, [{"taskGpId": g, "category": "A"}], hv).status_code == 403
     assert review(client, tid, {"taskGpIds": [g], "action": "AM_APPROVE", "remark": "Approve it", "to": [{"name": "Sme", "email": "frt.sme@pratap-test.in"}]}, hv).status_code == 409
 
@@ -166,13 +167,26 @@ def test_gps_without_frt_stay_with_the_fe(client, frt_org, mail):  # noqa: F811
     assert _check(client, tid, [g2["id"]], "FE_VERIFY", "nothing to verify", h2).status_code == 409
 
 
-def test_fe_still_proposes_non_doable_on_an_frt_gp(client, frt_org, mail):  # noqa: F811
+def test_fe_reports_an_frt_gp_only_while_the_frt_has_not(client, frt_org, mail):  # noqa: F811
+    """A GP with an FRT login: while the FRT has reported nothing the FE may report it itself – straight to the Area
+    Manager (no FE check); once the FRT reported it, the FE only verifies / returns it (no category, remark or proof)."""
     tid = _ticket(client, frt_org)
     h1 = {"X-CSRF-Token": login(client, FE1)}
     g = next(x for x in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"] if x["frtAssigned"])
-    r = progress(client, tid, [{"taskGpId": g["id"], "category": "D", "remark": "Pole missing on the route"}], h1)
+    # nothing from the FRT – the FE reports it, it waits for the Area Manager (not for an FE check)
+    r = progress(client, tid, [{"taskGpId": g["id"], "category": "A", "remark": "Done by the FE"}], h1)
     assert r.status_code == 200, r.text
-    assert next(x for x in r.json()["task"]["gps"] if x["id"] == g["id"])["ndCase"]["open"] is True
+    row = next(x for x in r.json()["task"]["gps"] if x["id"] == g["id"])
+    assert row["gpCategory"] == "A" and row["frtStage"] is None and row["stage"] == "PENDING_AM"
+    # the FRT reports it after all: from now on the FE only checks it
+    hf = {"X-CSRF-Token": login(client, FRT)}
+    assert progress(client, tid, [{"taskGpId": g["id"], "category": "C", "remark": "Revisit needed – FRT"}], hf).status_code == 200
+    h1 = {"X-CSRF-Token": login(client, FE1)}
+    for items in ([{"taskGpId": g["id"], "category": "D", "remark": "Pole missing on the route"}], [{"taskGpId": g["id"], "remark": "FE note"}]):
+        r = progress(client, tid, items, h1)
+        assert r.status_code == 403 and "Verify / Return" in r.json()["detail"], r.text
+    assert progress(client, tid, [], h1, extra_files=[(g["id"], ("fe.jpg", JPG, "image/jpeg"))]).status_code == 403
+    assert _gp(client, tid, g["id"])["frtStage"] == "PENDING_FE"
 
 
 def test_frt_code_in_user_management_follows_open_tickets(client, frt_org, mail, monkeypatch):  # noqa: F811
@@ -206,3 +220,55 @@ def test_generate_preview_shows_the_frt_wise_target(client, frt_org):
     frt = next(f for f in p["summary"]["frts"] if f["code"] == CODE)
     assert frt["week"]["gps"] == sum(1 for c in frt_org["one"] if c in rows) and frt["logins"] == ["Frt One"] and frt["fes"] == ["Test FE One"]
     assert p["summary"]["noFrt"]["week"]["gps"] == len(rows) - frt["week"]["gps"]
+
+
+def test_frt_corrects_gp_details_and_adds_a_gp(client, frt_org, mail):  # noqa: F811
+    """The FRT corrects GP Code / GP Name / Block of its GPs and adds a GP found in the field: the added GP gets the
+    FRT's code and the FRT's FE, and goes to that FE for verification like any FRT report."""
+    tid = _ticket(client, frt_org)
+    hf = {"X-CSRF-Token": login(client, FRT)}
+    mine = client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"]
+    g, other = mine[0], (mine[1] if len(mine) > 1 else None)
+    # invalid / duplicate codes are refused, nothing changes
+    assert progress(client, tid, [{"taskGpId": g["id"], "gpCode": "bad code!"}], hf).status_code == 422
+    if other:
+        r = progress(client, tid, [{"taskGpId": g["id"], "gpCode": other["gpCode"]}], hf)
+        assert r.status_code == 422 and "already in this ticket" in r.json()["detail"]
+    r = progress(client, tid, [{"taskGpId": g["id"], "gpCode": "FRTFIX-1", "gpName": "Corrected Name", "block": "Corrected Block"}], hf)
+    assert r.status_code == 200, r.text
+    row = _gp(client, tid, g["id"])
+    assert (row["gpCode"], row["gpName"], row["block"]) == ("FRTFIX-1", "Corrected Name", "Corrected Block")
+    with SessionLocal() as db:
+        assert any("GP Code" in (x.remark or "") for x in db.scalars(select(TicketGpReview).where(TicketGpReview.task_gp_id == g["id"])))
+
+    # a new GP (not in the master data: name required) with Rectification Done + remark + photo
+    assert progress(client, tid, new_gps=[{"gpCode": "FRTNEW-1", "category": "A"}], headers=hf).status_code == 422  # no name
+    assert progress(client, tid, new_gps=[{"gpCode": "FRTFIX-1", "gpName": "Dup", "category": "A"}], headers=hf).status_code == 422  # renamed code taken
+    r = progress(client, tid, new_gps=[{"gpCode": "FRTNEW-1", "gpName": "Field GP", "block": "Field Block", "category": "A", "remark": "Found in the field"}], headers=hf)
+    assert r.status_code == 200, r.text
+    new = next(x for x in r.json()["task"]["gps"] if x["gpCode"] == "FRTNEW-1")
+    assert new["kind"] == "ADDED" and new["frtAssigned"] and new["frtCode"] == CODE and new["feName"] == "Test FE One" and new["frtStage"] == "PENDING_FE"
+    # the FRT's FE sees it and verifies it (to the Area Manager); FE Two does not see it
+    h1 = {"X-CSRF-Token": login(client, FE1)}
+    assert any(x["id"] == new["id"] for x in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"])
+    r = _check(client, tid, [new["id"]], "FE_VERIFY", "Checked the new GP", h1)
+    assert r.status_code == 200, r.text
+    login(client, FE2)
+    assert not any(x["id"] == new["id"] for x in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"])
+
+
+def test_fe_corrects_details_of_own_gps_only(client, frt_org, mail):  # noqa: F811
+    """The FE corrects GP Code / GP Name / Block of its own GPs (no FRT login); an FRT's GP stays with the FRT."""
+    tid = _ticket(client, frt_org)
+    h2 = {"X-CSRF-Token": login(client, FE2)}  # FE Two's GPs have no FRT
+    g = client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"][0]
+    r = progress(client, tid, [{"taskGpId": g["id"], "gpCode": "FEFIX-1", "gpName": "FE Name", "block": "FE Block"}], h2)
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json()["task"]["gps"] if x["id"] == g["id"])
+    assert (row["gpCode"], row["gpName"], row["block"]) == ("FEFIX-1", "FE Name", "FE Block")
+    # an FRT's GP the FRT has reported: the FE cannot change it any more
+    login(client, FE1)
+    f = next(x for x in client.get(f"/api/v1/tickets/{tid}").json()["task"]["gps"] if x["frtAssigned"])
+    assert progress(client, tid, [{"taskGpId": f["id"], "category": "A", "remark": "Splicing done by FRT"}], {"X-CSRF-Token": login(client, FRT)}).status_code == 200
+    h1 = {"X-CSRF-Token": login(client, FE1)}
+    assert progress(client, tid, [{"taskGpId": f["id"], "gpName": "FE trying"}], h1).status_code == 403

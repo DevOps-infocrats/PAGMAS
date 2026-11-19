@@ -63,14 +63,16 @@ export function LoginForm() {
         )}
 
         <div className="space-y-1.5">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email">Email or FRT code</Label>
           <div className="relative">
             <Mail className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-subtle-foreground" aria-hidden />
             <Input
               id="email"
-              type="email"
+              type="text"
+              inputMode="email"
+              autoCapitalize="none"
               autoComplete="username"
-              placeholder="name@company.com"
+              placeholder="name@company.com or FRT code"
               className="h-11 pl-10"
               aria-invalid={!!errors.email}
               aria-describedby={errors.email ? "email-error" : undefined}

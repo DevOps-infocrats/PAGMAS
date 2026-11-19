@@ -8,6 +8,7 @@ import {
   CircleDashed,
   CircleDot,
   Download,
+  FileSpreadsheet,
   Eye,
   FileText,
   Inbox,
@@ -47,6 +48,8 @@ import { EMAIL, SendTo, type Typed } from "./ticket-review";
 const MGG = "Corporate Team – MGG";
 
 const STATUS_CLS: Record<NdStatus, string> = {
+  FRT_PROPOSED: "bg-warning-soft text-warning-text",
+  PENDING_FE: "bg-warning-soft text-warning-text",
   PROPOSED: "bg-warning-soft text-warning-text",
   E1_DONE: "bg-warning-soft text-warning-text",
   PENDING_AM: "bg-primary-soft text-primary",
@@ -64,6 +67,7 @@ const STATUS_CLS: Record<NdStatus, string> = {
 const FILTERS = [
   { value: "all", label: "All cases" },
   { value: "open", label: "Open (in the workflow)" },
+  { value: "with_frt", label: "With FRT (proposed by FRT)" },
   { value: "with_fe", label: "Pending with FE" },
   { value: "pending_am", label: "Pending AM review" },
   { value: "pending_sme", label: "Pending SME review" },
@@ -84,6 +88,10 @@ const ACTIONS: Record<NdAction, { label: string; title: string; icon: typeof Sen
   MGG_APPROVE: { label: "Approve Non-Doable", title: "Approve the GP as Non-Doable", icon: CheckCircle2, kind: "approve" },
   MGG_REJECT: { label: "Reject", title: "Reject the Non-Doable proposal", icon: XCircle, kind: "reject" },
   WITHDRAW: { label: "Withdraw proposal", title: "Withdraw the Non-Doable proposal", icon: X, kind: "withdraw" },
+  FRT_SUBMIT: { label: "Submit to FE", title: "Submit the Non-Doable case to your FE for review", icon: Send, kind: "forward" },
+  FRT_WITHDRAW: { label: "Withdraw proposal", title: "Withdraw the Non-Doable proposal", icon: X, kind: "withdraw" },
+  FE_FORWARD: { label: "Verify & Forward → AM", title: "Verify the FRT's Non-Doable case and forward it to the Area Manager", icon: Send, kind: "forward" },
+  FE_RETURN_FRT: { label: "Return to FRT", title: "Return the case to the FRT", icon: Undo2, kind: "return" },
 };
 
 export function NdStatusBadge({ status, label }: { status: NdStatus; label: string }) {
@@ -113,7 +121,7 @@ export function NonDoableView() {
       <PageHeader
         breadcrumbs={[{ label: "Ticket Management" }, { label: "Non-Doable Cases", href: pathname }, ...(openId ? [{ label: "Case details" }] : [])]}
         title="Non-Doable Cases"
-        description={`GPs proposed Non-Doable: FE physical verification and justification → Area Manager → SME → COH → ${MGG}.`}
+        description={`GPs proposed Non-Doable: (FRT proposal → FE review) FE physical verification and justification → Area Manager → SME → COH → ${MGG}.`}
         actions={openId ? <BackToList onBack={() => open(null)} label="Back to the cases" /> : undefined}
       />
       <NoticeBar notice={notice} onClose={() => setNotice(null)} />
@@ -136,6 +144,16 @@ export function NonDoableView() {
 /* ---------------------------------------------------------------- KPIs */
 
 const KPI_SPEC: Record<NdRole, { title: string; cards: [string, string, string][] }> = {
+  FRT: {
+    title: "FRT",
+    cards: [
+      ["total", "My Non-Doable Cases", "Cases you proposed on your GPs"],
+      ["withYou", "With You", "Fill E1 / E2 (optional) and submit to your FE"],
+      ["pendingFe", "Pending FE Review", "Submitted – your FE reviews it"],
+      ["inReview", "In Review", "With the AM / SME / COH / MGG"],
+      ["approved", "Approved", "Closed as Non-Doable"],
+    ],
+  },
   AM: {
     title: "Area Manager",
     cards: [
@@ -190,7 +208,15 @@ const KPI_SPEC: Record<NdRole, { title: string; cards: [string, string, string][
 const TONES = ["var(--series-1)", "var(--warning)", "var(--good)", "var(--critical)", "var(--series-7)"];
 const ICONS = [Inbox, CircleDot, CheckCircle2, Undo2, FileText];
 
-function Kpis({ tick }: { tick: number }) {
+/** "ROLE:card" → its title for the filter chip */
+const kpiTitle = (kpi: string) => {
+  const [role, key] = kpi.split(":") as [NdRole, string];
+  const card = KPI_SPEC[role]?.cards.find(([k]) => k === key);
+  return card ? `${KPI_SPEC[role].title} · ${card[1]}` : kpi;
+};
+
+/** Role-wise KPI cards; a click lists exactly the cases of that card below (again = all cases). */
+function Kpis({ tick, active, onPick }: { tick: number; active: string | null; onPick: (kpi: string) => void }) {
   const q = useApiQuery(`nd-summary:${tick}`, () => ndApi.getSummary());
   if (q.error)
     return (
@@ -199,7 +225,7 @@ function Kpis({ tick }: { tick: number }) {
       </Card>
     );
   const s = q.data;
-  const blocks = (["AM", "SME", "COH", "MGG", "FE"] as NdRole[]).filter((r) => s?.kpis[r]);
+  const blocks = (["AM", "SME", "COH", "MGG", "FE", "FRT"] as NdRole[]).filter((r) => s?.kpis[r]);
   if (s && !blocks.length) return null;
   return (
     <div className="space-y-4">
@@ -208,7 +234,18 @@ function Kpis({ tick }: { tick: number }) {
           <h2 className="text-[0.8125rem] font-semibold uppercase tracking-wide text-muted-foreground">{s?.isAdmin ? `${KPI_SPEC[role].title} (all cases)` : KPI_SPEC[role].title}</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {KPI_SPEC[role].cards.map(([key, label, info], i) => (
-              <MiniKpi key={key} loading={!s} icon={ICONS[i]} tone={TONES[i]} label={label} info={info} value={formatCount(s?.kpis[role]?.[key])} unit="cases" />
+              <MiniKpi
+                key={key}
+                loading={!s}
+                icon={ICONS[i]}
+                tone={TONES[i]}
+                label={label}
+                info={`${info}. Click to list these cases (and download them as Excel).`}
+                value={formatCount(s?.kpis[role]?.[key])}
+                unit="cases"
+                onClick={() => onPick(`${role}:${key}`)}
+                active={active === `${role}:${key}`}
+              />
             ))}
           </div>
         </section>
@@ -227,17 +264,27 @@ function CaseList({ tick, ticket, onOpen, onClearTicket }: { tick: number; ticke
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [mine, setMine] = useState(false);
+  const [kpi, setKpi] = useState<string | null>(null); // a KPI card's cases ("ROLE:card")
   const [page, setPage] = useState(1);
-  const q = { status: status === "all" ? undefined : status, q: search || undefined, mine, ticket: ticket ?? undefined, page, size: PAGE };
+  const filters = { status: status === "all" ? undefined : status, q: search || undefined, mine, ticket: ticket ?? undefined, kpi: kpi ?? undefined };
+  const q = { ...filters, page, size: PAGE };
   const list = useApiQuery(`nd-cases:${tick}:${JSON.stringify(q)}`, () => ndApi.listCases(q));
   const data = list.data ?? list.staleData;
   const pages = data ? Math.max(1, Math.ceil(data.total / data.size)) : 1;
-  const filtered = !!(search || status !== "all" || mine || ticket);
+  const filtered = !!(search || status !== "all" || mine || ticket || kpi);
   return (
     <>
-      <Kpis tick={tick} />
+      <Kpis
+        tick={tick}
+        active={kpi}
+        onPick={(k) => {
+          setKpi((cur) => (cur === k ? null : k));
+          setPage(1);
+          setTimeout(() => document.getElementById("nd-case-list")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+        }}
+      />
       {session?.role === "admin" && <MggMembers />}
-      <Card className="overflow-hidden p-0">
+      <Card id="nd-case-list" className="scroll-mt-20 overflow-hidden p-0">
         <form
           className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3"
           onSubmit={(e) => {
@@ -281,7 +328,20 @@ function CaseList({ tick, ticket, onOpen, onClearTicket }: { tick: number; ticke
               Ticket filter <X className="size-3" />
             </button>
           )}
-          {(search || status !== "all" || mine) && (
+          {kpi && (
+            <button
+              type="button"
+              onClick={() => {
+                setKpi(null);
+                setPage(1);
+              }}
+              className="inline-flex items-center gap-1 rounded-full bg-primary-soft px-2 py-0.5 text-[0.75rem] font-semibold text-primary"
+              title="Show all cases again"
+            >
+              Card: {kpiTitle(kpi)} <X className="size-3" />
+            </button>
+          )}
+          {(search || status !== "all" || mine || kpi) && (
             <button
               type="button"
               onClick={() => {
@@ -289,6 +349,7 @@ function CaseList({ tick, ticket, onOpen, onClearTicket }: { tick: number; ticke
                 setSearch("");
                 setStatus("all");
                 setMine(false);
+                setKpi(null);
                 setPage(1);
               }}
               className="text-[0.78125rem] font-medium text-primary hover:underline"
@@ -296,6 +357,11 @@ function CaseList({ tick, ticket, onOpen, onClearTicket }: { tick: number; ticke
               Clear
             </button>
           )}
+          <Button asChild size="sm" variant="outline" className="ml-auto">
+            <a href={ndApi.casesXlsxUrl(filters)} download title="The cases of this list (same card, search and filters) as an Excel file">
+              <FileSpreadsheet /> Download Excel
+            </a>
+          </Button>
         </form>
         {list.error ? (
           <ErrorState error={list.error} onRetry={list.reload} />
@@ -482,6 +548,7 @@ function MggMembers() {
 
 function CaseDetail({ id, tick, onChanged }: { id: number; tick: number; onChanged: (n: Notice) => void }) {
   const q = useApiQuery(`nd-case:${id}:${tick}`, () => ndApi.getCase(id));
+  const [nowMs] = useState(() => Date.now()); // the waiting time is counted from the page load
   if (q.error)
     return (
       <Card>
@@ -491,23 +558,44 @@ function CaseDetail({ id, tick, onChanged }: { id: number; tick: number; onChang
   const d = q.data;
   if (!d) return <PageSkeleton />;
   const c = d.case;
+  // since when the case waits at its current step (its latest event)
+  const lastAt = d.history.length ? d.history[d.history.length - 1].at : c.updatedAt;
+  const open = !["APPROVED", "REJECTED", "WITHDRAWN"].includes(c.status) || (c.status === "REJECTED" && !!c.pendingWith);
+  const days = open && lastAt ? Math.max(0, Math.floor((nowMs - new Date(lastAt).getTime()) / 86_400_000)) : null;
   return (
-    <div className="space-y-5">
-      <Card className="space-y-3 p-5">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 className="text-xl font-bold text-heading">{c.ref}</h2>
+    <div className="space-y-4">
+      {/* the case and the user's action – stays on top while scrolling through the evidence */}
+      <Card className="sticky top-14 z-20 space-y-2 p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <h2 className="text-lg font-bold text-heading">{c.ref}</h2>
           <NdStatusBadge status={c.status} label={c.statusLabel} />
           {c.revisitLabel && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[0.71875rem] font-semibold text-warning-text">{c.revisitLabel}</span>}
-          {c.round > 1 && <span className="text-[0.78125rem] text-muted-foreground">Round {c.round}</span>}
-          <span className="ml-auto text-[0.8125rem]">
+          {c.round > 1 && <span className="rounded-full bg-muted px-2 py-0.5 text-[0.71875rem] font-semibold">Round {c.round}</span>}
+          <span className="ml-auto flex flex-wrap items-center gap-2 text-[0.8125rem]">
             Pending with: <b className={cn("font-semibold", c.mine && "text-warning-text")}>{c.pendingWith ? (c.mine ? `You (${c.pendingWith})` : c.pendingWith) : "—"}</b>
+            {days !== null && (
+              <span className={cn("rounded-full px-2 py-0.5 text-[0.71875rem] font-semibold", days > 2 ? "bg-critical-soft text-critical-text" : "bg-muted text-foreground")} title="Days at the current step">
+                {days === 0 ? "since today" : `${days} day${days === 1 ? "" : "s"}`}
+              </span>
+            )}
           </span>
         </div>
+        <p className="text-[0.8125rem] text-muted-foreground">
+          GP <b className="font-semibold text-foreground">{d.gp.gpCode} – {d.gp.gpName}</b> · FE {c.fe ?? "—"} · AM {d.ticket.areaManager ?? "—"} ·{" "}
+          <Link href={`/dashboard/tickets/user?ticket=${d.ticket.id}`} className="font-medium text-primary hover:underline">
+            {d.ticket.code}
+          </Link>
+        </p>
+        <ActionPanel d={d} onChanged={onChanged} compact />
+      </Card>
+
+      <Tracker steps={d.tracker} forms={d.forms} />
+
+      <Card className="space-y-3 p-4">
         <dl className="grid gap-x-6 gap-y-2 text-[0.8125rem] sm:grid-cols-2 lg:grid-cols-4">
-          <Info k="GP" v={`${d.gp.gpCode} – ${d.gp.gpName}`} />
           <Info k="Block / District" v={`${d.gp.block ?? "—"} / ${d.gp.district ?? "—"}`} />
           <Info k="Circle" v={d.gp.circle} />
-          <Info k="Field Engineer" v={c.fe ?? "—"} />
+          <Info k="Proposed by" v={`${d.frtCase ? "FRT " : ""}${c.createdBy} · ${ticketDay(c.createdAt)}`} />
           <Info
             k="Original ticket"
             v={
@@ -516,12 +604,6 @@ function CaseDetail({ id, tick, onChanged }: { id: number; tick: number; onChang
               </Link>
             }
           />
-          <Info k="Area Manager" v={d.ticket.areaManager ?? "—"} />
-          <Info k="GP category now" v={d.gp.category ? CATEGORY[d.gp.category].label : "Not classified"} />
-          <Info k="Proposed by" v={`${c.createdBy} · ${ticketDay(c.createdAt)}`} />
-          <Info k="Physical verification" v={c.physicalLabel} />
-          <Info k="Evidence" v={c.evidenceLabel} />
-          <Info k="Approval" v={c.approvalLabel} />
           {c.decidedBy && <Info k={`${MGG} decision`} v={`${c.decision === "APPROVED" ? "Approved" : "Rejected"} by ${c.decidedBy} · ${ticketDay(c.decidedAt)}`} />}
         </dl>
         {c.decisionRemark && (
@@ -545,10 +627,7 @@ function CaseDetail({ id, tick, onChanged }: { id: number; tick: number; onChang
         )}
       </Card>
 
-      <Tracker steps={d.tracker} />
-      <ActionPanel d={d} onChanged={onChanged} />
-
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <Records records={d.records} />
         <History d={d} />
       </div>
@@ -575,11 +654,14 @@ const STEP_CLS = {
   skipped: "border-border bg-muted/40 text-muted-foreground",
 };
 
-function Tracker({ steps }: { steps: NdCaseDetail["tracker"] }) {
+/** E1 → E6 progress; E1 / E2 also show whether the form is complete (who filled it, what is missing). */
+function Tracker({ steps, forms }: { steps: NdCaseDetail["tracker"]; forms?: NdCaseDetail["forms"] }) {
+  const part = (stage: string) => (stage === "E1" ? forms?.e1 : stage === "E2" ? forms?.e2 : undefined);
   return (
     <ol aria-label="Progress" className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
       {steps.map((s) => {
         const Icon = STEP_ICON[s.state];
+        const f = part(s.stage);
         return (
           <li key={s.stage} className={cn("rounded-lg border px-3 py-2.5", STEP_CLS[s.state])} aria-current={s.state === "current" ? "step" : undefined}>
             <span className="flex items-center gap-1.5 text-[0.75rem] font-bold uppercase tracking-wide">
@@ -589,6 +671,11 @@ function Tracker({ steps }: { steps: NdCaseDetail["tracker"] }) {
             <span className="block text-[0.71875rem]">
               {s.state === "returned" ? "Returned – correction" : s.state === "current" ? "In progress" : s.state === "rejected" ? "Rejected" : s.by ? `${s.by} · ${ticketDay(s.at)}` : s.state === "done" ? "Done" : "—"}
             </span>
+            {f && (f.filled || s.state === "current") && (
+              <span className={cn("mt-1 block text-[0.6875rem] font-semibold", f.complete ? "text-good-text" : "text-warning-text")} title={f.missing.length ? `Missing: ${f.missing.join(", ")}` : undefined}>
+                {f.complete ? `✓ Form complete · ${f.by === "FRT" ? "FRT" : "FE"}` : f.filled ? `Incomplete – ${f.missing.length} missing` : "Form not filled yet"}
+              </span>
+            )}
           </li>
         );
       })}
@@ -604,10 +691,11 @@ type FormKind = "verify" | "justify" | "revisitCoordination" | "revisitVisit";
 export function ActionPanel({ d, onChanged, compact = false }: { d: NdCaseDetail; onChanged: (n: Notice) => void; compact?: boolean }) {
   const [form, setForm] = useState<FormKind | null>(null);
   const [action, setAction] = useState<NdAction | null>(null);
+  const optional = d.can.formMode === "optional";
   const forms: [FormKind, string][] = (
     [
-      ["verify", "E1 – Physical verification"],
-      ["justify", "E2 – Justification to AM"],
+      ["verify", optional ? "E1 – Physical verification (optional)" : "E1 – Physical verification"],
+      ["justify", optional ? "E2 – Justification (optional)" : "E2 – Justification to AM"],
       ["revisitCoordination", "Record FRT coordination"],
       ["revisitVisit", "Record new FRT site visit"],
     ] as [FormKind, string][]
@@ -655,12 +743,26 @@ export function ActionPanel({ d, onChanged, compact = false }: { d: NdCaseDetail
       {actions.map((a) => {
         const s = ACTIONS[a];
         const Icon = s.icon;
+        // the FE forwards an FRT case to the AM only with complete E1 / E2 (the backend refuses it otherwise)
+        const blocked = a === "FE_FORWARD" && !!d.forms && !d.forms.complete;
         return (
-          <Button key={a} size="sm" variant={s.kind === "forward" || s.kind === "approve" ? "primary" : "outline"} className={cn(s.kind === "reject" && "border-critical/40 text-critical-text")} onClick={() => setAction(a)} title={s.title}>
+          <Button
+            key={a}
+            size="sm"
+            variant={s.kind === "forward" || s.kind === "approve" ? "primary" : "outline"}
+            className={cn(s.kind === "reject" && "border-critical/40 text-critical-text")}
+            onClick={() => setAction(a)}
+            disabled={blocked}
+            title={blocked ? `Complete E1 / E2 first – missing: ${[...d.forms!.e1.missing, ...d.forms!.e2.missing].join(", ")}` : s.title}
+          >
             <Icon /> {s.label}
           </Button>
         );
       })}
+      {d.forms && d.can.actions.includes("FE_FORWARD") && !d.forms.complete && (
+        <span className="text-[0.78125rem] text-warning-text">Forward to AM is possible after E1 and E2 are complete.</span>
+      )}
+      {d.can.actions.includes("FRT_SUBMIT") && <span className="text-[0.78125rem] text-muted-foreground">E1 / E2 are optional for you – your FE completes them.</span>}
       {c.status === "PENDING_COH" && d.mggMembers === 0 && d.can.actions.includes("COH_FORWARD") && (
         <span className="text-[0.78125rem] text-warning-text">No {MGG} account is authorised yet – type the MGG name and e-mail in Forward.</span>
       )}
@@ -766,8 +868,11 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setV({ ...v, [k]: e.target.value });
   const val = (k: string) => (v[k] ?? "").trim();
   const hadFiles = d.records.some((r) => r.files.length > 0);
-  const missing =
-    kind === "verify"
+  // the FRT's E1 / E2: every field optional (at least one detail or file); the FE's: the mandatory fields
+  const optional = d.can.formMode === "optional" && (kind === "verify" || kind === "justify");
+  const missing = optional
+    ? !Object.values(v).some((x) => x.trim() && x !== today) && !evidence.length && !photos.length && !(kind === "verify" && (v.visitDate ?? "") !== "")
+    : kind === "verify"
       ? !val("visitDate") || val("visitorName").length < 2 || val("reason").length < 3 || val("findings").length < 3 || (!hadFiles && !evidence.length && !photos.length)
       : kind === "justify"
         ? val("justification").length < 10 || val("frtTeam").length < 3 || val("frtVisit").length < 3
@@ -781,7 +886,7 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
       const api = { verify: "verification", justify: "justification", revisitCoordination: "revisit", revisitVisit: "revisit" } as const;
       const data = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x.trim()]));
       await ndApi.submitForm(d.case.id, api[kind], data, { evidence, photos }, kind === "revisitCoordination" ? "COORDINATION" : kind === "revisitVisit" ? "VISIT" : undefined, setProgress);
-      onDone(`${FORM_META[kind].title} saved for ${d.case.ref}. Everyone concerned has been notified.`);
+      onDone(`${FORM_META[kind].title} saved for ${d.case.ref}.${optional ? " Submit the case to your FE when ready." : d.case.status === "PENDING_FE" ? " Forward to the AM when E1 and E2 are complete." : " Everyone concerned has been notified."}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the form");
       setBusy(false);
@@ -799,15 +904,20 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
       <div>
         <DialogTitle className="text-lg font-bold">{FORM_META[kind].title}</DialogTitle>
         <DialogDescription className="mt-1 text-sm text-muted-foreground">
-          {d.case.ref} · GP {d.gp.gpCode} – {d.gp.gpName}. {FORM_META[kind].desc}
+          {d.case.ref} · GP {d.gp.gpCode} – {d.gp.gpName}.{" "}
+          {optional
+            ? "Optional for the FRT – fill what you know; your FE checks and completes it before the Area Manager."
+            : d.case.status === "PENDING_FE"
+              ? "FE review: complete / correct the FRT's details (the FRT's form is kept as it is). The case stays with you until you forward it."
+              : FORM_META[kind].desc}
         </DialogDescription>
       </div>
       {(kind === "verify" || kind === "revisitVisit") && (
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={kind === "verify" ? "Physical visit date" : "FRT visit date"} required>
+          <Field label={kind === "verify" ? "Physical visit date" : "FRT visit date"} required={!optional}>
             <Input type="date" value={v.visitDate ?? ""} max={today} onChange={set("visitDate")} className="h-9" disabled={busy} />
           </Field>
-          <Field label={kind === "verify" ? "Visitor name" : "FRT visitor name"} required>
+          <Field label={kind === "verify" ? "Visitor name" : "FRT visitor name"} required={!optional}>
             <Input value={v.visitorName ?? ""} onChange={set("visitorName")} maxLength={160} className="h-9" disabled={busy} />
           </Field>
           <Field label="GP location (coordinates / landmark)">
@@ -817,23 +927,23 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
       )}
       {kind === "verify" && (
         <>
-          <Field label="Non-Doable reason" required>
+          <Field label="Non-Doable reason" required={!optional}>
             {area("reason", 2, "Why the GP cannot be done…")}
           </Field>
-          <Field label="Findings" required>
+          <Field label="Findings" required={!optional}>
             {area("findings", 3, "What was found on site…")}
           </Field>
         </>
       )}
       {kind === "justify" && (
         <>
-          <Field label="Justification" required>
+          <Field label="Justification" required={!optional}>
             {area("justification", 4, "Detailed justification (at least 10 characters)…")}
           </Field>
-          <Field label="FRT team details" required>
+          <Field label="FRT team details" required={!optional}>
             {area("frtTeam", 2, "FRT team, lead and contact…")}
           </Field>
-          <Field label="FRT visit details" required>
+          <Field label="FRT visit details" required={!optional}>
             {area("frtVisit", 2, "When the FRT visited and what they confirmed…")}
           </Field>
         </>
@@ -871,7 +981,7 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
         <FilePick label={kind === "justify" ? "Additional evidence" : "Evidence documents"} accept={EVIDENCE_ACCEPT} files={evidence} setFiles={setEvidence} disabled={busy} />
         <FilePick label="Site photographs (JPEG / PNG)" accept={PHOTO_ACCEPT} files={photos} setFiles={setPhotos} disabled={busy} />
       </div>
-      {kind === "verify" && !hadFiles && <p className="text-[0.75rem] text-muted-foreground">At least one evidence document or site photograph is required.</p>}
+      {kind === "verify" && !hadFiles && !optional && <p className="text-[0.75rem] text-muted-foreground">At least one evidence document or site photograph is required.</p>}
       {busy && progress > 0 && progress < 1 && <p className="text-[0.75rem] text-muted-foreground">Uploading… {Math.round(progress * 100)}%</p>}
       {error && (
         <p role="alert" className="rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical-text">
@@ -915,7 +1025,7 @@ function ActionForm({ d, action, onCancel, onDone }: { d: NdCaseDetail; action: 
   const typedOk = typed.filter((r) => EMAIL.test(r.email.trim()));
   const typedBad = typed.some((r) => r.email.trim() !== "" && !EMAIL.test(r.email.trim()));
   const to = toRole ? [...Object.entries(picked).map(([email, name]) => ({ name, email })), ...typedOk.map((r) => ({ name: r.name.trim() || undefined, email: r.email.trim() }))] : [];
-  const needsText = s.kind !== "approve" && s.kind !== "withdraw";
+  const needsText = s.kind !== "approve" && s.kind !== "withdraw" && action !== "FRT_SUBMIT";
   const isReason = s.kind === "return" || s.kind === "reject";
   const short = needsText && remark.trim().length < 3;
   const noTo = toRole !== null && to.length === 0;
@@ -966,7 +1076,21 @@ function ActionForm({ d, action, onCancel, onDone }: { d: NdCaseDetail; action: 
         </Field>
       )}
       {toRole && <SendTo role={toRole} contacts={q.data} loading={q.loading} failed={!!q.error} picked={picked} setPicked={setPicked} typed={typed} setTyped={setTyped} disabled={busy} />}
-      <Field label={isReason ? (action === "MGG_REJECT" ? "Rejection reason" : "Reason for returning") : s.kind === "forward" ? "Recommendation / remarks" : "Remarks (optional)"} required={needsText}>
+      {action === "FE_FORWARD" && d.forms && (
+        <p className="rounded-md bg-good-soft px-3 py-2 text-[0.8125rem] text-good-text">
+          E1 by {d.forms.e1.by} {d.forms.e1.byName} · E2 by {d.forms.e2.by} {d.forms.e2.byName} – both complete. Confirm that you verified them.
+        </p>
+      )}
+      <Field
+        label={
+          isReason
+            ? action === "MGG_REJECT" ? "Rejection reason" : "Reason for returning"
+            : action === "FE_FORWARD" ? "Your verification remark"
+            : action === "FRT_SUBMIT" ? "Remark for your FE (optional)"
+            : s.kind === "forward" ? "Recommendation / remarks" : "Remarks (optional)"
+        }
+        required={needsText}
+      >
         <textarea value={remark} onChange={(e) => setRemark(e.target.value)} rows={3} maxLength={2000} className={TEXTAREA} disabled={busy} />
       </Field>
       {error && (
@@ -991,10 +1115,11 @@ function ActionForm({ d, action, onCancel, onDone }: { d: NdCaseDetail; action: 
 /** The Non-Doable cases of this ticket waiting for the signed-in user, with the same actions as the Non-Doable Cases
  * page – e.g. the COH's Forward → Corporate Team – MGG / Return, the SME's Recommend → COH, the AM's Forward → SME. The
  * backend decides who may act (only the cases handed to this user are listed); nothing shows when none waits. */
-export function TicketNdCases({ ticketId, onStep }: { ticketId: number; onStep?: () => void }) {
+export function TicketNdCases({ ticketId, version = "", onStep }: { ticketId: number; version?: string; onStep?: () => void }) {
   const [tick, setTick] = useState(0);
   const [notice, setNotice] = useState<Notice>(null);
-  const q = useApiQuery(`nd-ticket:${ticketId}:${tick}`, () => ndApi.listCases({ ticket: ticketId, mine: true, size: 50 }));
+  // `version` changes when the ticket's open cases change (e.g. a Non-Doable just proposed in the daily progress) – reload
+  const q = useApiQuery(`nd-ticket:${ticketId}:${tick}:${version}`, () => ndApi.listCases({ ticket: ticketId, mine: true, size: 50 }));
   const items = q.data?.items ?? [];
   if (!items.length && !notice) return null;
   const changed = (n: Notice) => {
@@ -1054,100 +1179,210 @@ const RECORD_TITLE: Record<NdRecord["kind"], string> = {
   REVISIT_COORDINATION: "Revisit – FRT coordination",
   REVISIT_VISIT: "Revisit – New FRT site visit",
 };
+const RECORD_TAB: Record<NdRecord["kind"], string> = { VERIFICATION: "E1 Physical verification", JUSTIFICATION: "E2 Justification", REVISIT_COORDINATION: "FRT coordination", REVISIT_VISIT: "New FRT visit" };
+const KIND_ORDER: NdRecord["kind"][] = ["VERIFICATION", "JUSTIFICATION", "REVISIT_COORDINATION", "REVISIT_VISIT"];
 
+/** The forms in tabs (E1 / E2 / revisit); each tab shows the latest form, earlier versions (FRT / FE) one click away. */
 function Records({ records }: { records: NdRecord[] }) {
+  const kinds = KIND_ORDER.filter((k) => records.some((r) => r.kind === k));
+  const [tab, setTab] = useState<NdRecord["kind"] | null>(null);
+  const [pick, setPick] = useState<Record<string, number>>({});
+  const now = tab && kinds.includes(tab) ? tab : kinds[0];
+  const list = records.filter((r) => r.kind === now).reverse(); // newest first
+  const shown = list.find((r) => r.id === pick[now]) ?? list[0];
   return (
     <Card className="space-y-3 p-5">
       <h3 className="text-[0.9375rem] font-bold text-heading">Verification, justification and evidence</h3>
-      {records.length === 0 ? (
+      {kinds.length === 0 ? (
         <p className="text-[0.8125rem] text-muted-foreground">No form submitted yet.</p>
       ) : (
-        records.map((r) => (
-          <article key={r.id} className="space-y-2 rounded-lg border border-border p-3 text-[0.8125rem]">
-            <header className="flex flex-wrap items-baseline justify-between gap-2">
-              <b className="font-semibold">{RECORD_TITLE[r.kind]}</b>
-              <span className="text-[0.75rem] text-muted-foreground">
-                {r.by} · {ticketTime(r.at)}
-              </span>
-            </header>
-            <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
-              {r.visitDate && <Info k="Visit date" v={ticketDay(r.visitDate)} />}
-              {r.visitorName && <Info k="Visitor" v={r.visitorName} />}
-              {r.location && <Info k="GP location" v={r.location} />}
-              {r.outcome && <Info k="FRT outcome" v={CATEGORY[r.outcome].label} />}
-            </dl>
-            {(
-              [
-                ["Non-Doable reason", r.reason],
-                ["Findings", r.findings],
-                ["Justification", r.justification],
-                ["FRT team", r.frtTeam],
-                ["FRT visit", r.frtVisit],
-                ["Remarks", r.remarks],
-              ] as [string, string | null][]
-            )
-              .filter(([, x]) => x)
-              .map(([k, x]) => (
-                <p key={k} className="whitespace-pre-wrap">
-                  <span className="text-[0.71875rem] font-semibold uppercase tracking-wide text-muted-foreground">{k}: </span>
-                  {x}
-                </p>
+        <>
+          <div role="tablist" aria-label="Forms" className="flex flex-wrap gap-1 border-b border-border">
+            {kinds.map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={now === k}
+                onClick={() => setTab(k)}
+                className={cn("-mb-px border-b-2 px-3 py-1.5 text-[0.8125rem] font-semibold", now === k ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground")}
+              >
+                {RECORD_TAB[k]}
+              </button>
+            ))}
+          </div>
+          {list.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5 text-[0.75rem]">
+              <span className="text-muted-foreground">Versions:</span>
+              {list.map((r, i) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setPick((cur) => ({ ...cur, [now]: r.id }))}
+                  className={cn("rounded-full border px-2 py-0.5 font-medium", shown?.id === r.id ? "border-primary bg-primary-soft text-primary" : "border-border hover:bg-muted")}
+                >
+                  {r.role === "FRT" ? "FRT" : "FE"} · {ticketTime(r.at)}
+                  {i === 0 ? " (latest)" : ""}
+                </button>
               ))}
-            {r.files.length > 0 && <FileList files={r.files} />}
-          </article>
-        ))
+            </div>
+          )}
+          {shown && <RecordView r={shown} />}
+        </>
       )}
     </Card>
   );
 }
 
-function FileList({ files }: { files: NdFile[] }) {
+function RecordView({ r }: { r: NdRecord }) {
+  const texts = (
+    [
+      ["Non-Doable reason", r.reason],
+      ["Findings", r.findings],
+      ["Justification", r.justification],
+      ["FRT team", r.frtTeam],
+      ["FRT visit", r.frtVisit],
+      ["Remarks", r.remarks],
+    ] as [string, string | null][]
+  ).filter(([, x]) => x);
   return (
-    <ul className="space-y-1">
-      {files.map((f) => (
-        <li key={f.id} className="flex flex-wrap items-center gap-2 text-[0.78125rem]">
-          <span className={cn("rounded px-1.5 py-0.5 text-[0.65625rem] font-semibold", f.kind === "PHOTO" ? "bg-primary-soft text-primary" : "bg-muted text-foreground")}>{f.kind === "PHOTO" ? "Photo" : "Evidence"}</span>
-          <span className="min-w-0 flex-1 truncate" title={f.fileName}>
-            {f.fileName} <span className="text-muted-foreground">({fileSize(f.size)})</span>
-          </span>
-          {f.previewable && (
-            <a href={ndApi.fileUrl(f.id, true)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-              <Eye className="size-3.5" /> Preview
-            </a>
+    <article className="space-y-3 text-[0.8125rem]">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <b className="flex items-center gap-1.5 font-semibold">
+          {RECORD_TITLE[r.kind]}
+          {(r.kind === "VERIFICATION" || r.kind === "JUSTIFICATION") && (
+            <span className={cn("rounded px-1.5 py-0.5 text-[0.65625rem] font-bold", r.role === "FRT" ? "bg-warning-soft text-warning-text" : "bg-primary-soft text-primary")}>
+              {r.role === "FRT" ? "Filled by FRT" : "Filled by FE"}
+            </span>
           )}
-          <a href={ndApi.fileUrl(f.id)} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-            <Download className="size-3.5" /> Download
-          </a>
-        </li>
-      ))}
-    </ul>
+        </b>
+        <span className="text-[0.75rem] text-muted-foreground">
+          {r.by} · {ticketTime(r.at)}
+        </span>
+      </header>
+      <dl className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
+        {r.visitDate && <Info k="Visit date" v={ticketDay(r.visitDate)} />}
+        {r.visitorName && <Info k="Visitor" v={r.visitorName} />}
+        {r.location && <Info k="GP location" v={r.location} />}
+        {r.outcome && <Info k="FRT outcome" v={CATEGORY[r.outcome].label} />}
+        {texts.map(([k, x]) => (
+          <div key={k} className="sm:col-span-2">
+            <dt className="text-[0.71875rem] font-semibold uppercase tracking-wide text-muted-foreground">{k}</dt>
+            <dd className="mt-0.5 whitespace-pre-wrap">{x}</dd>
+          </div>
+        ))}
+      </dl>
+      {r.files.length > 0 && <FileList files={r.files} />}
+    </article>
   );
 }
 
+const isImg = (f: NdFile) => f.previewable && (/^image\//.test(f.contentType) || /\.(jpe?g|png)$/i.test(f.fileName));
+
+/** Photos as thumbnails (click = full size), other documents as a list; the same file uploaded twice is shown once. */
+function FileList({ files }: { files: NdFile[] }) {
+  const seen = new Set<string>();
+  const uniq = files.filter((f) => {
+    const k = `${f.fileName}|${f.size}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const imgs = uniq.filter(isImg);
+  const docs = uniq.filter((f) => !isImg(f));
+  return (
+    <div className="space-y-2">
+      {imgs.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {imgs.map((f) => (
+            <a
+              key={f.id}
+              href={ndApi.fileUrl(f.id, true)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`${f.fileName} (${fileSize(f.size)}) – open full size`}
+              className="group relative block size-24 overflow-hidden rounded-lg border border-border bg-muted hover:ring-2 hover:ring-primary/40"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element -- a private case file (same-origin API), not a static asset */}
+              <img src={ndApi.fileUrl(f.id, true)} alt={f.fileName} loading="lazy" className="size-full object-cover" />
+              <span className="absolute inset-x-0 bottom-0 bg-black/55 px-1.5 py-0.5 text-[0.625rem] font-semibold text-white">{f.kind === "PHOTO" ? "Photo" : "Evidence"}</span>
+            </a>
+          ))}
+        </div>
+      )}
+      {docs.length > 0 && (
+        <ul className="space-y-1">
+          {docs.map((f) => (
+            <li key={f.id} className="flex flex-wrap items-center gap-2 text-[0.78125rem]">
+              <span className={cn("rounded px-1.5 py-0.5 text-[0.65625rem] font-semibold", f.kind === "PHOTO" ? "bg-primary-soft text-primary" : "bg-muted text-foreground")}>{f.kind === "PHOTO" ? "Photo" : "Evidence"}</span>
+              <span className="min-w-0 flex-1 truncate" title={f.fileName}>
+                {f.fileName} <span className="text-muted-foreground">({fileSize(f.size)})</span>
+              </span>
+              {f.previewable && (
+                <a href={ndApi.fileUrl(f.id, true)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+                  <Eye className="size-3.5" /> Preview
+                </a>
+              )}
+              <a href={ndApi.fileUrl(f.id)} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
+                <Download className="size-3.5" /> Download
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const ROLE_TONE: Record<string, string> = {
+  FRT: "bg-warning-soft text-warning-text",
+  FE: "bg-primary-soft text-primary",
+  AM: "bg-[color-mix(in_srgb,var(--series-1)_14%,transparent)] text-[var(--series-1)]",
+  SME: "bg-[color-mix(in_srgb,var(--series-7)_14%,transparent)] text-[var(--series-7)]",
+  COH: "bg-good-soft text-good-text",
+  MGG: "bg-critical-soft text-critical-text",
+};
+
+/** Newest first: who, what and when in one line; the status change and remarks open on demand. */
 function History({ d }: { d: NdCaseDetail }) {
   return (
     <Card className="space-y-3 p-5">
       <h3 className="text-[0.9375rem] font-bold text-heading">History</h3>
-      <ol className="space-y-2.5 border-l border-border pl-3">
-        {[...d.history].reverse().map((e) => (
-          <li key={e.id} className="text-[0.8125rem]">
-            <span className="flex flex-wrap items-baseline gap-x-2">
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65625rem] font-bold">{e.stage}</span>
+      <ol className="space-y-2 border-l border-border pl-3">
+        {[...d.history].reverse().map((e) => {
+          const more = (e.fromLabel !== e.toLabel && !!e.toLabel) || !!e.recommendation || !!e.reason || !!e.remark;
+          const role = Object.keys(ROLE_TONE).find((r) => e.role === r || e.role.startsWith(r)) ?? "";
+          const head = (
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className={cn("rounded px-1.5 py-0.5 text-[0.625rem] font-bold", ROLE_TONE[role] ?? "bg-muted")}>{e.roleLabel}</span>
               <b className="font-semibold">{e.label}</b>
-            </span>
-            <span className="block text-[0.75rem] text-muted-foreground">
-              {e.roleLabel} {e.by} · {ticketTime(e.at)}
-            </span>
-            {e.fromLabel !== e.toLabel && e.toLabel && (
-              <span className="block text-[0.75rem]">
-                {e.fromLabel ?? "—"} → <b className="font-semibold">{e.toLabel}</b>
+              <span className="text-[0.71875rem] text-muted-foreground">
+                {e.by} · {ticketTime(e.at)}
               </span>
-            )}
-            {e.recommendation && <span className="block text-[0.78125rem]">Recommendation: {e.recommendation}</span>}
-            {e.reason && <span className="block text-[0.78125rem] text-critical-text">Reason: {e.reason}</span>}
-            {e.remark && <span className="block text-[0.78125rem] text-foreground/85">{e.remark}</span>}
-          </li>
-        ))}
+            </span>
+          );
+          return (
+            <li key={e.id} className="text-[0.8125rem]">
+              {more ? (
+                <details>
+                  <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">{head}</summary>
+                  <div className="mt-1 space-y-0.5 pl-1">
+                    {e.fromLabel !== e.toLabel && e.toLabel && (
+                      <span className="block text-[0.75rem]">
+                        {e.fromLabel ?? "—"} → <b className="font-semibold">{e.toLabel}</b>
+                      </span>
+                    )}
+                    {e.recommendation && <span className="block text-[0.78125rem]">Recommendation: {e.recommendation}</span>}
+                    {e.reason && <span className="block text-[0.78125rem] text-critical-text">Reason: {e.reason}</span>}
+                    {e.remark && <span className="block text-[0.78125rem] text-foreground/85">{e.remark}</span>}
+                  </div>
+                </details>
+              ) : (
+                head
+              )}
+            </li>
+          );
+        })}
       </ol>
       {d.history.length === 0 && (
         <p className="flex items-center gap-2 text-[0.8125rem] text-muted-foreground">

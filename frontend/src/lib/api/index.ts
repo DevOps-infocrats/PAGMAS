@@ -115,6 +115,7 @@ export const ndApi: NonDoableApi = IS_LIVE
       submitForm: unavailable,
       act: unavailable,
       fileUrl: () => "#",
+      casesXlsxUrl: () => "#",
       listMgg: unavailable,
       addMgg: unavailable,
       removeMgg: unavailable,

@@ -122,6 +122,11 @@ class SmtpSession:
 
     def send(self, msg: EmailMessage) -> None:
         assert self.conn is not None
+        # an address that cannot receive e-mail (the login of an FRT account created with its FRT code only,
+        # <code>@frt.invalid – app.security.frt_login) is never handed to the mail server
+        to = [a.strip() for a in str(msg.get("To") or "").split(",") if a.strip()]
+        if to and not any(valid_address(a.split("<")[-1].rstrip(">")) for a in to):
+            raise MailError("No deliverable e-mail address (account without e-mail)")
         try:
             refused = self.conn.send_message(msg)
         except smtplib.SMTPRecipientsRefused:

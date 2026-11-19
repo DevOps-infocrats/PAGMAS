@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils/cn";
 import { IS_LIVE } from "@/lib/api";
 import { formatDate } from "@/lib/utils/format";
 import { useIsLoadingData } from "@/lib/loading-store";
-import { Header } from "./header";
+import { Header, MobileWeekBar } from "./header";
 
 const COLLAPSE_KEY = "pratap-sidebar-collapsed";
 
@@ -67,6 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Header onOpenMobileNav={() => setMobileOpen(true)} onOpenSearch={() => setSearchOpen(true)} />
+        <MobileWeekBar />
         <main id="main" className="mx-auto w-full max-w-[97.5rem] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
           <AccessDeniedNotice />
           {metaError ? <ErrorState error={metaError} /> : children}

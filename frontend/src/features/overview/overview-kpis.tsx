@@ -104,7 +104,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           compact
           dense
           loading={L}
-          className="md:col-span-6"
+          className="col-span-2 md:col-span-6"
           layout="split"
           icon={Users}
           tone={C.blue}
@@ -134,7 +134,7 @@ export function OverviewKpis({ s, states, asOf, loading }: { s?: Detail; states?
           compact
           dense
           loading={L}
-          className="md:col-span-6"
+          className="col-span-2 md:col-span-6"
           layout="split"
           icon={Wrench}
           tone={C.orange}
@@ -239,7 +239,7 @@ function KpiRow({ title, children }: { title: string; children: React.ReactNode 
         {title}
         <span className="h-px flex-1 bg-border" aria-hidden />
       </h2>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-6 xl:grid-cols-12">{children}</div>
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-6 xl:grid-cols-12">{children}</div>
     </section>
   );
 }

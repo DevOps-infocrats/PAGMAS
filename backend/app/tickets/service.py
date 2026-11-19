@@ -55,6 +55,8 @@ class Upload:
     file_name: str | None
     content_type: str | None
     stream: BinaryIO
+    # a live camera photo of the Daily Achievement: {"lat", "lng", "accuracy", "capturedAt"} (None = a plain upload)
+    geo: dict | None = None
 
 
 def now() -> dt.datetime:

@@ -286,6 +286,15 @@ export function GenerateTicketDialog({
               onAdd={add}
               onRemove={remove}
             />
+            <FrtSection
+              circle={circle}
+              week={week}
+              taskOn={taskOn}
+              groups={[
+                ...pickedAms.map((a) => ({ key: `am:${a.name}:${a.typed ? 1 : 0}:${a.withNoAm ? 1 : 0}`, am: a.typed ? NO_AM : a.name, title: a.name, withNoAm: !!a.withNoAm })),
+                ...feOnlyAms.map((am) => ({ key: `fe:${am}`, am, title: `FE ${pickedFes.filter((f) => home(f) === am).map((f) => f.name).join(", ")} (${am})`, fes: pickedFes.filter((f) => home(f) === am) })),
+              ]}
+            />
             <ManualSection picked={picked} accounts={accounts} disabled={busy} onAdd={add} onRemove={remove} />
             <div className="grid gap-2 rounded-lg border border-border px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <SearchableSelect
@@ -1211,6 +1220,86 @@ function AmPreview({
             </table>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+type FrtGroupIn = { key: string; am: string; title: string; withNoAm?: boolean; fes?: Picked[] };
+
+/** FRT teams of the ticket(s) – not chosen here: every FRT with a login (User Management → FRT code) joins the GP-wise
+ * ticket of its GPs automatically and reports only those GPs; its FE verifies them before the Area Manager. */
+function FrtSection({ circle, week, taskOn, groups }: { circle?: string; week?: string; taskOn: boolean; groups: FrtGroupIn[] }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="rounded-lg border border-border">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left">
+        <span className="text-[0.8125rem] font-semibold">
+          FRT (Field Response Team) <span className="font-normal text-muted-foreground">(added automatically)</span>
+        </span>
+        <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} aria-hidden />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border px-3 py-2.5 text-[0.78125rem]">
+          {!circle ? (
+            <p className="text-muted-foreground">Select the circle first.</p>
+          ) : groups.length === 0 ? (
+            <p className="text-muted-foreground">Add an Area Manager or Field Engineer – the FRT teams of their GPs appear here.</p>
+          ) : !taskOn || !week ? (
+            <p className="text-muted-foreground">FRT teams work on GP-wise task tickets – tick &quot;GP-wise Task Assignment&quot; below to see the FRTs of the week&apos;s GPs.</p>
+          ) : (
+            <>
+              {groups.map((g) => (
+                <FrtGroup key={g.key} group={g} circle={circle} week={week} />
+              ))}
+              <p className="text-[0.6875rem] text-muted-foreground">
+                An FRT with a login (User Management → FRT code) gets the ticket automatically, sees and reports only their GPs; their FE verifies it before the Area
+                Manager. FRT codes without a login: the FE reports those GPs as before.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FrtGroup({ group, circle, week }: { group: FrtGroupIn; circle: string; week: string }) {
+  const q = useApiQuery(`task-preview:${week}:${circle}:${group.am}:${group.withNoAm ? 1 : 0}`, () => ticketApi.getTaskPreview(group.am, week, circle, !!group.withNoAm));
+  const rows = (q.data?.rows ?? []).filter((r) => !group.fes || group.fes.some((f) => ownsRow(f)(r)));
+  const codes = new Set(rows.map((r) => r.frtCode).filter(Boolean));
+  const frts = (q.data?.summary?.frts ?? []).filter((f) => codes.has(f.code));
+  const withLogin = frts.filter((f) => f.logins.length).length;
+  return (
+    <div className="rounded-md border border-border/70">
+      <p className="px-2.5 py-1.5 font-semibold">
+        {group.title}{" "}
+        <span className="font-normal text-muted-foreground">
+          {q.error
+            ? `· ${q.error.message}`
+            : !q.data
+              ? "· loading FRTs…"
+              : frts.length
+                ? `· ${frts.length} FRT team${frts.length === 1 ? "" : "s"} · ${withLogin} with a login`
+                : "· no FRT code on this week's GPs – the FE reports them"}
+        </span>
+      </p>
+      {frts.length > 0 && (
+        <ul className="max-h-48 divide-y divide-border/60 overflow-auto border-t border-border/70">
+          {frts.map((f) => (
+            <li key={f.code} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-2.5 py-1">
+              <b className="font-semibold">FRT {f.code}</b>
+              <span className="text-muted-foreground">
+                {f.fes.length ? `FE ${f.fes.join(", ")}` : "no FE in the matrix"} · {f.week.gps} target GP{f.week.gps === 1 ? "" : "s"}
+              </span>
+              {f.logins.length ? (
+                <span className="rounded bg-good-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-good-text">login: {f.logins.join(", ")} – gets the ticket</span>
+              ) : (
+                <span className="rounded bg-warning-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-warning-text">no FRT login – FE fills</span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

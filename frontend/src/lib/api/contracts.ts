@@ -670,6 +670,8 @@ export interface AppUser {
   scopes: UserScope[];
   /** FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for (null = not an FRT) */
   frtCode?: string | null;
+  /** frt = created with the FRT code only: signs in with the FRT code (no e-mail) */
+  loginType?: "email" | "frt";
 }
 
 export interface UserLocations {
@@ -684,7 +686,8 @@ export interface UserLocations {
 }
 
 export interface UserCreateBody {
-  email: string;
+  /** omitted = an FRT login: frtCode required, the user signs in with the FRT code */
+  email?: string;
   name: string;
   role: "admin" | "viewer";
   password: string;
@@ -697,7 +700,8 @@ export interface UserImportItem {
   /** row number in the file, as Excel shows it */
   row: number;
   name: string;
-  email: string;
+  /** null = an FRT login (no e-mail) */
+  email: string | null;
   /** NEW = will be created (preview), CREATED = created, EXISTS = already a user (not changed), SKIPPED = problem in the row */
   status: "NEW" | "CREATED" | "EXISTS" | "SKIPPED";
   reason: string | null;
@@ -705,6 +709,9 @@ export interface UserImportItem {
   areas?: string[];
   /** FILE = own password from the Password column, TEMPORARY = the temporary password (the password itself is never sent) */
   password?: "FILE" | "TEMPORARY";
+  /** FRT Code column; frtLogin = no e-mail – the user signs in with this FRT code */
+  frtCode?: string | null;
+  frtLogin?: boolean;
 }
 
 export interface UserImportResult {
@@ -2122,7 +2129,23 @@ export interface TicketProofFile {
   previewable: boolean;
   /** monitoring rows: ticket the file was uploaded in */
   ticket?: string | null;
+  /** a live camera photo (FRT Daily Achievement): where and when it was taken (absent = an upload without location) */
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number | null;
+  capturedAt?: string | null;
+  source?: "CAMERA" | null;
 }
+
+/** Location / time of a live camera photo, sent with it (proofMeta) */
+export interface CameraGeo {
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  capturedAt: string;
+}
+/** A proof file taken with the camera carries its location / time */
+export type GeoFile = File & { geo?: CameraGeo };
 
 export interface GpMonitorFilters {
   circle?: string;
@@ -2151,6 +2174,9 @@ export interface GpMonitorKpis {
   /** of those, GPs with at least one proof document */
   categoryWithDocument: Record<GpCategory, number>;
   notClassified: number;
+  /** GPs whose AMC conversion the COH recorded (each GP once) – absent in older responses */
+  amcConverted?: number;
+  amcConvertedWithDocument?: number;
 }
 
 export interface GpMonitorOptions {
@@ -2250,6 +2276,8 @@ export interface TicketTaskFe {
   returnedGps?: number;
   awaitingGps?: number;
   addedGps?: number;
+  /** submitted by the FRT, waiting for the FE's Verify / Return */
+  pendingFeGps?: number;
 }
 
 export interface TicketTask {
@@ -2433,7 +2461,7 @@ export interface TicketApi {
   /** Daily progress with Done / Pending per GP and proof documents per GP (upload progress 0–1) */
   submitProgressForm(
     id: number,
-    items: { taskGpId: number; status?: GpStatus; category?: GpCategory; remark?: string | null; gpName?: string; block?: string | null }[],
+    items: { taskGpId: number; status?: GpStatus; category?: GpCategory; remark?: string | null; gpCode?: string; gpName?: string; block?: string | null }[],
     note: string | undefined,
     proofs: { taskGpId: number; file: File }[],
     onProgress?: (fraction: number) => void,
@@ -2491,6 +2519,8 @@ export interface TicketApi {
 // FE → AM → SME → COH → Corporate Team – MGG
 
 export type NdStatus =
+  | "FRT_PROPOSED"
+  | "PENDING_FE"
   | "PROPOSED"
   | "E1_DONE"
   | "PENDING_AM"
@@ -2504,8 +2534,33 @@ export type NdStatus =
   | "REJECTED"
   | "WITHDRAWN";
 export type NdRevisit = "COORDINATION" | "FRT_VISIT" | "FRT_UPDATED" | "REVIEWED";
-export type NdRole = "FE" | "AM" | "SME" | "COH" | "MGG";
-export type NdAction = "AM_FORWARD" | "AM_RETURN" | "SME_RECOMMEND" | "SME_RETURN" | "COH_FORWARD" | "COH_RETURN" | "MGG_APPROVE" | "MGG_REJECT" | "WITHDRAW";
+export type NdRole = "FRT" | "FE" | "AM" | "SME" | "COH" | "MGG";
+export type NdAction =
+  | "AM_FORWARD"
+  | "AM_RETURN"
+  | "SME_RECOMMEND"
+  | "SME_RETURN"
+  | "COH_FORWARD"
+  | "COH_RETURN"
+  | "MGG_APPROVE"
+  | "MGG_REJECT"
+  | "WITHDRAW"
+  | "FRT_SUBMIT"
+  | "FRT_WITHDRAW"
+  | "FE_FORWARD"
+  | "FE_RETURN_FRT";
+
+/** E1 / E2 completeness of a case (latest form of each, FRT or FE) – the FE forwards to the AM only when complete */
+export interface NdFormPart {
+  filled: boolean;
+  complete: boolean;
+  missing: string[];
+  /** who filled the latest form */
+  by: "FRT" | "FE" | null;
+  byName: string | null;
+  frtFilled: boolean;
+  feFilled: boolean;
+}
 
 export interface NdCaseRow {
   id: number;
@@ -2562,6 +2617,8 @@ export interface NdRecord {
   frtTeam: string | null;
   frtVisit: string | null;
   outcome: "A" | "C" | "D" | null;
+  /** who filled the form: FRT (optional E1 / E2) or FE */
+  role?: "FRT" | "FE";
   by: string;
   at: string | null;
   files: NdFile[];
@@ -2604,7 +2661,11 @@ export interface NdCaseDetail {
   records: NdRecord[];
   history: NdEvent[];
   otherRounds: { id: number; ref: string; round: number; status: NdStatus; statusLabel: string }[];
-  can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[] };
+  can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[]; formMode?: "optional" | "required" };
+  /** E1 / E2 completeness – FE_FORWARD needs complete */
+  forms?: { e1: NdFormPart; e2: NdFormPart; complete: boolean };
+  /** proposed by the FRT (FRT → FE review → AM) */
+  frtCase?: boolean;
   mggMembers: number;
   /** the Corporate Team – MGG people the COH forwarded the case to (account = can sign in and decide) */
   mggPicked?: { name: string; email: string; account: boolean }[];
@@ -2630,7 +2691,10 @@ export type NdFormKind = "verification" | "justification" | "revisit";
 
 export interface NonDoableApi {
   getSummary(): Promise<NdSummary>;
-  listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
+  /** `kpi` = "ROLE:card" – exactly the cases that KPI card counts */
+  listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number; kpi?: string }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
+  /** The case list with the same filters as an Excel workbook */
+  casesXlsxUrl(q: { status?: string; q?: string; mine?: boolean; ticket?: number; kpi?: string }): string;
   getCase(id: number): Promise<NdCaseDetail>;
   getContacts(id: number, role: "SME" | "COH" | "MGG"): Promise<ReviewContacts>;
   /** E1 / E2 / revisit forms with evidence and site photographs (upload progress 0–1) */

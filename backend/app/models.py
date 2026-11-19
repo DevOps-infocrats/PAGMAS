@@ -714,6 +714,13 @@ class TicketProgressFile(Base):
     size: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # a live photo taken with the camera in the FRT's Daily Achievement: where and when (device GPS / clock at capture);
+    # None = an uploaded file without location
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geo_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)  # metres, as the device reported it
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    capture_source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # CAMERA | None (upload)
 
 
 # ---------------------------------------------------------------- Non-Doable GP exception workflow (app.tickets.nondoable)
@@ -772,6 +779,8 @@ class NdRecord(Base):
     frt_team: Mapped[str | None] = mapped_column(Text, nullable=True)
     frt_visit: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome: Mapped[str | None] = mapped_column(String(1), nullable=True)  # REVISIT_VISIT: FRT outcome A / C / D
+    # who filled the form: FRT (optional E1 / E2 before the FE review) | FE (None = FE – rows from before FRT forms)
+    role: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by_name: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

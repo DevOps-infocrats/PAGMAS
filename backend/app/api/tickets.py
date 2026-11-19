@@ -8,6 +8,7 @@ streamed only after the same check.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile, status
@@ -87,7 +88,8 @@ class ProgressItem(BaseModel):
     # GP classification A–E (tasks.CATEGORIES) – the Daily Achievement dropdown; replaces the GP's previous category
     category: Literal["A", "B", "C", "D", "E"] | None = None
     remark: str | None = Field(default=None, max_length=tasks.MAX_REMARK)
-    # corrections of the GP by the FE / Area Manager (null = unchanged); kept in the GP's history
+    # corrections of the GP by the FE / Area Manager / FRT (null = unchanged); kept in the GP's history
+    gpCode: str | None = Field(default=None, min_length=1, max_length=40)
     gpName: str | None = Field(default=None, max_length=160)
     block: str | None = Field(default=None, max_length=160)
 
@@ -623,11 +625,14 @@ def progress_form(
     background: BackgroundTasks,
     proofs: Annotated[list[UploadFile] | None, File()] = None,
     proofGps: Annotated[list[int] | None, Form()] = None,
+    proofMeta: Annotated[str | None, Form(max_length=50_000)] = None,
     user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Daily progress with proof documents: `payload` = the JSON of /progress (items + note); `proofs[i]` belongs to the
-    GP `proofGps[i]` (task GP id). Sync endpoint (thread pool): files are validated and written without blocking."""
+    GP `proofGps[i]` (task GP id); `proofMeta` = optional JSON list, item i = the camera location / time of proofs[i]
+    ({lat, lng, accuracy, capturedAt}) or null. Sync endpoint (thread pool): files are validated and written without
+    blocking."""
     try:
         body = ProgressIn.model_validate_json(payload)
     except ValueError:
@@ -636,9 +641,17 @@ def progress_form(
     gps_in = list(proofGps or [])
     if len(files_in) != len(gps_in):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Every proof document must name its GP")
+    metas: list = [None] * len(files_in)
+    if proofMeta:
+        try:
+            metas = json.loads(proofMeta)
+        except ValueError:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The photo locations could not be read") from None
+        if not isinstance(metas, list) or len(metas) != len(files_in):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Every photo location must belong to one proof document")
     try:
         t = service.visible(db, ticket_id, user)
-        uploads = [(gid, Upload(f.filename, f.content_type, f.file)) for gid, f in zip(gps_in, files_in)]
+        uploads = [(gid, Upload(f.filename, f.content_type, f.file, m if isinstance(m, dict) else None)) for gid, f, m in zip(gps_in, files_in, metas)]
         sub = tasks.submit_progress(db, t, user, [i.model_dump() for i in body.items], body.note, uploads, [n.model_dump() for n in body.newGps], _store_for(body))
     except TicketError as exc:
         raise _fail(exc) from None

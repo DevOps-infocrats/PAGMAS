@@ -46,7 +46,7 @@ export function PageHeader({
   return (
     <header className="relative overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <span className="brand-gradient absolute inset-x-0 top-0 h-[0.1875rem]" aria-hidden />
-      <div className="hero-surface flex flex-col gap-4 px-6 pb-5 pt-5 lg:flex-row lg:items-center lg:justify-between">
+      <div className="hero-surface flex flex-col gap-4 px-4 pb-5 pt-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0 space-y-1.5">
           {breadcrumbs && <Breadcrumbs items={breadcrumbs} />}
           <h1 className="text-brand w-fit text-[1.5625rem] font-extrabold tracking-tight">{title}</h1>

@@ -65,18 +65,27 @@ export function Header({ onOpenMobileNav, onOpenSearch }: { onOpenMobileNav: () 
   );
 }
 
-function HeaderWeekSelect() {
+/** Phones: the reporting week below the header (the header itself has no room for it). */
+export function MobileWeekBar() {
+  return (
+    <div className="flex items-center border-b border-border bg-card px-4 py-1.5 md:hidden">
+      <HeaderWeekSelect mobile />
+    </div>
+  );
+}
+
+function HeaderWeekSelect({ mobile = false }: { mobile?: boolean }) {
   const meta = useMeta();
   const { period, setFilters } = useFilters();
   const weeks = [...(meta?.weeks ?? [])].reverse();
   return (
-    <div className="hidden items-center gap-2 md:flex">
+    <div className={cn("items-center gap-2", mobile ? "flex w-full" : "hidden md:flex")}>
       <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground/75">
         <CalendarDays className="size-4" aria-hidden /> Week
       </span>
       <Select
         ariaLabel="Reporting week"
-        className="h-9 w-[11.25rem]"
+        className={mobile ? "h-9 min-w-0 flex-1" : "h-9 w-[11.25rem]"}
         value={period?.weekId}
         placeholder="Loading weeks…"
         disabled={!meta}
@@ -182,7 +191,7 @@ function Notifications() {
           {attention > 0 && <span className="absolute right-2 top-2 size-2 rounded-full bg-critical ring-2 ring-background" aria-hidden />}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0">
+      <PopoverContent align="end" className="w-[min(20rem,calc(100vw-1.5rem))] p-0">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <p className="text-sm font-semibold">Notifications</p>
           <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-warning-text">Demo</span>

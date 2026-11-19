@@ -35,8 +35,11 @@ FRT team          Escalation Matrix "FRT Code" of each GP (snapshot on the task 
                   that goes to the GP's FE (frt_stage PENDING_FE), not to the Area Manager. The FE checks the FRT's
                   proof and remark: FE_VERIFY sends the GP to the Area Manager (FE_VERIFIED – the review chain starts
                   as before), FE_RETURN sends it back to the FRT (RETURNED_FRT). A GP the Area Manager returns goes to
-                  the FE, who sends it back to the FRT. The FE still proposes Non-Doable (D) on such a GP. A GP without
-                  an FRT account on the ticket is reported by the FE exactly as before (tickets created earlier too).
+                  the FE, who sends it back to the FRT. Non-Doable (D) by the FRT opens a case with the FRT (E1 / E2
+                  optional) that the FE reviews and completes before the AM (app.tickets.nondoable). The FE reports
+                  nothing on such a GP once the FRT reported it – only Verify / Return; while the FRT has reported
+                  nothing (no FRT stage) the FE may report it itself, straight to the Area Manager. A GP without an
+                  FRT account on the ticket is reported by the FE exactly as before (tickets created earlier too).
 Nothing here closes a ticket – only an admin does (service.close).
 """
 
@@ -81,7 +84,7 @@ CATEGORIES: dict[str, str] = {
 ACHIEVED_CATEGORY = "E"
 NO_AM = "No Area Manager"  # the circle's GPs whose matrix AM is blank / "Vacant…" (one group per circle)
 # FRT team: what the FRT may choose (Non-Doable – Proposed stays with the FE) and the FRT → FE steps before the AM
-FRT_CATEGORIES = ("A", "C")
+FRT_CATEGORIES = ("A", "C", "D")  # D opens a Non-Doable case with the FRT (E1 / E2 optional), then the FE reviews it
 FRT_OPEN = ("PENDING_FE", "RETURNED_FRT")  # not yet verified by the FE – the Area Manager cannot act on the GP
 FRT_STAGE_LABEL = {"PENDING_FE": "Pending FE Verification (FRT submitted)", "RETURNED_FRT": "Returned to FRT by FE"}
 FE_STEPS = {"FE_VERIFY": "Verified by FE – sent to the Area Manager", "FE_RETURN": "Returned to FRT by FE"}
@@ -617,7 +620,37 @@ def line_status(ln: TicketProgressLine, g: TicketTaskGp | None) -> str:
 
 
 def file_json(f: TicketProgressFile, iso) -> dict[str, Any]:
-    return {"id": f.id, "fileName": f.file_name, "contentType": f.content_type, "size": f.size, "uploadedAt": iso(f.uploaded_at), "previewable": f.content_type in files.INLINE_TYPES}
+    out = {"id": f.id, "fileName": f.file_name, "contentType": f.content_type, "size": f.size, "uploadedAt": iso(f.uploaded_at), "previewable": f.content_type in files.INLINE_TYPES}
+    if f.latitude is not None and f.longitude is not None:  # a live camera photo: where and when it was taken
+        out |= {"latitude": f.latitude, "longitude": f.longitude, "accuracy": f.geo_accuracy, "capturedAt": iso(f.captured_at), "source": f.capture_source}
+    return out
+
+
+# The FRT's photo: on a phone the screen takes it with the Camera (with its location – validated below and saved);
+# on a laptop the FRT uploads a photo file (no location). Both need the usual remark + JPG / PNG photo.
+MAX_CAPTURE_AGE = dt.timedelta(hours=24)  # a camera photo is used the same day it was taken
+
+
+def check_geo(geo: Any) -> dict | None:
+    """A camera photo's location / time as sent by the screen: {"lat", "lng", "accuracy"?, "capturedAt"} – validated
+    (ranges, not in the future, at most a day old); None = no (valid) location. Raises TaskError on a malformed value."""
+    if not geo:
+        return None
+    if not isinstance(geo, dict):
+        raise TaskError(422, "The photo location could not be read")
+    try:
+        lat, lng = float(geo.get("lat")), float(geo.get("lng"))
+        acc = float(geo["accuracy"]) if geo.get("accuracy") is not None else None
+        at = dt.datetime.fromisoformat(str(geo.get("capturedAt")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise TaskError(422, "The photo location / time could not be read – take the photo again") from None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or (lat == 0 and lng == 0) or (acc is not None and acc < 0):
+        raise TaskError(422, "The photo location is not valid – take the photo again with location on")
+    at = at if at.tzinfo else at.replace(tzinfo=dt.UTC)
+    now = dt.datetime.now(dt.UTC)
+    if at > now + dt.timedelta(minutes=10) or now - at > MAX_CAPTURE_AGE:
+        raise TaskError(422, "The photo was not taken now (its time is in the future or more than a day old) – take it again")
+    return {"lat": round(lat, 7), "lng": round(lng, 7), "accuracy": round(acc, 1) if acc is not None else None, "capturedAt": at}
 
 
 def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last_update: dict[int, Any], fe_recipients: set[tuple[str, str]], iso) -> list[dict[str, Any]]:
@@ -628,7 +661,7 @@ def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last
         r = out.setdefault(
             k,
             {"name": g.fe_name, "email": g.fe_email, "gps": 0, "target": 0, "achieved": 0, "doneGps": 0, "pendingGps": 0, "proofFiles": 0, "lastUpdated": None, "recipient": k in fe_recipients,
-             "categories": dict.fromkeys(CATEGORIES, 0), "notClassified": 0, "approvedGps": 0, "returnedGps": 0, "awaitingGps": 0, "addedGps": 0},
+             "categories": dict.fromkeys(CATEGORIES, 0), "notClassified": 0, "approvedGps": 0, "returnedGps": 0, "awaitingGps": 0, "addedGps": 0, "pendingFeGps": 0},
         )
         r["gps"] += 1
         if g.review == "RETURNED":
@@ -637,6 +670,7 @@ def _fe_summary(gps: list[TicketTaskGp], files_of_gp: dict[int, list[Any]], last
             r["approvedGps"] += 1
         elif g.gp_category == "A" and not frt_stage_open(g):
             r["awaitingGps"] += 1
+        r["pendingFeGps"] += frt_stage_open(g) and g.frt_stage == "PENDING_FE"  # the FRT submitted, the FE has to verify
         r["addedGps"] += g.kind == "ADDED"
         if g.gp_category in CATEGORIES:
             r["categories"][g.gp_category] += 1
@@ -909,8 +943,15 @@ MAX_NEW_GPS = 50  # GPs added in one daily submission
 
 
 def _edits(g: TicketTaskGp, it: dict[str, Any]) -> list[tuple[str, str, str | None, str | None]]:
-    """GP Name / Block changed by the FE / Area Manager: (field, label, old, new)."""
+    """GP Code / GP Name / Block corrected in the daily progress: (field, label, old, new). The GP code is checked
+    against the ticket and the week by submit_progress (_check_code)."""
     out: list[tuple[str, str, str | None, str | None]] = []
+    if it.get("gpCode") is not None:
+        c = str(it["gpCode"]).strip()
+        if not GP_CODE_RE.match(c):
+            raise TaskError(422, f"GP {g.gp_code}: '{c[:40]}' is not a valid GP code (letters and digits, up to 40 characters)")
+        if c != g.gp_code:
+            out.append(("gp_code", "GP Code", g.gp_code, c))
     if it.get("gpName") is not None:
         v = " ".join(str(it["gpName"]).split())[:160]
         if not v:
@@ -922,6 +963,17 @@ def _edits(g: TicketTaskGp, it: dict[str, Any]) -> list[tuple[str, str, str | No
         if b != g.block:
             out.append(("block", "Block", g.block, b))
     return out
+
+
+def _code_in_week(db: Session, t: Ticket, week_code: str, code: str) -> str | None:
+    """Another ticket of the same week that already has this GP code (None = free)."""
+    return db.scalar(
+        select(Ticket.code)
+        .join(TicketTask, TicketTask.ticket_id == Ticket.id)
+        .join(TicketTaskGp, TicketTaskGp.ticket_id == Ticket.id)
+        .where(TicketTaskGp.gp_code == code, TicketTask.week_code == week_code, Ticket.deleted_at.is_(None), Ticket.id != t.id)
+        .limit(1)
+    )
 
 
 def _master_gp(store: Store | None, code: str) -> Any:
@@ -962,10 +1014,13 @@ def submit_progress(
     role = "FRT" if frt is not None else "FE" if scope is not None else "AM"
     fe_keys = fe_owner_keys(db, t) if scope is None else set()
     frt_codes = frt_owner_codes(db, t) if frt is None else set()
+    # an FRT may add a GP found in the field: it gets the FRT's code and the FRT's FE (who verifies it, as any FRT GP)
+    frt_fe: tuple[str | None, str | None] = (None, None)
     if frt is not None and new_gps:
-        raise TaskError(403, "An FRT cannot add GPs to the ticket – ask your Field Engineer to add the GP")
-    # the FE proposes Non-Doable (D) on a GP the FRT reports – the only Daily Achievement the FE gives such a GP
-    nd_items = {int(it.get("taskGpId", 0)) for it in items if it.get("category") == "D"} if frt is None and scope is not None else set()
+        mine = [(g.fe_name, g.fe_email) for g in gps.values() if frt.owns(g) and g.fe_name]
+        if not mine:
+            raise TaskError(422, "Your GPs have no Field Engineer in this ticket – ask your FE to add the GP")
+        frt_fe = max(set(mine), key=mine.count)
 
     # a Non-Doable case of the submitter's own GPs still waiting for their E1 / E2 forms: no Daily Achievement before
     # those are submitted (the case is opened from Non-Doable Cases). The forms are the FE's – an FRT is not blocked.
@@ -984,9 +1039,12 @@ def submit_progress(
             )
         if scope is None and frt_assigned(g, frt_codes):  # nor the GP of an FRT of the ticket
             raise TaskError(403, f"GP {g.gp_code} is reported by FRT {g.frt_code} and verified by the FE – only the FRT submits its Daily Achievement")
-        if frt is None and scope is not None and frt_assigned(g, frt_codes) and g.id not in nd_items:
+        # a GP with an FRT login on the ticket: once the FRT has reported it (waiting for / returned by / verified by the
+        # FE) the FE only verifies / returns it; while the FRT has reported nothing the FE may report it itself (it then
+        # goes to the Area Manager like the FE's own GPs)
+        if frt is None and scope is not None and frt_assigned(g, frt_codes) and g.frt_stage is not None:
             raise TaskError(
-                403, f"GP {g.gp_code} is reported by FRT {g.frt_code} – check the FRT's Daily Achievement with Verify / Return to FRT (you only propose Non-Doable on it)"
+                403, f"GP {g.gp_code} is reported by FRT {g.frt_code} – check the FRT's Daily Achievement with Verify / Return to FRT"
             )
         if frt is not None and g.frt_stage == "FE_VERIFIED":
             raise TaskError(409, f"GP {g.gp_code} was verified by your FE and sent to the Area Manager – it comes back to you only if the FE returns it")
@@ -998,6 +1056,9 @@ def submit_progress(
             raise TaskError(exc.status, exc.message) from None
 
     uploads = [(int(gid), u) for gid, u in (uploads or []) if getattr(u, "file_name", None)]
+    for _gid, u in uploads:  # camera location / time: validated before anything is written
+        if getattr(u, "geo", None):
+            u.geo = check_geo(u.geo)
     if len(uploads) > MAX_PROGRESS_FILES:
         raise TaskError(422, f"At most {MAX_PROGRESS_FILES} proof documents per daily submission")
     files_of: dict[int, list[Any]] = {}
@@ -1027,6 +1088,7 @@ def submit_progress(
         except files.AttachmentError as exc:
             raise TaskError(exc.status, f"GP {g.gp_code}: {exc}") from None
     seen: set[int] = set()
+    renamed: dict[int, str] = {}  # GP code corrected in this submission: task GP id -> new code
     fe_only = "choose Rectification Done, Revisit Required or Non-Doable – Proposed (Ready for Letter and Letter Submission come from the AM / SME / COH review)"
     # (GP, change of `reported` (+1 / 0 / -1), remark, new category or None = unchanged, GP Name / Block edits)
     changes: list[tuple[TicketTaskGp, int, str | None, str | None, list[tuple[str, str, str | None, str | None]]]] = []
@@ -1045,6 +1107,16 @@ def submit_progress(
             raise TaskError(422, f"GP {g.gp_code} appears twice in the submission")
         seen.add(gid)
         edits = _edits(g, it)
+        new_code = next((new for f, _l, _o, new in edits if f == "gp_code"), None)
+        if new_code is not None:
+            if nd.last_case(db, g.id) is not None:
+                raise TaskError(409, f"GP {g.gp_code} has a Non-Doable case – its GP code cannot be changed")
+            if any(x.id != g.id and x.gp_code == new_code for x in gps.values()) or new_code in renamed.values():
+                raise TaskError(422, f"GP {new_code} is already in this ticket")
+            other = _code_in_week(db, t, task.week_code, new_code)
+            if other:
+                raise TaskError(422, f"GP {new_code} is already in ticket {other} of this week")
+            renamed[g.id] = new_code
         cat = it.get("category")
         remark = (it.get("remark") or "").strip()[:MAX_REMARK] or None
         if cat is not None:
@@ -1053,13 +1125,13 @@ def submit_progress(
             if cat not in rv.FE_CATEGORIES:
                 raise TaskError(422, f"GP {g.gp_code}: {fe_only}")
             if frt is not None and cat not in FRT_CATEGORIES:
-                raise TaskError(422, f"GP {g.gp_code}: the FRT chooses Rectification Done or Revisit Required – Non-Doable is proposed by the FE")
+                raise TaskError(422, f"GP {g.gp_code}: choose Rectification Done, Revisit Required or Non-Doable – Proposed")
             if it.get("status") is not None or it.get("achievedToday") is not None:
                 raise TaskError(422, f"GP {g.gp_code}: send either a category or Done / Pending, not both")
             new_cat = None if cat == g.gp_category else cat
-            if new_cat == "D":
+            if new_cat == "D" or (new_cat and frt is not None):
                 try:
-                    nd.check_progress(db, g, new_cat)
+                    nd.check_progress(db, g, new_cat, by_frt=frt is not None)
                 except nd.NdError as exc:
                     raise TaskError(exc.status, exc.message) from None
             delta = ((1 if cat == ACHIEVED_CATEGORY else 0) - g.reported) if new_cat else 0
@@ -1102,15 +1174,9 @@ def submit_progress(
         code = str(n.get("gpCode") or "").strip()
         if not GP_CODE_RE.match(code):
             raise TaskError(422, f"'{code[:40]}' is not a valid GP code (letters and digits, up to 40 characters)")
-        if any(x.gp_code == code for x in gps.values()) or any(a["code"] == code for a in added):
+        if any(x.gp_code == code for x in gps.values()) or code in renamed.values() or any(a["code"] == code for a in added):
             raise TaskError(422, f"GP {code} is already in this ticket")
-        other = db.scalar(
-            select(Ticket.code)
-            .join(TicketTask, TicketTask.ticket_id == Ticket.id)
-            .join(TicketTaskGp, TicketTaskGp.ticket_id == Ticket.id)
-            .where(TicketTaskGp.gp_code == code, TicketTask.week_code == task.week_code, Ticket.deleted_at.is_(None), Ticket.id != t.id)
-            .limit(1)
-        )
+        other = _code_in_week(db, t, task.week_code, code)
         if other:
             raise TaskError(422, f"GP {code} is already in ticket {other} of this week – it cannot be added twice")
         cat = n.get("category")
@@ -1151,7 +1217,9 @@ def submit_progress(
                 business_area=None, district=str(m["district"]).title() if m is not None and _text(m["district"]) else None,
                 block=a["block"] or (str(m["block_name"]).title() if m is not None and _text(m["block_name"]) else None), kind="ADDED", category=None, planned_date=None, ready_date=None,
                 amc_date=amc, target=1, base_achieved=1 if amc is not None and store is not None and amc <= store.data_as_of else 0, reported=0,
-                fe_name=scope.name if scope is not None else None, fe_email=scope.mail if scope is not None else None, added_by=user.name,
+                fe_name=frt_fe[0] if frt is not None else scope.name if scope is not None else None,
+                fe_email=frt_fe[1] if frt is not None else scope.mail if scope is not None else None, added_by=user.name,
+                frt_code=frt.code if frt is not None else None,
             )
             db.add(g)
             db.flush()
@@ -1176,7 +1244,9 @@ def submit_progress(
                 rv.record(db, t, g, user, role, "EDIT", "; ".join(f"{label}: {old or '—'} → {new or '—'}" for _f, label, old, new in edits), at)
             if frt is not None:
                 # the FRT's Daily Achievement (or its correction) goes to the FE first – the FE sends it to the AM
-                if new_cat or g.frt_stage == "RETURNED_FRT":
+                if new_cat == "D":  # Non-Doable: the case workflow (FRT → FE review → AM), not the FE verification
+                    g.frt_stage = None
+                elif new_cat or g.frt_stage == "RETURNED_FRT":
                     g.frt_stage = "PENDING_FE"
                     to_fe.append(g)
             elif g.review == "RETURNED":  # corrected by the FE: back to the Area Manager
@@ -1188,7 +1258,7 @@ def submit_progress(
             done += today
             ln = TicketProgressLine(progress_id=sub.id, task_gp_id=g.id, achieved_today=today, cumulative=cumulative(g), gap=g.target - cumulative(g), remark=remark, category=new_cat)
             db.add(ln)
-            case = nd.on_progress(db, t, g, user, new_cat, remark, at)
+            case = nd.on_progress(db, t, g, user, new_cat, remark, at, by_frt=frt is not None)
             if case is not None:
                 cases.append((g, case))
             if g.id in files_of:
@@ -1200,7 +1270,12 @@ def submit_progress(
                         raise TaskError(exc.status, f"GP {g.gp_code}: {exc}") from None
                     stored.append(f.stored_name)
                     budget -= f.size
-                    db.add(TicketProgressFile(ticket_id=t.id, progress_line_id=ln.id, task_gp_id=g.id, file_name=f.file_name, stored_name=f.stored_name, content_type=f.content_type, size=f.size, sha256=f.sha256, uploaded_at=now()))
+                    geo = getattr(u, "geo", None)
+                    db.add(TicketProgressFile(
+                        ticket_id=t.id, progress_line_id=ln.id, task_gp_id=g.id, file_name=f.file_name, stored_name=f.stored_name, content_type=f.content_type, size=f.size,
+                        sha256=f.sha256, uploaded_at=now(),
+                        **({"latitude": geo["lat"], "longitude": geo["lng"], "geo_accuracy": geo["accuracy"], "captured_at": geo["capturedAt"], "capture_source": "CAMERA"} if geo else {}),
+                    ))
         total = sum(x.target for x in gps.values())
         achieved = sum(cumulative(x) for x in gps.values())
         proof = f" · {len(stored)} proof document{'s' if len(stored) != 1 else ''}" if stored else ""

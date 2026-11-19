@@ -24,7 +24,8 @@ UPLOAD_PATHS = frozenset({"/api/v1/ingestion/upload", "/api/v1/ingestion/preview
 SMALL_BODY_BYTES = 64 * 1024
 # Work submissions and daily progress with proof documents of the Ticket Management module, and the Non-Doable forms
 # with evidence / site photographs (E1 verification, E2 justification, revisit): limit TICKET_UPLOAD_MAX_MB
-TICKET_UPLOAD_RE = re.compile(r"^/api/v1/(tickets/\d+/(submit|progress-form)|nondoable/cases/\d+/(verification|justification|revisit))$")
+# multipart uploads of the ticket module (proofs, AM / SME review proof, Non-Doable forms): TICKET_UPLOAD_MAX_MB
+TICKET_UPLOAD_RE = re.compile(r"^/api/v1/(tickets/\d+/(submit|progress-form|review-form)|nondoable/cases/\d+/(verification|justification|revisit))$")
 MULTIPART_OVERHEAD = 1024 * 1024  # form boundaries and the description field
 
 

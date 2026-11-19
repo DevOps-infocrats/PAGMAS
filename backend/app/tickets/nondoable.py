@@ -1,5 +1,11 @@
 """Non-Doable GP exception and approval workflow (FE → AM → SME → COH → Corporate Team – MGG).
 
+FRT GPs (an FRT account of the ticket reports the GP – app.tickets.task): the FRT proposes Non-Doable in its Daily
+Achievement (FRT_PROPOSED), may fill E1 / E2 (optional – every field, saved as the FRT's own rows) and submits it to the
+FE (FRT_SUBMIT → PENDING_FE) with or without them. The FE reviews it: completes / corrects E1 and E2 (the FE's own rows;
+the FRT's rows stay unchanged), and FE_FORWARD sends it to the Area Manager (PENDING_AM) ONLY when the latest E1 and E2
+are complete (forms_check) – or returns it to the FRT (FE_RETURN_FRT) / withdraws it. From PENDING_AM on, unchanged.
+
     E1  FE        physical verification of the GP (visit date, visitor, location, reason, findings, evidence / photos)
     E2  FE        justification to the Area Manager (justification, FRT team / visit details, more evidence)
     E3  AM        forward to the SME (recommendation, SME chosen like the GP review) or return to the FE (reason)
@@ -46,6 +52,8 @@ STATUS_LABEL = {
     "APPROVED": "Non-Doable – Approved",
     "REJECTED": "Rejected – Action Required",
     "WITHDRAWN": "Withdrawn by FE",
+    "FRT_PROPOSED": "Non-Doable – Proposed by FRT (E1 / E2 optional)",
+    "PENDING_FE": "Non-Doable – Pending FE Review (submitted by FRT)",
 }
 REVISIT_LABEL = {
     "COORDINATION": "Revisit – FE coordinating with the FRT team",
@@ -56,16 +64,16 @@ REVISIT_LABEL = {
 PHYSICAL_LABEL = {"PENDING": "Pending", "SUBMITTED": "Physical verification submitted"}
 EVIDENCE_LABEL = {"NONE": "No evidence", "SUBMITTED": "Evidence submitted"}
 APPROVAL_LABEL = {"NOT_SUBMITTED": "Not submitted", "IN_REVIEW": "In review", "RETURNED": "Returned for correction", "APPROVED": "Approved", "REJECTED": "Rejected", "WITHDRAWN": "Withdrawn"}
-OPEN = ("PROPOSED", "E1_DONE", "PENDING_AM", "RETURNED_FE", "PENDING_SME", "RETURNED_AM", "RETURNED_SME", "PENDING_COH", "PENDING_MGG")
+OPEN = ("FRT_PROPOSED", "PENDING_FE", "PROPOSED", "E1_DONE", "PENDING_AM", "RETURNED_FE", "PENDING_SME", "RETURNED_AM", "RETURNED_SME", "PENDING_COH", "PENDING_MGG")
 PENDING_WITH = {
-    "PROPOSED": "FE", "E1_DONE": "FE", "RETURNED_FE": "FE", "PENDING_AM": "AM", "RETURNED_AM": "AM", "PENDING_SME": "SME", "RETURNED_SME": "SME",
+    "FRT_PROPOSED": "FRT", "PENDING_FE": "FE", "PROPOSED": "FE", "E1_DONE": "FE", "RETURNED_FE": "FE", "PENDING_AM": "AM", "RETURNED_AM": "AM", "PENDING_SME": "SME", "RETURNED_SME": "SME",
     "PENDING_COH": "COH", "PENDING_MGG": MGG,
 }
 STAGES = ("E1", "E2", "E3", "E4", "E5", "E6")
 STAGE_LABEL = {
     "E1": "FE Physical Verification", "E2": "FE Justification to AM", "E3": "AM Review", "E4": "SME Review", "E5": "COH Review", "E6": "Corporate Team – MGG Decision",
 }
-ROLE_LABEL = {"FE": "Field Engineer", "AM": "Area Manager", "SME": "SME", "COH": "COH", "MGG": MGG, "ADMIN": "Admin"}
+ROLE_LABEL = {"FRT": "FRT", "FE": "Field Engineer", "AM": "Area Manager", "SME": "SME", "COH": "COH", "MGG": MGG, "ADMIN": "Admin"}
 ND_REVIEW = "ND_APPROVED"  # TicketTaskGp.review of a GP closed as Non-Doable (locked, see review.LOCKED)
 MAX_TEXT = 2000
 MAX_FILES = 10  # per form
@@ -74,7 +82,7 @@ PHOTO_TYPES = ("image/jpeg", "image/png")
 
 @dataclass(frozen=True)
 class Step:
-    role: str  # FE | AM | SME | COH | MGG
+    role: str  # FRT | FE | AM | SME | COH | MGG
     stage: str
     label: str
     frm: tuple[str, ...]
@@ -90,12 +98,18 @@ STEPS: dict[str, Step] = {
     "COH_RETURN": Step("COH", "E5", "Returned by COH for correction", ("PENDING_COH",), ""),
     "MGG_APPROVE": Step("MGG", "E6", f"Approved Non-Doable by {MGG}", ("PENDING_MGG",), "APPROVED"),
     "MGG_REJECT": Step("MGG", "E6", f"Rejected by {MGG} – action required", ("PENDING_MGG",), "REJECTED"),
-    "WITHDRAW": Step("FE", "E2", "Proposal withdrawn by FE", ("PROPOSED", "E1_DONE", "RETURNED_FE"), "WITHDRAWN"),
+    "WITHDRAW": Step("FE", "E2", "Proposal withdrawn by FE", ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE"), "WITHDRAWN"),
+    # FRT GPs: the FRT hands its proposal (with or without E1 / E2) to the FE, who verifies / completes it for the AM
+    "FRT_SUBMIT": Step("FRT", "E1", "Submitted by FRT to FE for review", ("FRT_PROPOSED",), "PENDING_FE"),
+    "FRT_WITHDRAW": Step("FRT", "E1", "Proposal withdrawn by FRT", ("FRT_PROPOSED",), "WITHDRAWN"),
+    "FE_FORWARD": Step("FE", "E2", "Verified by FE – forwarded to AM", ("PENDING_FE",), "PENDING_AM"),
+    "FE_RETURN_FRT": Step("FE", "E2", "Returned by FE to FRT", ("PENDING_FE",), "FRT_PROPOSED"),
 }
 COH_TARGETS = {"FE": "RETURNED_FE", "AM": "RETURNED_AM", "SME": "RETURNED_SME"}
 ACTION_LABEL = {
     **{k: s.label for k, s in STEPS.items()},
     "PROPOSED": "Non-Doable proposed in the daily progress",
+    "PROPOSED_FRT": "Non-Doable proposed by FRT in the daily achievement",
     "VERIFICATION": "E1 physical verification submitted",
     "JUSTIFICATION": "E2 justification submitted to AM",
     "REVISIT_COORDINATION": "FRT coordination recorded",
@@ -217,6 +231,8 @@ def _people(db: Session, t: Ticket, g: TicketTaskGp, role: str, c: NdCase | None
     if role == "FE":
         fes = [(r.user_id, r.name, r.email) for r in _fe_recipients(db, t, g)]
         return fes or _ams(db, t)
+    if role == "FRT":
+        return [(r.user_id, r.name, r.email) for r in _frt_recipients(db, t, g)]
     if role == "AM":
         return _ams(db, t)
     if role in ("SME", "COH"):
@@ -240,6 +256,21 @@ def _roles_on(db: Session, t: Ticket, user: CurrentUser) -> set[str]:
     return mine & {"FE", "AM", "SME", "COH"}
 
 
+def _frt_recipients(db: Session, t: Ticket, g: TicketTaskGp) -> list[TicketRecipient]:
+    """FRT accounts of the ticket that report this GP (same FRT code – app.tickets.task.FrtScope)."""
+    from .task import frt_norm
+
+    code = frt_norm(g.frt_code)
+    if code is None:
+        return []
+    rs = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id, TicketRecipient.role == "FRT", TicketRecipient.can_work.is_(True)))
+    return [r for r in rs if frt_norm(r.frt_code) == code]
+
+
+def is_frt_actor(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser) -> bool:
+    return any(r.user_id == user.id for r in _frt_recipients(db, t, g))
+
+
 def is_fe_actor(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser) -> bool:
     """The GP's Field Engineer – or the Area Manager when no FE recipient owns the GP (same rule as the daily progress)."""
     fes = _fe_recipients(db, t, g)
@@ -257,6 +288,8 @@ def roles_for(db: Session, c: NdCase, t: Ticket, g: TicketTaskGp, user: CurrentU
     MGG (once the COH forwarded it). Empty = no access (admins read every case through `can_view`)."""
     out: set[str] = set()
     on = _roles_on(db, t, user)
+    if is_frt_actor(db, t, g, user):
+        out.add("FRT")
     if is_fe_actor(db, t, g, user):
         out.add("FE")
     if "AM" in on:
@@ -290,7 +323,7 @@ def open_case(db: Session, task_gp_id: int) -> NdCase | None:
 # the FE still has to submit the case forms (E1 physical verification / E2 justification, or their correction): the
 # daily achievement of that FE waits until they are submitted (the revisit after a rejection is NOT blocked – it is
 # finished through the daily progress itself)
-FE_FORMS_PENDING = ("PROPOSED", "E1_DONE", "RETURNED_FE")
+FE_FORMS_PENDING = ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE")
 
 
 def forms_pending(db: Session, ticket_id: int, gp_ids: set[int]) -> list[NdCase]:
@@ -307,21 +340,27 @@ def last_case(db: Session, task_gp_id: int) -> NdCase | None:
 # ---------------------------------------------------------------- hooks of the daily progress (app.tickets.task)
 
 
-def check_progress(db: Session, g: TicketTaskGp, new_cat: str | None) -> None:
+def check_progress(db: Session, g: TicketTaskGp, new_cat: str | None, by_frt: bool = False) -> None:
     """Before a daily progress line: a GP with an open case continues only in this workflow; after a rejection the GP
-    can be proposed Non-Doable again only after the new FRT site visit is recorded."""
+    can be proposed Non-Doable again only after the new FRT site visit is recorded. `by_frt`: after a rejection the FRT
+    sends no new category at all until the FE has recorded the FRT coordination and the new FRT site visit."""
     c = open_case(db, g.id)
     if c is not None:
         raise NdError(409, f"GP {g.gp_code} is in Non-Doable case {c.ref} ({STATUS_LABEL[c.status]}) – continue it in Non-Doable Cases")
+    if by_frt and new_cat:
+        last = last_case(db, g.id)
+        if last is not None and last.status == "REJECTED" and last.revisit_status in ("COORDINATION", "FRT_VISIT"):
+            raise NdError(422, f"GP {g.gp_code}: Non-Doable was rejected ({last.ref}) – your FE first records the FRT coordination and the new FRT site visit, then you can send the new status")
     if new_cat == "D":
         last = last_case(db, g.id)
         if last is not None and last.status == "REJECTED" and last.revisit_status not in ("FRT_UPDATED", "REVIEWED"):
             raise NdError(422, f"GP {g.gp_code}: Non-Doable was rejected ({last.ref}) – record the FRT coordination and the new FRT site visit before proposing it again")
 
 
-def on_progress(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser, new_cat: str | None, remark: str | None, at: dt.datetime) -> NdCase | None:
+def on_progress(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser, new_cat: str | None, remark: str | None, at: dt.datetime, by_frt: bool = False) -> NdCase | None:
     """After a daily progress line (same transaction): "Non-Doable – Proposed" opens a case; a GP reviewed after the
-    FRT update closes the revisit of the rejected case."""
+    FRT update closes the revisit of the rejected case. `by_frt`: proposed by the GP's FRT – the case starts with the
+    FRT (FRT_PROPOSED: optional E1 / E2, then submitted to the FE for review)."""
     last = last_case(db, g.id)
     if new_cat and last is not None and last.status == "REJECTED" and last.revisit_status == "FRT_UPDATED":
         last.revisit_status, last.updated_at = "REVIEWED", at
@@ -330,14 +369,47 @@ def on_progress(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser, new_
         return None
     fe = _fe_recipients(db, t, g)
     c = NdCase(
-        ticket_id=t.id, task_gp_id=g.id, gp_code=g.gp_code, round=(last.round + 1) if last is not None else 1, status="PROPOSED",
+        ticket_id=t.id, task_gp_id=g.id, gp_code=g.gp_code, round=(last.round + 1) if last is not None else 1, status="FRT_PROPOSED" if by_frt else "PROPOSED",
         fe_name=fe[0].name if fe else g.fe_name, fe_email=fe[0].email if fe else g.fe_email, created_by_id=user.id, created_by_name=user.name, created_at=at, updated_at=at,
     )
     db.add(c)
     db.flush()
     c.ref = f"ND-{c.id:06d}"
-    _event(db, c, user, "E1", "PROPOSED", "FE", None, "PROPOSED", remark=remark, at=at)
+    if by_frt:
+        _event(db, c, user, "E1", "PROPOSED_FRT", "FRT", None, "FRT_PROPOSED", remark=remark, at=at)
+    else:
+        _event(db, c, user, "E1", "PROPOSED", "FE", None, "PROPOSED", remark=remark, at=at)
     return c
+
+
+E1_FIELDS = (("visit_date", "visit date", 1), ("visitor_name", "visitor name", 2), ("reason", "Non-Doable reason", 3), ("findings", "findings", 3))
+E2_FIELDS = (("justification", "justification (at least 10 characters)", 10), ("frt_team", "FRT team details", 3), ("frt_visit", "FRT visit details", 3))
+
+
+def forms_check(db: Session, c: NdCase) -> dict[str, Any]:
+    """Whether the case's E1 / E2 are complete: the LATEST E1 and E2 form (FRT or FE) must have every mandatory field,
+    and the case at least one evidence document / photo. Used by FE_FORWARD (backend rule) and shown to FRT / FE / AM."""
+    recs = list(db.scalars(select(NdRecord).where(NdRecord.case_id == c.id, NdRecord.kind.in_(("VERIFICATION", "JUSTIFICATION"))).order_by(NdRecord.id)))
+    has_files = db.scalar(select(NdFile.id).where(NdFile.case_id == c.id).limit(1)) is not None
+
+    def part(kind: str, fields: tuple[tuple[str, str, int], ...], extra: list[str]) -> dict[str, Any]:
+        mine = [r for r in recs if r.kind == kind]
+        last = mine[-1] if mine else None
+        missing = [f"{'E1' if kind == 'VERIFICATION' else 'E2'} form not filled yet"] if last is None else []
+        if last is not None:
+            for col, label, n in fields:
+                v = getattr(last, col)
+                if v is None or (isinstance(v, str) and len(v.strip()) < n):
+                    missing.append(label)
+        missing += extra
+        return {
+            "filled": last is not None, "complete": not missing, "missing": missing, "by": (last.role or "FE") if last else None, "byName": last.created_by_name if last else None,
+            "frtFilled": any(r.role == "FRT" for r in mine), "feFilled": any((r.role or "FE") == "FE" for r in mine),
+        }
+
+    e1 = part("VERIFICATION", E1_FIELDS, [] if has_files else ["evidence / site photographs"])
+    e2 = part("JUSTIFICATION", E2_FIELDS, [])
+    return {"e1": e1, "e2": e2, "complete": e1["complete"] and e2["complete"]}
 
 
 # ---------------------------------------------------------------- writing
@@ -431,11 +503,77 @@ def submit_form(db: Session, case_id: int, user: CurrentUser, kind: str, data: d
     Returns the case, the e-mail list and the audit event id."""
     c, t, g, roles = _load(db, case_id, user)
     _closed(t)
-    if "FE" not in roles:
+    # the FRT fills E1 / E2 only while the case is with it (FRT_PROPOSED) – every field optional; anything else is the FE's
+    frt_turn = c.status == "FRT_PROPOSED" and "FRT" in roles and kind in ("VERIFICATION", "JUSTIFICATION")
+    if not frt_turn and "FE" not in roles:
+        if "FRT" in roles:
+            raise NdError(409 if kind in ("VERIFICATION", "JUSTIFICATION") else 403, "The FRT fills E1 / E2 only while the case is with the FRT – it is now with your FE")
         raise NdError(403, "Only the Field Engineer of this GP can submit this form")
+    if not frt_turn and c.status == "FRT_PROPOSED":
+        raise NdError(409, "The case is with the FRT – it comes to you once the FRT submits it")
+    role = "FRT" if frt_turn else "FE"
     _check_files(uploads)
     at = now()
-    rec = NdRecord(case_id=c.id, kind=kind, created_by_id=user.id, created_by_name=user.name, created_at=at)
+    rec = NdRecord(case_id=c.id, kind=kind, role=role, created_by_id=user.id, created_by_name=user.name, created_at=at)
+    stay = frt_turn or c.status == "PENDING_FE"  # FRT / FE review: a form never moves the case (FE_FORWARD does)
+    if stay:
+        if kind not in ("VERIFICATION", "JUSTIFICATION"):
+            raise NdError(409, f"The case is '{STATUS_LABEL[c.status]}' – this form is not possible now")
+        if frt_turn:
+            if kind == "VERIFICATION":
+                rec.visit_date = _visit_date(data.get("visitDate")) if data.get("visitDate") else None
+                rec.visitor_name = _text(data.get("visitorName"), 160)
+                rec.location = _text(data.get("location"), 300)
+                rec.reason = _text(data.get("reason"))
+                rec.findings = _text(data.get("findings"))
+            else:
+                rec.justification = _text(data.get("justification"))
+                rec.frt_team = _text(data.get("frtTeam"))
+                rec.frt_visit = _text(data.get("frtVisit"))
+            rec.remarks = _text(data.get("remarks"))
+            filled = [rec.visit_date, rec.visitor_name, rec.location, rec.reason, rec.findings, rec.justification, rec.frt_team, rec.frt_visit, rec.remarks]
+            if not any(filled) and not uploads:
+                raise NdError(422, "Fill at least one detail of the form or attach a file (the form itself is optional for the FRT)")
+        elif kind == "VERIFICATION":
+            rec.visit_date = _visit_date(data.get("visitDate"))
+            rec.visitor_name = _need(data.get("visitorName"), "Visitor name", 2, 160)
+            rec.location = _text(data.get("location"), 300)
+            rec.reason = _need(data.get("reason"), "Non-Doable reason")
+            rec.findings = _need(data.get("findings"), "Findings")
+            rec.remarks = _text(data.get("remarks"))
+            if not uploads and db.scalar(select(NdFile.id).where(NdFile.case_id == c.id).limit(1)) is None:
+                raise NdError(422, "Attach the evidence / site photographs of the physical verification")
+        else:
+            rec.justification = _need(data.get("justification"), "Justification", 10)
+            rec.frt_team = _need(data.get("frtTeam"), "FRT team details")
+            rec.frt_visit = _need(data.get("frtVisit"), "FRT visit details")
+            rec.remarks = _text(data.get("remarks"))
+        stage, frm = ("E1" if kind == "VERIFICATION" else "E2"), c.status
+        stored: list[str] = []
+        try:
+            vals: dict[str, Any] = {"updated_at": at}
+            if uploads:
+                vals["evidence_status"] = "SUBMITTED"
+            res = db.execute(update(NdCase).where(NdCase.id == c.id, NdCase.status == frm).values(**vals).execution_options(synchronize_session=False))
+            if res.rowcount != 1:
+                raise NdError(409, "This case was changed meanwhile – reload the case.")
+            db.add(rec)
+            db.flush()
+            _store(db, c, rec, user, uploads, stored)
+            db.flush()  # the new evidence / photos count for E1's completeness below (the session does not autoflush)
+            if kind == "VERIFICATION" and forms_check(db, c)["e1"]["complete"]:
+                db.execute(update(NdCase).where(NdCase.id == c.id).values(physical_status="SUBMITTED").execution_options(synchronize_session=False))
+            db.refresh(c)
+            label = ("E1 physical verification" if kind == "VERIFICATION" else "E2 justification") + (" (FRT)" if frt_turn else " (FE review)")
+            ev = _event(db, c, user, stage, kind, role, frm, c.status, remark=rec.remarks, reason=rec.reason, record_id=rec.id, at=at)
+            mail = _announce(db, c, t, g, user, ("FE",), f"{label} saved", f"{user.name} saved the {label} of GP {g.gp_code} ({g.gp_name}).") if frt_turn else []
+            t.updated_at = at
+            db.commit()
+        except BaseException:
+            db.rollback()
+            files.remove(c.ticket_id, stored)
+            raise
+        return c, mail, ev.id
     if kind == "VERIFICATION":
         if c.status not in ("PROPOSED", "E1_DONE", "RETURNED_FE"):
             raise NdError(409, f"The case is '{STATUS_LABEL[c.status]}' – the physical verification cannot be submitted now")
@@ -495,7 +633,7 @@ def submit_form(db: Session, case_id: int, user: CurrentUser, kind: str, data: d
         db.add(rec)
         db.flush()
         _store(db, c, rec, user, uploads, stored)
-        ev = _event(db, c, user, stage, kind, "FE", frm, c.status, remark=rec.remarks, reason=rec.reason, record_id=rec.id, at=at)
+        ev = _event(db, c, user, stage, kind, role, frm, c.status, remark=rec.remarks, reason=rec.reason, record_id=rec.id, at=at)
         what = {
             "VERIFICATION": ("E1 physical verification submitted", f"{user.name} submitted the physical verification of GP {g.gp_code} ({g.gp_name}). The justification (E2) follows."),
             "JUSTIFICATION": ("Non-Doable – Pending AM Review", f"{user.name} submitted the Non-Doable justification of GP {g.gp_code} ({g.gp_name}) – your review: forward to the SME or return to the FE."),
@@ -542,10 +680,18 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
         raise NdError(403, f"Only the {ROLE_LABEL[step.role]} of this case can do this step")
     if c.status not in step.frm:
         raise NdError(409, f"The case is '{STATUS_LABEL[c.status]}' – this step is not possible now. Reload the case.")
-    returning = action.endswith("_RETURN") or action == "MGG_REJECT"
+    returning = action.endswith("_RETURN") or action in ("MGG_REJECT", "FE_RETURN_FRT")
     text = _text(remark)
     why = _need(reason, "The rejection reason" if action == "MGG_REJECT" else "The reason for returning the case") if returning else None
     recommendation = None
+    if action == "FE_FORWARD":
+        # the FE verifies the FRT's proposal: never to the AM while E1 / E2 are incomplete (backend rule)
+        chk = forms_check(db, c)
+        if not chk["complete"]:
+            gaps = [f"{k.upper()}: {', '.join(chk[k]['missing'])}" for k in ("e1", "e2") if chk[k]["missing"]]
+            raise NdError(422, "Complete the E1 / E2 forms before forwarding to the Area Manager – missing " + "; ".join(gaps))
+        recommendation = _need(remark, "Your verification remark")
+        text = None
     if action in ("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD"):
         recommendation = _need(remark, "Your recommendation / remarks")
         text = None
@@ -573,9 +719,11 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
     values: dict[str, Any] = {}
     if returning and action != "MGG_REJECT":
         values["approval_status"] = "RETURNED"
-    elif action in ("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD"):
+    elif action in ("AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD", "FE_FORWARD"):
         values["approval_status"] = "IN_REVIEW"
-    elif action == "WITHDRAW":
+        if action == "FE_FORWARD":  # E1 / E2 are complete (checked above): the physical verification and evidence are in
+            values.update(physical_status="SUBMITTED", evidence_status="SUBMITTED")
+    elif action in ("WITHDRAW", "FRT_WITHDRAW"):
         values["approval_status"] = "WITHDRAWN"
     elif action in ("MGG_APPROVE", "MGG_REJECT"):
         values.update(
@@ -589,12 +737,13 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
         t = db.get(Ticket, c.ticket_id)
         g = db.get(TicketTaskGp, c.task_gp_id)
         closed_ticket = False
-        if action in ("MGG_APPROVE", "MGG_REJECT", "WITHDRAW"):
+        if action in ("MGG_APPROVE", "MGG_REJECT", "WITHDRAW", "FRT_WITHDRAW"):
             # the GP itself: closed as Non-Doable (locked) / back to Revisit Required / proposal withdrawn – a daily
             # progress line keeps the GP history, monitor and workbook in line
-            new_cat = {"MGG_APPROVE": None, "MGG_REJECT": "C", "WITHDRAW": None}[action]
+            new_cat = {"MGG_APPROVE": None, "MGG_REJECT": "C", "WITHDRAW": None, "FRT_WITHDRAW": None}[action]
             label = {"MGG_APPROVE": f"Closed – Non-Doable ({c.ref}, approved by {MGG})", "MGG_REJECT": f"Non-Doable rejected ({c.ref}) – revisit required: {why}",
-                     "WITHDRAW": f"Non-Doable proposal withdrawn ({c.ref})" + (f": {text}" if text else "")}[action]
+                     "WITHDRAW": f"Non-Doable proposal withdrawn ({c.ref})" + (f": {text}" if text else ""),
+                     "FRT_WITHDRAW": f"Non-Doable proposal withdrawn by FRT ({c.ref})" + (f": {text}" if text else "")}[action]
             sub = TicketProgress(ticket_id=t.id, submitted_by_id=user.id, submitted_by_name=user.name, submitted_at=at, note=label[:2000])
             db.add(sub)
             db.flush()
@@ -636,6 +785,7 @@ def act(db: Session, case_id: int, user: CurrentUser, action: str, remark: str |
             "AM_FORWARD": ("SME", "FE"), "AM_RETURN": ("FE",), "SME_RECOMMEND": ("COH", "AM"), "SME_RETURN": ("AM",), "COH_FORWARD": ("MGG", "SME", "AM"),
             "COH_RETURN": {"RETURNED_FE": ("FE", "AM"), "RETURNED_AM": ("AM",), "RETURNED_SME": ("SME", "AM")}.get(dest, ()), "MGG_APPROVE": ("FE", "AM", "SME", "COH"),
             "MGG_REJECT": ("FE", "AM", "SME", "COH"), "WITHDRAW": ("AM",),
+            "FRT_SUBMIT": ("FE",), "FRT_WITHDRAW": ("FE",), "FE_FORWARD": ("AM", "FRT"), "FE_RETURN_FRT": ("FRT",),
         }[action]
         title = STATUS_LABEL[c.status] + (" · ticket closed" if closed_ticket else "")
         mail = _announce(db, c, t, g, user, who, title, body)
@@ -688,8 +838,16 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
     for eid, rid in db.execute(select(NdForward.event_id, NdForward.recipient_id).where(NdForward.event_id.in_(list(latest.values())))) if latest else []:
         handed.setdefault(eid, set()).add(rid)
     my_rows: dict[int, dict[int, str]] = {}  # ticket -> the user's recipient rows (id -> role)
-    for rid, tid, role in db.execute(select(TicketRecipient.id, TicketRecipient.ticket_id, TicketRecipient.role).where(TicketRecipient.ticket_id.in_({c.ticket_id for c in cases}), TicketRecipient.user_id == user.id)):
+    my_frt: dict[int, set[str]] = {}  # ticket -> the user's FRT codes there
+    from .task import frt_norm
+
+    for rid, tid, role, code, work in db.execute(
+        select(TicketRecipient.id, TicketRecipient.ticket_id, TicketRecipient.role, TicketRecipient.frt_code, TicketRecipient.can_work)
+        .where(TicketRecipient.ticket_id.in_({c.ticket_id for c in cases}), TicketRecipient.user_id == user.id)
+    ):
         my_rows.setdefault(tid, {})[rid] = role
+        if role == "FRT" and work and frt_norm(code):
+            my_frt.setdefault(tid, set()).add(frt_norm(code))
 
     def holds(c: NdCase, role: str) -> bool:
         eid = latest.get((c.id, role))
@@ -714,6 +872,8 @@ def _visible_cases(db: Session, user: CurrentUser) -> list[tuple[NdCase, set[str
         on = on_cache[t.id]
         owners = [r for r in fe_cache[t.id] if FeScope(r.name, r.fe_mail).owns(g)]
         roles: set[str] = set()
+        if frt_norm(g.frt_code) and frt_norm(g.frt_code) in my_frt.get(t.id, set()):
+            roles.add("FRT")
         if (owners and any(r.user_id == user.id for r in owners)) or (not owners and "AM" in on):
             roles.add("FE")
         if "AM" in on:
@@ -737,51 +897,125 @@ def _events_by_case(db: Session, ids: list[int]) -> dict[int, set[str]]:
     return out
 
 
+# KPI cards: one definition (role -> card key -> predicate) for the counts, the click-through list and the Excel – the
+# list of a card always holds exactly the cases the card counts. AM / SME / COH / MGG blocks cover every case for admins.
+KPI_ALL_CASES = frozenset({"AM", "SME", "COH", "MGG"})
+_FE_ACTION = ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE")
+_IN_REVIEW = ("PENDING_AM", "PENDING_SME", "RETURNED_AM", "RETURNED_SME", "PENDING_COH", "PENDING_MGG")
+
+
+def _kpi_preds(acts: dict[int, set[str]]) -> dict[str, dict[str, Any]]:
+    def did(action: str):
+        return lambda c: action in acts.get(c.id, set())
+
+    def every(_c: NdCase) -> bool:
+        return True
+
+    return {
+        "AM": {"proposed": did("JUSTIFICATION"), "pending": lambda c: c.status in ("PENDING_AM", "RETURNED_AM"), "approvedForSme": did("AM_FORWARD"), "returnedToFe": did("AM_RETURN"), "total": every},
+        "SME": {"received": every, "pending": lambda c: c.status in ("PENDING_SME", "RETURNED_SME"), "recommended": did("SME_RECOMMEND"), "returnedToAm": did("SME_RETURN"),
+                "forwardedToCoh": lambda c: c.status in ("PENDING_COH", "PENDING_MGG", "APPROVED", "REJECTED")},
+        "COH": {"received": every, "pending": lambda c: c.status == "PENDING_COH", "recommendedToMgg": did("COH_FORWARD"), "returned": did("COH_RETURN"), "pendingMgg": lambda c: c.status == "PENDING_MGG"},
+        "MGG": {"received": every, "pending": lambda c: c.status == "PENDING_MGG", "approved": lambda c: c.status == "APPROVED", "rejected": lambda c: c.decision == "REJECTED",
+                "decided": lambda c: c.decision is not None},
+        "FE": {"total": every, "actionNeeded": lambda c: c.status in _FE_ACTION or (c.status == "REJECTED" and c.revisit_status in ("COORDINATION", "FRT_VISIT", "FRT_UPDATED")),
+               "inReview": lambda c: c.status in _IN_REVIEW, "approved": lambda c: c.status == "APPROVED", "rejected": lambda c: c.decision == "REJECTED"},
+        "FRT": {"total": every, "withYou": lambda c: c.status == "FRT_PROPOSED", "pendingFe": lambda c: c.status == "PENDING_FE",
+                "inReview": lambda c: c.status in _IN_REVIEW + ("RETURNED_FE",), "approved": lambda c: c.status == "APPROVED"},
+    }
+
+
+def _kpi_member(user: CurrentUser, role: str, roles: set[str]) -> bool:
+    return (user.is_admin and role in KPI_ALL_CASES) or role in roles
+
+
 def summary(db: Session, user: CurrentUser) -> dict[str, Any]:
     """Role-wise KPI cards: one block per role the user has on any case (admins: every block over all cases)."""
     rows = _visible_cases(db, user)
     acts = _events_by_case(db, [c.id for c, _ in rows])
     mgg = is_mgg(db, user)
-
-    def of(role: str) -> list[NdCase]:
-        return [c for c, roles in rows if user.is_admin or role in roles]
-
-    def n(cases: list[NdCase], cond) -> int:
-        return sum(1 for c in cases if cond(c))
-
+    preds = _kpi_preds(acts)
     blocks: dict[str, dict[str, int]] = {}
-    am = of("AM")
-    if am or (not user.is_admin and any("AM" in r for _, r in rows)):
-        blocks["AM"] = {
-            "proposed": n(am, lambda c: "JUSTIFICATION" in acts.get(c.id, set())), "pending": n(am, lambda c: c.status in ("PENDING_AM", "RETURNED_AM")),
-            "approvedForSme": n(am, lambda c: "AM_FORWARD" in acts.get(c.id, set())), "returnedToFe": n(am, lambda c: "AM_RETURN" in acts.get(c.id, set())), "total": len(am),
-        }
-    sme = of("SME")
-    if sme:
-        blocks["SME"] = {
-            "received": len(sme), "pending": n(sme, lambda c: c.status in ("PENDING_SME", "RETURNED_SME")), "recommended": n(sme, lambda c: "SME_RECOMMEND" in acts.get(c.id, set())),
-            "returnedToAm": n(sme, lambda c: "SME_RETURN" in acts.get(c.id, set())), "forwardedToCoh": n(sme, lambda c: c.status in ("PENDING_COH", "PENDING_MGG", "APPROVED", "REJECTED")),
-        }
-    coh = of("COH")
-    if coh:
-        blocks["COH"] = {
-            "received": len(coh), "pending": n(coh, lambda c: c.status == "PENDING_COH"), "recommendedToMgg": n(coh, lambda c: "COH_FORWARD" in acts.get(c.id, set())),
-            "returned": n(coh, lambda c: "COH_RETURN" in acts.get(c.id, set())), "pendingMgg": n(coh, lambda c: c.status == "PENDING_MGG"),
-        }
-    mg = of("MGG")
-    if mg or mgg:
-        blocks["MGG"] = {
-            "received": len(mg), "pending": n(mg, lambda c: c.status == "PENDING_MGG"), "approved": n(mg, lambda c: c.status == "APPROVED"),
-            "rejected": n(mg, lambda c: c.decision == "REJECTED"), "decided": n(mg, lambda c: c.decision is not None),
-        }
-    fe = [c for c, roles in rows if "FE" in roles]
-    if fe:
-        blocks["FE"] = {
-            "total": len(fe), "actionNeeded": n(fe, lambda c: c.status in ("PROPOSED", "E1_DONE", "RETURNED_FE") or (c.status == "REJECTED" and c.revisit_status in ("COORDINATION", "FRT_VISIT", "FRT_UPDATED"))),
-            "inReview": n(fe, lambda c: c.status in ("PENDING_AM", "PENDING_SME", "RETURNED_AM", "RETURNED_SME", "PENDING_COH", "PENDING_MGG")),
-            "approved": n(fe, lambda c: c.status == "APPROVED"), "rejected": n(fe, lambda c: c.decision == "REJECTED"),
-        }
+    for role, cards in preds.items():
+        members = [c for c, roles in rows if _kpi_member(user, role, roles)]
+        shown = bool(members) or (role == "AM" and not user.is_admin and any("AM" in r for _, r in rows)) or (role == "MGG" and mgg)
+        if shown:
+            blocks[role] = {key: sum(1 for c in members if pred(c)) for key, pred in cards.items()}
     return {"roles": sorted({r for _, roles in rows for r in roles} | ({"MGG"} if mgg else set())), "isAdmin": user.is_admin, "isMgg": mgg, "kpis": blocks}
+
+
+KPI_LABEL = {
+    ("AM", "proposed"): "AM · Total Non-Doable Proposed", ("AM", "pending"): "AM · Pending AM Review", ("AM", "approvedForSme"): "AM · Approved for SME",
+    ("AM", "returnedToFe"): "AM · Returned to FE", ("AM", "total"): "AM · Total Non-Doable Cases",
+    ("SME", "received"): "SME · Received", ("SME", "pending"): "SME · Pending SME Review", ("SME", "recommended"): "SME · Recommended", ("SME", "returnedToAm"): "SME · Returned to AM",
+    ("SME", "forwardedToCoh"): "SME · Forwarded to COH",
+    ("COH", "received"): "COH · Received", ("COH", "pending"): "COH · Pending COH Review", ("COH", "recommendedToMgg"): "COH · Recommended to MGG", ("COH", "returned"): "COH · Returned",
+    ("COH", "pendingMgg"): "COH · Pending MGG",
+    ("MGG", "received"): "MGG · Total Received", ("MGG", "pending"): "MGG · Pending MGG Approval", ("MGG", "approved"): "MGG · Approved", ("MGG", "rejected"): "MGG · Rejected",
+    ("MGG", "decided"): "MGG · Total Decided",
+    ("FE", "total"): "FE · Total", ("FE", "actionNeeded"): "FE · Action needed", ("FE", "inReview"): "FE · In review", ("FE", "approved"): "FE · Approved", ("FE", "rejected"): "FE · Rejected",
+    ("FRT", "total"): "FRT · Total", ("FRT", "withYou"): "FRT · With you", ("FRT", "pendingFe"): "FRT · Pending FE", ("FRT", "inReview"): "FRT · In review", ("FRT", "approved"): "FRT · Approved",
+}
+
+
+def export_xlsx(db: Session, user: CurrentUser, status: str | None, q: str | None, mine: bool, ticket_id: int | None, kpi: str | None) -> tuple[bytes, str]:
+    """The case list with the same filters (KPI card, status, search, waiting for me, ticket) as an .xlsx workbook – only
+    the cases the user may see. Text is always written as text (never as a formula)."""
+    import io
+
+    import xlsxwriter
+
+    from .service import iso
+
+    rows, tickets, gps = _list_rows(db, user, status, q, mine, ticket_id, kpi)
+    ids = [c.id for c, _ in rows]
+    tasks = {x.ticket_id: x for x in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_({c.ticket_id for c, _ in rows})))} if rows else {}
+    last_at: dict[tuple[int, str], dt.datetime] = {}
+    for cid, action, at in db.execute(select(NdEvent.case_id, NdEvent.action, NdEvent.at).where(NdEvent.case_id.in_(ids), NdEvent.action.in_(("FE_FORWARD", "JUSTIFICATION", "AM_FORWARD", "SME_RECOMMEND", "COH_FORWARD"))).order_by(NdEvent.id)) if ids else []:
+        last_at[(cid, action)] = at
+
+    def day(v: Any) -> str:
+        v = iso(v) if isinstance(v, (dt.datetime, dt.date)) else v
+        return str(v)[:10] if v else ""
+
+    cols: list[tuple[str, int]] = [
+        ("Case ID", 13), ("Round", 7), ("Ticket", 13), ("Circle", 14), ("District", 14), ("Block", 16), ("GP Code", 11), ("GP Name", 22), ("Field Engineer", 18), ("FRT Code", 14),
+        ("Area Manager", 18), ("Status", 34), ("Pending with", 12), ("Proposed by", 18), ("Proposed on", 12), ("E1 complete", 11), ("E2 complete", 11), ("Sent to AM on", 13),
+        ("AM forwarded on", 14), ("SME recommended on", 16), ("COH forwarded on", 15), ("MGG decision", 13), ("Decided by", 18), ("Decided on", 12), ("Decision remark", 30), ("Updated", 12),
+    ]
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False})
+    ws = wb.add_worksheet("Non-Doable cases")
+    title = wb.add_format({"bold": True, "font_size": 14})
+    note = wb.add_format({"italic": True, "font_color": "#555555"})
+    head = wb.add_format({"bold": True, "bg_color": "#0E7490", "font_color": "#FFFFFF", "border": 1, "text_wrap": True, "valign": "vcenter"})
+    cell = wb.add_format({"border": 1, "valign": "top"})
+    role, _, key = (kpi or "").partition(":")
+    filters = ", ".join(x for x in (KPI_LABEL.get((role, key), "") if kpi else "", f"status: {status}" if status and status != "all" else "", f"search: {q}" if q else "",
+                                    "waiting for my action" if mine else "", f"ticket id: {ticket_id}" if ticket_id else "") if x) or "none"
+    ws.write_string(0, 0, f"Non-Doable cases – {len(rows):,}", title)
+    ws.write_string(1, 0, f"Exported by {user.name} on {now():%d %b %Y %H:%M} UTC · filters: {filters}", note)
+    hr = 3
+    for i, (label, width) in enumerate(cols):
+        ws.set_column(i, i, width)
+        ws.write_string(hr, i, label, head)
+    for r, (c, _roles) in enumerate(rows, start=hr + 1):
+        t, g, task = tickets.get(c.ticket_id), gps.get(c.task_gp_id), tasks.get(c.ticket_id)
+        chk = forms_check(db, c)
+        sent_am = last_at.get((c.id, "FE_FORWARD")) or last_at.get((c.id, "JUSTIFICATION"))
+        values = [
+            c.ref or "", str(c.round), t.code if t else "", g.circle if g else "", (g.district or "") if g else "", (g.block or "") if g else "", c.gp_code, g.gp_name if g else "",
+            c.fe_name or "", (g.frt_code or "") if g else "", (task.am_name or "") if task else "", STATUS_LABEL.get(c.status, c.status), _pending_with(c) or "", c.created_by_name or "",
+            day(c.created_at), "Yes" if chk["e1"]["complete"] else "No", "Yes" if chk["e2"]["complete"] else "No", day(sent_am), day(last_at.get((c.id, "AM_FORWARD"))),
+            day(last_at.get((c.id, "SME_RECOMMEND"))), day(last_at.get((c.id, "COH_FORWARD"))), (c.decision or "").title(), c.decided_by_name or "", day(c.decided_at), c.decision_remark or "",
+            day(c.updated_at),
+        ]
+        for i, v in enumerate(values):
+            ws.write_string(r, i, str(v), cell)
+    ws.freeze_panes(hr + 1, 1)
+    ws.autofilter(hr, 0, hr + max(len(rows), 1), len(cols) - 1)
+    wb.close()
+    return buf.getvalue(), f"non-doable-cases-{now():%Y%m%d-%H%M}.xlsx"
 
 
 def _pending_with(c: NdCase) -> str | None:
@@ -812,13 +1046,21 @@ FILTERS = {
     "open": lambda c: c.status in OPEN, "pending_am": lambda c: c.status in ("PENDING_AM", "RETURNED_AM"), "pending_sme": lambda c: c.status in ("PENDING_SME", "RETURNED_SME"),
     "pending_coh": lambda c: c.status == "PENDING_COH", "pending_mgg": lambda c: c.status == "PENDING_MGG", "returned": lambda c: c.status.startswith("RETURNED_"),
     "approved": lambda c: c.status == "APPROVED", "rejected": lambda c: c.status == "REJECTED", "with_fe": lambda c: _pending_with(c) == "FE",
+    "with_frt": lambda c: c.status == "FRT_PROPOSED",
 }
 
 
-def list_cases(db: Session, user: CurrentUser, status: str | None, q: str | None, mine: bool, ticket_id: int | None, page: int, size: int) -> dict[str, Any]:
-    from .service import iso
-
+def _list_rows(db: Session, user: CurrentUser, status: str | None, q: str | None, mine: bool, ticket_id: int | None, kpi: str | None):
+    """(rows, tickets, GPs) of the case list with its filters – shared by the list and the Excel. `kpi` = "ROLE:card"
+    (a KPI card): exactly the cases that card counts."""
     rows = _visible_cases(db, user)
+    if kpi:
+        role, _, key = kpi.partition(":")
+        acts = _events_by_case(db, [c.id for c, _ in rows])
+        pred = _kpi_preds(acts).get(role, {}).get(key)
+        if pred is None:
+            raise NdError(422, "Unknown KPI card")
+        rows = [(c, r) for c, r in rows if _kpi_member(user, role, r) and pred(c)]
     if status:
         if status in FILTERS:
             rows = [(c, r) for c, r in rows if FILTERS[status](c)]
@@ -837,6 +1079,13 @@ def list_cases(db: Session, user: CurrentUser, status: str | None, q: str | None
             hay = " ".join(str(x or "") for x in (c.ref, c.gp_code, g.gp_name if g else "", g.block if g else "", g.district if g else "", c.fe_name, t.code if t else "")).lower()
             return needle in hay
         rows = [(c, r) for c, r in rows if hit(c)]
+    return rows, tickets, gps
+
+
+def list_cases(db: Session, user: CurrentUser, status: str | None, q: str | None, mine: bool, ticket_id: int | None, page: int, size: int, kpi: str | None = None) -> dict[str, Any]:
+    from .service import iso
+
+    rows, tickets, gps = _list_rows(db, user, status, q, mine, ticket_id, kpi)
     total = len(rows)
     start = (page - 1) * size
     return {
@@ -849,7 +1098,7 @@ def _record_json(r: NdRecord, fls: list[NdFile], iso) -> dict[str, Any]:
     return {
         "id": r.id, "kind": r.kind, "visitDate": r.visit_date.isoformat() if r.visit_date else None, "location": r.location, "visitorName": r.visitor_name,
         "findings": r.findings, "reason": r.reason, "remarks": r.remarks, "justification": r.justification, "frtTeam": r.frt_team, "frtVisit": r.frt_visit,
-        "outcome": r.outcome, "by": r.created_by_name, "at": iso(r.created_at), "files": [file_json(f, iso) for f in fls],
+        "outcome": r.outcome, "role": r.role or "FE", "by": r.created_by_name, "at": iso(r.created_at), "files": [file_json(f, iso) for f in fls],
     }
 
 
@@ -865,7 +1114,7 @@ def _tracker(c: NdCase, acts: list[NdEvent]) -> list[dict[str, Any]]:
         if e.stage in STAGES:
             last[e.stage] = e
     current = {
-        "PROPOSED": "E1", "E1_DONE": "E2", "RETURNED_FE": "E2", "PENDING_AM": "E3", "RETURNED_AM": "E3", "PENDING_SME": "E4", "RETURNED_SME": "E4",
+        "FRT_PROPOSED": "E1", "PENDING_FE": "E2", "PROPOSED": "E1", "E1_DONE": "E2", "RETURNED_FE": "E2", "PENDING_AM": "E3", "RETURNED_AM": "E3", "PENDING_SME": "E4", "RETURNED_SME": "E4",
         "PENDING_COH": "E5", "PENDING_MGG": "E6",
     }.get(c.status)
     order = {s: i for i, s in enumerate(STAGES)}
@@ -902,9 +1151,13 @@ def detail(db: Session, case_id: int, user: CurrentUser) -> dict[str, Any]:
     others = list(db.scalars(select(NdCase).where(NdCase.task_gp_id == g.id, NdCase.id != c.id).order_by(NdCase.id)))
     open_ = t.status != "CLOSED"
     fe, w = "FE" in roles and open_, c.status
+    frt_turn = "FRT" in roles and open_ and w == "FRT_PROPOSED"
+    chk = forms_check(db, c)
     can = {
-        "verify": fe and w in ("PROPOSED", "E1_DONE", "RETURNED_FE"),
-        "justify": fe and w in ("E1_DONE", "RETURNED_FE") and c.physical_status == "SUBMITTED",
+        "verify": (fe and w in ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE")) or frt_turn,
+        "justify": (fe and ((w in ("E1_DONE", "RETURNED_FE") and c.physical_status == "SUBMITTED") or w == "PENDING_FE")) or frt_turn,
+        # optional = the FRT's forms (every field optional); required = the FE's (mandatory fields)
+        "formMode": "optional" if frt_turn else "required",
         "withdraw": fe and w in STEPS["WITHDRAW"].frm,
         "revisitCoordination": fe and w == "REJECTED" and c.revisit_status == "COORDINATION",
         "revisitVisit": fe and w == "REJECTED" and c.revisit_status == "FRT_VISIT",
@@ -931,6 +1184,9 @@ def detail(db: Session, case_id: int, user: CurrentUser) -> dict[str, Any]:
         "can": can,
         "mggMembers": len(mgg_people(db)),
         "mggPicked": _picked_json(db, c),
+        # E1 / E2 completeness (latest form of each, FRT or FE) – FE_FORWARD needs complete = true
+        "forms": chk,
+        "frtCase": any(e.action == "PROPOSED_FRT" for e in evs),
     }
 
 

@@ -2,7 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -29,7 +29,8 @@ GENERIC_LOGIN_ERROR = "The email or password is incorrect."
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    # the e-mail – or, for an FRT account created with its FRT code only, the FRT code (no "@")
+    email: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=128)
     remember: bool = False
 
@@ -62,7 +63,13 @@ def _cookie_max_age(exp: datetime, remember: bool) -> int | None:
 def login(body: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)) -> dict:
     s = get_settings()
     ip = client_ip(request)
-    email = body.email.lower()
+    from ..security.frt_login import frt_login_email
+
+    name = body.email.strip()
+    if "@" in name:
+        email = name.lower()
+    else:  # an FRT code: the code-only FRT account of that code (app.security.frt_login)
+        email = frt_login_email(name)
     window = s.login_window_seconds
     ip_key, pair_key, acct_key = f"ip:{ip}", f"pair:{email}|{ip}", f"acct:{email}"
     # Failures of this e-mail from this IP still inside the window (successes reset the pair bucket).

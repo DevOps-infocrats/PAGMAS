@@ -1,8 +1,7 @@
 "use client";
 
-import { Loader2, Pencil, Plus, Search, Trash2, Upload, UserPlus, X } from "lucide-react";
+import { Loader2, Plus, Search, Upload, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { StatusBadge } from "@/components/feedback/badges";
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { SearchableSelect, type SearchableOption } from "@/components/filters/searchable-select";
 import { AdminGuard } from "@/components/layout/admin-guard";
@@ -14,8 +13,8 @@ import { useApiQuery } from "@/hooks/use-api-query";
 import { useSession } from "@/hooks/use-session";
 import { IS_LIVE, adminApi, type AppUser, type UserGpOption, type UserLocations, type UserScopeLevel } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
-import { formatDateTime } from "@/lib/utils/format";
 import { ImportUsersDialog } from "./import-users-dialog";
+import { RolesHelp, UsersTable } from "./users-table-parts";
 
 /** Levels offered when adding an area */
 const LEVELS: { value: UserScopeLevel; label: string }[] = [
@@ -132,12 +131,8 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
         }
       />
 
-      <Card className="p-5">
-        <p className="mb-4 text-[0.8125rem] text-muted-foreground">
-          <b>Admin</b> – manages data, users and mail; sees and receives every circle. <b>Viewer</b> – reads dashboards. A viewer with areas sees
-          only those areas on every page, list and download, and receives the AMC Conversion e-mail for them. A viewer without an area sees every
-          state but receives no e-mail. Area Managers, SME, COH and CBH are taken from the Escalation Matrix and do not need an account.
-        </p>
+      <Card className="space-y-4 p-5">
+        <RolesHelp />
         {!IS_LIVE ? (
           <p className="text-sm text-muted-foreground">User management needs the live backend.</p>
         ) : users.error ? (
@@ -145,73 +140,14 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
         ) : !users.data ? (
           <TableSkeleton rows={5} />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[48.75rem] text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  {["Name", "Email", "Role", "Areas (data access & e-mail)", "Last sign-in", "Status", ""].map((c) => (
-                    <th key={c} scope="col" className="py-2 pr-3 font-medium">
-                      {c}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {users.data.map((u) => (
-                  <tr key={u.id} className="border-b border-border/60 align-top last:border-0">
-                    <td className="py-2.5 pr-3 font-medium">{u.name}</td>
-                    <td className="py-2.5 pr-3 text-muted-foreground">{u.email}</td>
-                    <td className="py-2.5 pr-3">
-                      <span className="capitalize">{u.role}</span>
-                      {u.frtCode && (
-                        <span className="ml-1.5 rounded bg-primary-soft px-1.5 py-0.5 text-xs font-semibold text-primary" title="FRT login – reports the Daily Achievement of the GPs of this FRT code">
-                          FRT {u.frtCode}
-                        </span>
-                      )}
-                    </td>
-                    <td className="max-w-[20rem] py-2.5 pr-3">
-                      {u.role === "admin" ? (
-                        <span className="text-muted-foreground">All circles</span>
-                      ) : u.scopes.length ? (
-                        <div className="flex flex-wrap gap-1">
-                          {u.scopes.map((s) => (
-                            <span
-                              key={`${s.level}:${s.id}`}
-                              title={s.valid ? undefined : "Not in the active data – ignored"}
-                              className={cn("rounded px-1.5 py-0.5 text-xs", s.valid ? "bg-primary-soft text-primary" : "bg-warning-soft text-warning-text line-through")}
-                            >
-                              {LEVEL_LABEL[s.level] ?? s.level}: {s.label ?? s.id}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-warning-text">None – sees all states, no e-mail</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-3 text-muted-foreground">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : "Never"}</td>
-                    <td className="py-2.5 pr-3">
-                      {u.locked ? <StatusBadge tone="warning">Locked</StatusBadge> : u.isActive ? <StatusBadge tone="good">Active</StatusBadge> : <StatusBadge tone="neutral">Inactive</StatusBadge>}
-                    </td>
-                    <td className="whitespace-nowrap py-2.5 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => setEditing({ mode: "edit", user: u })} aria-label={`Edit ${u.name}`}>
-                        <Pencil /> Edit
-                      </Button>
-                      {u.email !== session?.email && (
-                        <Button size="sm" variant="outline" onClick={() => toggle(u)}>
-                          {u.isActive ? "Deactivate" : "Activate"}
-                        </Button>
-                      )}
-                      {u.email !== session?.email && (
-                        <Button size="sm" variant="ghost" className="ml-1 text-critical-text hover:bg-critical-soft" onClick={() => void remove(u)} aria-label={`Delete ${u.name}`}>
-                          <Trash2 /> Delete
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <UsersTable
+            users={users.data}
+            locations={locations.data}
+            selfEmail={session?.email}
+            onEdit={(u) => setEditing({ mode: "edit", user: u })}
+            onToggle={(u) => void toggle(u)}
+            onRemove={(u) => void remove(u)}
+          />
         )}
         {msg && <p className={cn("mt-3 text-sm", msg.ok ? "text-good-text" : "text-critical-text")}>{msg.text}</p>}
       </Card>
@@ -263,7 +199,9 @@ function UserDialog({
 }) {
   const user = editing.mode === "edit" ? editing.user : null;
   const [name, setName] = useState(user?.name ?? "");
-  const [email, setEmail] = useState(user?.email ?? "");
+  // FRT team login without e-mail: the user signs in with the FRT code (app.security.frt_login on the backend)
+  const [byCode, setByCode] = useState(user?.loginType === "frt");
+  const [email, setEmail] = useState(user?.loginType === "frt" ? "" : (user?.email ?? ""));
   const [role, setRole] = useState<"admin" | "viewer">(user?.role ?? "viewer");
   const [password, setPassword] = useState("");
   // FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for ("" = not an FRT)
@@ -290,7 +228,8 @@ function UserDialog({
   const pickOptions = level === "circle" ? options.circles : level === "ba" ? inCircles(options.bas) : level === "district" ? inCircles(options.districts) : blockOptions;
   const chosenGroups = [...chosenBas.map((i) => label("ba", i)), ...chosenDistricts.map((i) => label("district", i))];
   const emailOk = EMAIL_RE.test(email.trim());
-  const valid = name.trim().length >= 2 && emailOk && (user ? true : password.length > 0);
+  const codeOk = frtCode.trim().length >= 2;
+  const valid = name.trim().length >= 2 && (byCode ? codeOk && role === "viewer" : emailOk) && (user ? true : password.length > 0);
 
   const addScope = (s: Scope) => {
     if (!scopes.some((x) => x.level === s.level && x.id === s.id)) setScopes([...scopes, s]);
@@ -307,9 +246,11 @@ function UserDialog({
       const sc = role === "viewer" ? scopes : [];
       const frt = role === "viewer" ? frtCode.trim() : "";
       if (user) {
+        // a code-only FRT login keeps its (non-deliverable) login address unless an e-mail is given now
+        const newEmail = byCode ? null : email.trim().toLowerCase() !== user.email ? email.trim() : null;
         await adminApi.updateUser(user.id, {
           name: name.trim(),
-          ...(email.trim().toLowerCase() !== user.email ? { email: email.trim() } : {}),
+          ...(newEmail ? { email: newEmail } : {}),
           ...(self ? {} : { role }),
           ...(password ? { password } : {}),
           scopes: sc,
@@ -317,8 +258,8 @@ function UserDialog({
         });
         onDone(`${name.trim()} saved.`);
       } else {
-        await adminApi.createUser({ name: name.trim(), email: email.trim(), role, password, scopes: sc, ...(frt ? { frtCode: frt } : {}) });
-        onDone(`User ${email.trim()} created.`);
+        await adminApi.createUser({ name: name.trim(), ...(byCode ? {} : { email: email.trim() }), role, password, scopes: sc, ...(frt ? { frtCode: frt } : {}) });
+        onDone(byCode ? `FRT login ${frt.toUpperCase()} created – the user signs in with the FRT code and the password.` : `User ${email.trim()} created.`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save");
@@ -339,19 +280,37 @@ function UserDialog({
         <div>
           <DialogTitle className="text-base font-bold">{user ? `Edit ${user.name}` : "Add user"}</DialogTitle>
           <DialogDescription className="text-[0.8125rem] text-muted-foreground">
-            {user ? "Changing the e-mail, role or password signs the user out." : "The user signs in with this e-mail and password."}
+            {user ? "Changing the e-mail, role, FRT code or password signs the user out." : byCode ? "The FRT signs in with the FRT code and this password." : "The user signs in with this e-mail and password."}
           </DialogDescription>
         </div>
+        {!self && (
+          <div className="flex flex-wrap items-center gap-3 text-[0.8125rem]" role="radiogroup" aria-label="Login with">
+            <span className="font-medium">Login with</span>
+            <label className="inline-flex cursor-pointer items-center gap-1.5">
+              <input type="radio" name="login-by" checked={!byCode} onChange={() => setByCode(false)} className="accent-[var(--primary)]" /> E-mail
+            </label>
+            <label className="inline-flex cursor-pointer items-center gap-1.5">
+              <input type="radio" name="login-by" checked={byCode} onChange={() => { setByCode(true); setRole("viewer"); }} className="accent-[var(--primary)]" /> FRT code (no e-mail)
+            </label>
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field id="u-name" label="Full name" value={name} onChange={setName} />
-          <Field id="u-email" label="Email address" type="email" value={email} onChange={setEmail} disabled={self} invalid={email.length > 0 && !emailOk} />
+          {byCode ? (
+            <div className="space-y-1">
+              <Field id="u-frt-login" label="FRT code (login name)" value={frtCode} onChange={setFrtCode} invalid={frtCode.length > 0 && !codeOk} />
+              <p className="text-xs text-muted-foreground">Exactly as in the Escalation Matrix – checked when you save. One such login per FRT code.</p>
+            </div>
+          ) : (
+            <Field id="u-email" label="Email address" type="email" value={email} onChange={setEmail} disabled={self} invalid={email.length > 0 && !emailOk} />
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="u-role">Role</Label>
             <Select
               ariaLabel="Role"
               className="w-full"
               value={role}
-              disabled={self}
+              disabled={self || byCode}
               onValueChange={(v) => setRole(v as "admin" | "viewer")}
               options={[
                 { value: "viewer", label: "Viewer" },
@@ -362,7 +321,7 @@ function UserDialog({
           <Field id="u-pass" label={user ? "New password (optional)" : "Initial password"} type="password" value={password} onChange={setPassword} autoComplete="new-password" />
         </div>
         {self && <p className="text-xs text-muted-foreground">You cannot change your own role or e-mail address.</p>}
-        {role === "viewer" && (
+        {role === "viewer" && !byCode && (
           <div className="space-y-1.5">
             <Field id="u-frt" label="FRT code (FRT team login – optional)" value={frtCode} onChange={setFrtCode} />
             <p className="text-xs text-muted-foreground">

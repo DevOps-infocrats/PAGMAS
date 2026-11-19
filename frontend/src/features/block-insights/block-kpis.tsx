@@ -35,7 +35,7 @@ export function BlockKpis({ s, loading }: { s?: Summary; loading: boolean }) {
     <div className="space-y-3">
       {/* 3 per row on wide screens: row 1 = Total GPs, HOTO Done GPs, AMC GPs; row 2 = Non-AMC GPs, Total Fibre Route
           (2 per row on tablets, 1 on phones) */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         <StatCard
           compact
           dense

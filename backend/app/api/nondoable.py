@@ -11,7 +11,7 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,7 @@ class ToIn(BaseModel):
 
 
 class ActionIn(BaseModel):
-    action: Literal["AM_FORWARD", "AM_RETURN", "SME_RECOMMEND", "SME_RETURN", "COH_FORWARD", "COH_RETURN", "MGG_APPROVE", "MGG_REJECT", "WITHDRAW"]
+    action: Literal["AM_FORWARD", "AM_RETURN", "SME_RECOMMEND", "SME_RETURN", "COH_FORWARD", "COH_RETURN", "MGG_APPROVE", "MGG_REJECT", "WITHDRAW", "FRT_SUBMIT", "FRT_WITHDRAW", "FE_FORWARD", "FE_RETURN_FRT"]
     remark: str | None = Field(default=None, max_length=nd.MAX_TEXT)
     reason: str | None = Field(default=None, max_length=nd.MAX_TEXT)
     target: Literal["FE", "AM", "SME"] | None = None  # COH_RETURN
@@ -59,11 +59,33 @@ def cases(
     ticket: int | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
+    kpi: Annotated[str | None, Query(max_length=40, pattern=r"^[A-Z]{2,3}:[A-Za-z]{2,30}$")] = None,
     user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Cases the user may see; `mine` = waiting for the user's action."""
-    return nd.list_cases(db, user, status_, q, mine, ticket, page, size)
+    """Cases the user may see; `mine` = waiting for the user's action; `kpi` = "ROLE:card" – the cases a KPI card counts."""
+    try:
+        return nd.list_cases(db, user, status_, q, mine, ticket, page, size, kpi)
+    except nd.NdError as exc:
+        raise _fail(exc) from None
+
+
+@router.get("/cases/export.xlsx")
+def cases_xlsx(
+    status_: Annotated[str | None, Query(alias="status", max_length=20)] = None,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    mine: bool = False,
+    ticket: int | None = None,
+    kpi: Annotated[str | None, Query(max_length=40, pattern=r"^[A-Z]{2,3}:[A-Za-z]{2,30}$")] = None,
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The case list with the same filters as an Excel workbook (only the cases the user may see)."""
+    try:
+        data, name = nd.export_xlsx(db, user, status_, q, mine, ticket, kpi)
+    except nd.NdError as exc:
+        raise _fail(exc) from None
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
 @router.get("/cases/{case_id}")

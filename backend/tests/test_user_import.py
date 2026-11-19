@@ -143,7 +143,7 @@ def test_template_downloads_and_its_examples_are_never_imported(client):
     assert r.status_code == 200 and r.headers["content-disposition"].endswith('user-import-template.xlsx"')
     # the template itself, uploaded unchanged: the columns are recognised, every example row is skipped
     p = _post(client, csrf, r.content).json()
-    assert p["total"] == 3 and p["new"] == 0 and p["skipped"] == 3
+    assert p["total"] == 4 and p["new"] == 0 and p["skipped"] == 4  # 3 e-mail examples + 1 FRT-code login example
     assert all("Example row" in it["reason"] for it in p["items"])
     login(client, VIEWER)
     assert client.get(f"{URL}/template.xlsx").status_code == 403
