@@ -5,6 +5,7 @@ least one photo (JPG / PNG) in the same submission; the Area Manager's approval 
 (SME_FORWARD) need the reviewer's own proof document. These helpers send exactly that, so a test can focus on what it
 checks (they never weaken the rules – a test of the rule itself posts without them)."""
 
+import datetime as dt
 import json
 
 JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 64  # smallest content the JPG check accepts
@@ -17,9 +18,15 @@ def _needs_photo(it: dict) -> bool:
     return it.get("category") is not None or it.get("status") is not None or bool(it.get("achievedToday"))
 
 
-def progress(client, tid, items=None, headers=None, new_gps=None, note=None, photo=True, extra_files=None):
+def camera_geo():
+    """The location / time the camera dialog sends with a live photo (proofMeta item)."""
+    return {"lat": 26.9124, "lng": 75.7873, "accuracy": 12.5, "capturedAt": dt.datetime.now(dt.UTC).isoformat()}
+
+
+def progress(client, tid, items=None, headers=None, new_gps=None, note=None, photo=True, extra_files=None, geo=True):
     """POST /progress-form: every item that sets an achievement gets a remark (when missing) and a photo; added GPs
-    with a category too. `photo=False` sends no photo (to test the rule)."""
+    with a category too. `photo=False` sends no photo (to test the rule). geo=True: every file is a camera photo with
+    its location (proofMeta – required from the FRT); geo=False sends none."""
     items = [dict(it) for it in (items or [])]
     new_gps = [dict(n) for n in (new_gps or [])]
     files, gps = [], []
@@ -40,6 +47,8 @@ def progress(client, tid, items=None, headers=None, new_gps=None, note=None, pho
     data = {"payload": json.dumps({"items": items, "newGps": new_gps, "note": note})}
     if gps:
         data["proofGps"] = gps
+        if geo:
+            data["proofMeta"] = json.dumps([camera_geo() for _ in gps])
     return client.post(f"/api/v1/tickets/{tid}/progress-form", data=data, files=files or None, headers=headers)
 
 

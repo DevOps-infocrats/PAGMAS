@@ -8,6 +8,7 @@ streamed only after the same check.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile, status
@@ -87,7 +88,8 @@ class ProgressItem(BaseModel):
     # GP classification A–E (tasks.CATEGORIES) – the Daily Achievement dropdown; replaces the GP's previous category
     category: Literal["A", "B", "C", "D", "E"] | None = None
     remark: str | None = Field(default=None, max_length=tasks.MAX_REMARK)
-    # corrections of the GP by the FE / Area Manager (null = unchanged); kept in the GP's history
+    # corrections of the GP by the FE / Area Manager / FRT (null = unchanged); kept in the GP's history
+    gpCode: str | None = Field(default=None, min_length=1, max_length=40)
     gpName: str | None = Field(default=None, max_length=160)
     block: str | None = Field(default=None, max_length=160)
 
@@ -289,15 +291,22 @@ def task_preview(
     circle: Annotated[str | None, Query(max_length=80)] = None,
     withNoAm: bool = False,
     store: Store = Depends(get_store),
+    db: Session = Depends(get_db),
 ) -> dict:
     """The GPs a task ticket for this Area Manager would get (only the selected circle's when one is given). am = "No
-    Area Manager": the circle's GPs without an AM (an acting AM's ticket); withNoAm: the AM's GPs plus those."""
+    Area Manager": the circle's GPs without an AM (an acting AM's ticket); withNoAm: the AM's GPs plus those.
+    summary.frts: FRT-wise target, each with the FRT accounts (User Management → FRT code) that join the ticket."""
     _week_ok(store, week)
     try:
         rows = tasks.preview(store, am, week, circle, with_no_am=withNoAm)
         summary = tasks.breakdown(store, am, week, circle, rows, with_no_am=withNoAm)
     except tasks.TaskError as exc:
         raise HTTPException(exc.status, exc.message) from None
+    logins: dict[str, list[str]] = {}
+    for u in tasks.frt_users_for(db, {f["code"] for f in summary["frts"]}):
+        logins.setdefault(tasks.frt_norm(u.frt_code), []).append(u.name)
+    for f in summary["frts"]:
+        f["logins"] = logins.get(f["code"], [])
     return {"rows": rows, "dataAsOf": store.data_as_of.isoformat(), "emails": tasks.am_emails(store, am), "summary": summary}
 
 
@@ -452,8 +461,9 @@ def _store_for(body: ProgressIn) -> Store | None:
 
 
 def _mail_am(db: Session, t, user: CurrentUser, progress_id: int, background: BackgroundTasks) -> None:
-    """An FE's daily progress is e-mailed to the Area Manager of the ticket (the dashboard notification is already saved)."""
-    if tasks.scope_of(db, t, user) is not None:
+    """An FE's daily progress is e-mailed to the Area Manager of the ticket (the dashboard notification is already saved).
+    An FRT's goes to their FE first (dashboard notification only) – never e-mailed to the Area Manager."""
+    if isinstance(tasks.scope_of(db, t, user), tasks.FeScope):
         background.add_task(mailer.progress_mail, progress_id)
 
 
@@ -569,6 +579,28 @@ def reassign_gp(ticket_id: int, gp_id: int, body: ReassignIn, request: Request, 
     return service.detail_json(db, t, user)
 
 
+class FeCheckIn(BaseModel):
+    taskGpIds: list[int] = Field(min_length=1, max_length=tasks.MAX_FE_STEP_GPS)
+    action: Literal["FE_VERIFY", "FE_RETURN"]
+    remark: str = Field(min_length=1, max_length=tasks.MAX_REMARK)
+
+
+@router.post("/{ticket_id}/fe-check")
+def fe_check(ticket_id: int, body: FeCheckIn, request: Request, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """The FE checks the FRT's Daily Achievement of their GPs: FE_VERIFY sends them to the Area Manager, FE_RETURN back
+    to the FRT (remark required)."""
+    try:
+        t = service.visible(db, ticket_id, user)
+        n = tasks.fe_check(db, t, user, body.taskGpIds, body.action, body.remark)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except tasks.TaskError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+    audit(db, "ticket_fe_check", request, user.id, f"{t.code} {body.action} · {n} GPs")
+    db.refresh(t)
+    return service.detail_json(db, t, user)
+
+
 @router.post("/{ticket_id}/progress")
 def progress(ticket_id: int, body: ProgressIn, request: Request, background: BackgroundTasks, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     """Daily progress of a GP-wise task (assigned Area Manager / FE); every submission is kept as its own record."""
@@ -593,11 +625,14 @@ def progress_form(
     background: BackgroundTasks,
     proofs: Annotated[list[UploadFile] | None, File()] = None,
     proofGps: Annotated[list[int] | None, Form()] = None,
+    proofMeta: Annotated[str | None, Form(max_length=50_000)] = None,
     user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     """Daily progress with proof documents: `payload` = the JSON of /progress (items + note); `proofs[i]` belongs to the
-    GP `proofGps[i]` (task GP id). Sync endpoint (thread pool): files are validated and written without blocking."""
+    GP `proofGps[i]` (task GP id); `proofMeta` = optional JSON list, item i = the camera location / time of proofs[i]
+    ({lat, lng, accuracy, capturedAt}) or null. Sync endpoint (thread pool): files are validated and written without
+    blocking."""
     try:
         body = ProgressIn.model_validate_json(payload)
     except ValueError:
@@ -606,9 +641,17 @@ def progress_form(
     gps_in = list(proofGps or [])
     if len(files_in) != len(gps_in):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Every proof document must name its GP")
+    metas: list = [None] * len(files_in)
+    if proofMeta:
+        try:
+            metas = json.loads(proofMeta)
+        except ValueError:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The photo locations could not be read") from None
+        if not isinstance(metas, list) or len(metas) != len(files_in):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Every photo location must belong to one proof document")
     try:
         t = service.visible(db, ticket_id, user)
-        uploads = [(gid, Upload(f.filename, f.content_type, f.file)) for gid, f in zip(gps_in, files_in)]
+        uploads = [(gid, Upload(f.filename, f.content_type, f.file, m if isinstance(m, dict) else None)) for gid, f, m in zip(gps_in, files_in, metas)]
         sub = tasks.submit_progress(db, t, user, [i.model_dump() for i in body.items], body.note, uploads, [n.model_dump() for n in body.newGps], _store_for(body))
     except TicketError as exc:
         raise _fail(exc) from None

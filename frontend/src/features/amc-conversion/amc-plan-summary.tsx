@@ -429,7 +429,7 @@ function IncrementalBox({ v }: { v: { target: number; ready: number; achieved: n
         <span className="size-2 rounded-full bg-[var(--series-4)]" aria-hidden />
         5% Incremental
       </p>
-      <div className="mt-1 grid grid-cols-5 gap-1.5">
+      <div className="mt-1 grid grid-cols-3 gap-1.5 sm:grid-cols-5">
         {items.map((x) => (
           <div key={x.label} className="min-w-0">
             <span className={cn("tabular block text-[0.9375rem] font-bold leading-tight", x.cls)}>{formatCount(x.value)}</span>

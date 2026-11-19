@@ -310,3 +310,11 @@ def test_change_password_rate_limited_and_keeps_remember_me(client, lock_user):
     cookie = [h for h in r.headers.get_list("set-cookie") if h.startswith("pratap_session=")][0].lower()
     assert "max-age=" in cookie  # still a persistent cookie
     assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_review_form_accepts_proofs_larger_than_64_kb(client):
+    """AM_APPROVE / SME_FORWARD carry the reviewer's own proof (screenshots, PDFs): the ticket upload limit, not 64 KB."""
+    csrf = login(client)
+    shot = bytes([0x89]) + b"PNG" + bytes([13, 10, 26, 10]) + os.urandom(300 * 1024)  # a screenshot: far above the 64 KB JSON limit
+    r = client.post("/api/v1/tickets/999999/review-form", headers={"x-csrf-token": csrf}, data={"payload": "{}"}, files={"proofs": ("screenshot.png", shot, "image/png")})
+    assert r.status_code != 413, r.text  # reaches the endpoint (unknown ticket), not the body size limit

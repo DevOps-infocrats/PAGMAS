@@ -55,6 +55,8 @@ class Upload:
     file_name: str | None
     content_type: str | None
     stream: BinaryIO
+    # a live camera photo of the Daily Achievement: {"lat", "lng", "accuracy", "capturedAt"} (None = a plain upload)
+    geo: dict | None = None
 
 
 def now() -> dt.datetime:
@@ -317,8 +319,16 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
     coh_ok, coh_why = coh.can_close(db, t, user) if task_block is not None else (False, None)
     recs = db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id == t.id).order_by(TicketRecipient.id)).all()
     mine = next((r for r in recs if r.user_id == user.id), None)
-    if scope is not None:  # a Field Engineer does not see the other FEs of the ticket
-        recs = [r for r in recs if r.role != "FE" or r.user_id == user.id]
+    if scope is not None:  # a Field Engineer / FRT does not see the other FEs / FRTs of the ticket
+        from .task import FeScope, FrtScope, frt_norm
+
+        if isinstance(scope, FrtScope):
+            recs = [r for r in recs if r.role not in ("FE", "FRT") or r.user_id == user.id]
+        elif isinstance(scope, FeScope):  # only the FRTs of the FE's own GPs
+            codes = {frt_norm(g["frtCode"]) for g in (task_block or {}).get("gps", [])} - {None}
+            recs = [r for r in recs if (r.role != "FE" or r.user_id == user.id) and (r.role != "FRT" or frt_norm(r.frt_code) in codes)]
+        else:
+            recs = [r for r in recs if r.role != "FE" or r.user_id == user.id]
     if isinstance(scope, ReviewerView):
         # nor does an SME / COH see the other SMEs / COHs, or the ticket activity naming other GPs (daily progress /
         # review steps – each of their own GPs carries its full review history instead)
@@ -461,10 +471,25 @@ def create(db: Session, admin: CurrentUser, assignee_id: int, subject: str, desc
         t.subject = tasks.task_subject(made)  # the AM and week of this ticket's own task
         n = db.scalar(select(func.count()).where(TicketTaskGp.ticket_id == t.id)) or 0
         _event(db, t, admin, "TASK", None, None, f"GP-wise task: {made.am_name} · Week {made.week_code[2:]} · {n} GPs · assignment workbook attached")
+        _frt_on(db, t, admin, priority)
     _event(db, t, admin, "CREATED", None, "OPEN", f"Assigned to {u.name} · priority {PRIORITY_LABEL[priority]}")
     _notify(db, {u.id}, t, "ASSIGNED", f"New ticket {t.code}: {t.subject}", f"{admin.name} assigned you a {PRIORITY_LABEL[priority].lower()} priority ticket.")
     db.commit()
     return t
+
+
+def _frt_on(db: Session, t: Ticket, admin: CurrentUser, priority: str) -> None:
+    """FRT accounts (User Management → FRT code) of the task's GPs join the ticket: they report the Daily Achievement
+    of their GPs, their FE verifies it. Dashboard notification only (no e-mail)."""
+    from . import task as tasks
+
+    added = tasks.add_frt_recipients(db, t)
+    if not added:
+        return
+    _event(db, t, admin, "FRT", None, None, "FRT on the ticket: " + ", ".join(f"{r.name} ({r.frt_code})" for r in added))
+    for r in added:
+        _notify(db, {r.user_id}, t, "ASSIGNED", f"New ticket {t.code}: GPs of FRT {r.frt_code}"[:200],
+                f"{admin.name} assigned a {PRIORITY_LABEL[priority].lower()} priority GP-wise task – report the Daily Achievement of the GPs of FRT {r.frt_code}; your FE verifies it.")
 
 
 @dataclass
@@ -680,6 +705,7 @@ def generate(
                 fe_note = f" · {', '.join(fe_parts)} GPs" if fe_parts else ""
                 src = {"NO_AM": f" (acting Area Manager for the GPs of {chosen} without an Area Manager)", "AM+NO_AM": f" (with the GPs of {chosen} without an Area Manager)"}.get(made_task.gp_source or "", "")
                 _event(db, t, admin, "TASK", None, None, f"GP-wise task: {made_task.am_name}{src} · {chosen} · Week {made_task.week_code[2:]} · {len(rows)} GPs{fe_note} · assignment workbook attached")
+                _frt_on(db, t, admin, priority)
             who = ", ".join(f"{directory.ROLE_LABEL[r.role]} {r.name}" + (" (typed by admin)" if r.typed else "") for r in group)
             _event(db, t, admin, "CREATED", None, "OPEN", f"{chosen} · sent to {who} · priority {PRIORITY_LABEL[priority]} · e-mail {'on' if send_email else 'off'}")
             for r in group:
@@ -791,14 +817,14 @@ def close(db: Session, t: Ticket, admin: CurrentUser, comment: str | None, force
         # SOP compliance rule 4: no ticket is closed without the Area Manager's review and approval of its GPs. A GP
         # counts as reviewed once approved by the AM (or later steps) or closed Non-Doable; a GP already achieved in the
         # master data at assignment needs no review. The admin may still close with a written reason (kept in history).
-        from .task import cumulative
+        from .task import cumulative, frt_stage_open
 
         gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id == t.id)))
         unreviewed = [g for g in gps if g.review not in review.AM_REVIEWED and cumulative(g) < g.target]
         if unreviewed:
-            pending_am = sum(1 for g in unreviewed if (g.review is None and g.gp_category == "A") or g.review == "SME_RETURNED")
+            pending_am = sum(1 for g in unreviewed if (g.review is None and g.gp_category == "A" and not frt_stage_open(g)) or g.review == "SME_RETURNED")
             what = f"{len(unreviewed)} GP{'s' if len(unreviewed) != 1 else ''} of this ticket {'are' if len(unreviewed) != 1 else 'is'} not yet reviewed and approved by the Area Manager"
-            detail = f"{pending_am} Pending AM Verification, {len(unreviewed) - pending_am} with the FE / returned / in a Non-Doable case"
+            detail = f"{pending_am} Pending AM Verification, {len(unreviewed) - pending_am} with the FE / FRT / returned / in a Non-Doable case"
             if not force:
                 raise TicketError(409, f"{what} ({detail}). Close only after the AM review, or close anyway with a written reason.")
             if note is None or len(note) < 10:

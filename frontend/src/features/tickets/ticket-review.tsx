@@ -23,6 +23,8 @@ import { PROOF_ACCEPT, ProofList } from "./ticket-proof";
  */
 export const REVIEW_STAGE: Record<GpStage, { label: string; cls: string; hint?: string }> = {
   NONE: { label: "With FE", cls: "bg-muted text-muted-foreground" },
+  PENDING_FE: { label: "Pending FE Verification", cls: "bg-warning-soft text-warning-text", hint: "FRT submitted" },
+  RETURNED_FRT: { label: "Returned to FRT by FE", cls: "bg-critical-soft text-critical-text" },
   PENDING_AM: { label: "Pending AM Verification", cls: "bg-warning-soft text-warning-text" },
   RETURNED: { label: "Returned to FE", cls: "bg-critical-soft text-critical-text" },
   AM_APPROVED: { label: "Ready for Letter Submission – AM Approved", cls: "bg-primary-soft text-primary", hint: "Pending SME Review" },
@@ -37,23 +39,27 @@ export const REVIEW_STAGE: Record<GpStage, { label: string; cls: string; hint?: 
 /** Workflow stage of a GP (sent by the backend; derived the same way for older responses). */
 export function stageOf(g: TicketTaskGp): GpStage {
   if (g.stage) return g.stage;
+  if (frtOpen(g)) return g.frtStage as GpStage;
   if (g.review) return g.review;
   return g.gpCategory === "A" && !g.ndCase?.open ? "PENDING_AM" : "NONE";
 }
+
+/** The FRT's Daily Achievement is not verified by the FE yet – the Area Manager waits (backend: task.frt_stage_open). */
+export const frtOpen = (g: TicketTaskGp) => (g.frtStage === "PENDING_FE" || g.frtStage === "RETURNED_FRT") && (!g.review || g.review === "RETURNED") && !g.ndCase?.open;
 
 /** The stage a GP can be in for each step, and who does it. */
 const STEPS: Record<GpReviewAction, { role: GpReviewRole; label: string; title: string; ok: (g: TicketTaskGp) => boolean; remark: boolean; date?: boolean; icon: typeof Send }> = {
   // the AM verifies the FE's Rectification Done – or again, a GP the SME sent back (same rules as the backend)
   AM_APPROVE: {
     role: "AM", label: "Approve → SME", title: "Approve GP readiness and send to the SME", remark: true, icon: CheckCircle2,
-    ok: (g) => (!g.review || g.review === "SME_RETURNED") && g.gpCategory === "A" && !g.ndCase?.open,
+    ok: (g) => (!g.review || g.review === "SME_RETURNED") && g.gpCategory === "A" && !g.ndCase?.open && !frtOpen(g),
   },
   // the AM sends back what the FE reported: Rectification Done (correction) or Revisit Required (recheck) – not an
   // untouched GP, not Non-Doable (own case), not a GP in the FRT revisit of a rejected Non-Doable case
   AM_RETURN: {
     role: "AM", label: "Return to FE", title: "Return to the FE for correction / recheck", remark: true, icon: Undo2,
     ok: (g) =>
-      (!g.review || g.review === "SME_RETURNED") && (g.gpCategory === "A" || g.gpCategory === "C") && !g.ndCase?.open &&
+      (!g.review || g.review === "SME_RETURNED") && (g.gpCategory === "A" || g.gpCategory === "C") && !g.ndCase?.open && !frtOpen(g) &&
       !(g.gpCategory === "C" && g.ndCase?.status === "REJECTED" && g.ndCase.revisit !== "REVIEWED"),
   },
   SME_FORWARD: {
@@ -74,7 +80,7 @@ const BACK: GpReviewAction[] = ["AM_RETURN", "SME_RETURN", "COH_RETURN"];
 const PROOF_STEP: Partial<Record<GpReviewAction, string>> = { AM_APPROVE: "AM Verification Proof", SME_FORWARD: "SME Review Proof" };
 const MAX_REVIEW_FILES = 5; // backend: review.MAX_REVIEW_FILES
 const MAX_FILE_MB = 20; // backend: TICKET_FILE_MAX_MB
-const ROLE_NAME: Record<string, string> = { FE: "FE", AM: "AM", SME: "SME", COH: "COH", ADMIN: "Admin" };
+const ROLE_NAME: Record<string, string> = { FRT: "FRT", FE: "FE", AM: "AM", SME: "SME", COH: "COH", ADMIN: "Admin" };
 
 /** Whether this GP can take any step of the given roles now (for the selection checkbox). */
 export const reviewable = (g: TicketTaskGp, roles: GpReviewRole[]) => (Object.values(STEPS) as (typeof STEPS)[GpReviewAction][]).some((s) => roles.includes(s.role) && s.ok(g));

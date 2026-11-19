@@ -668,6 +668,10 @@ export interface AppUser {
   locked: boolean;
   /** viewers only; admins receive every circle */
   scopes: UserScope[];
+  /** FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for (null = not an FRT) */
+  frtCode?: string | null;
+  /** frt = created with the FRT code only: signs in with the FRT code (no e-mail) */
+  loginType?: "email" | "frt";
 }
 
 export interface UserLocations {
@@ -682,11 +686,13 @@ export interface UserLocations {
 }
 
 export interface UserCreateBody {
-  email: string;
+  /** omitted = an FRT login: frtCode required, the user signs in with the FRT code */
+  email?: string;
   name: string;
   role: "admin" | "viewer";
   password: string;
   scopes?: { level: UserScopeLevel; id: string }[];
+  frtCode?: string | null;
 }
 
 /** Bulk import of dashboard users from an Excel / CSV file (Name + Email columns) */
@@ -694,7 +700,8 @@ export interface UserImportItem {
   /** row number in the file, as Excel shows it */
   row: number;
   name: string;
-  email: string;
+  /** null = an FRT login (no e-mail) */
+  email: string | null;
   /** NEW = will be created (preview), CREATED = created, EXISTS = already a user (not changed), SKIPPED = problem in the row */
   status: "NEW" | "CREATED" | "EXISTS" | "SKIPPED";
   reason: string | null;
@@ -702,6 +709,9 @@ export interface UserImportItem {
   areas?: string[];
   /** FILE = own password from the Password column, TEMPORARY = the temporary password (the password itself is never sent) */
   password?: "FILE" | "TEMPORARY";
+  /** FRT Code column; frtLogin = no e-mail – the user signs in with this FRT code */
+  frtCode?: string | null;
+  frtLogin?: boolean;
 }
 
 export interface UserImportResult {
@@ -729,6 +739,8 @@ export interface UserUpdateBody {
   isActive?: boolean;
   password?: string;
   scopes?: { level: UserScopeLevel; id: string }[];
+  /** "" = not an FRT any more */
+  frtCode?: string;
 }
 
 /** A GP for the User Management area picker */
@@ -1772,7 +1784,7 @@ export interface TicketWeek {
   open: number;
 }
 
-export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "USER" | "OTHER";
+export type TicketRecipientRole = "CBH" | "SME" | "COH" | "AM" | "FE" | "FRT" | "USER" | "OTHER";
 
 export interface TicketRecipient {
   id: number;
@@ -1960,16 +1972,48 @@ export interface TicketTaskGp {
   sentBack?: (GpReviewRecord & { action: "SME_RETURN" | "COH_RETURN" }) | null;
   /** an FE of this ticket (with an account) reports this GP – the Area Manager only reviews / reassigns it */
   feAssigned?: boolean;
+  /** FRT team of the GP (Escalation Matrix at creation) */
+  frtCode?: string | null;
+  /** an FRT account of this ticket reports this GP – the FE verifies it before the Area Manager */
+  frtAssigned?: boolean;
+  /** PENDING_FE = the FRT submitted, the FE checks it · RETURNED_FRT = the FE sent it back · FE_VERIFIED = sent to the AM */
+  frtStage?: "PENDING_FE" | "RETURNED_FRT" | "FE_VERIFIED" | null;
+  /** the FE's latest check of the FRT's Daily Achievement */
+  frtCheck?: { action: FeCheckAction; label: string; by: string; role: string; remark: string | null; at: string | null } | null;
+}
+
+export type FeCheckAction = "FE_VERIFY" | "FE_RETURN";
+
+/** FRT-wise target and progress of a task (one row per FRT code) */
+export interface TicketTaskFrt {
+  code: string;
+  /** FRT accounts on the ticket (empty = nobody has a login for this code – the FE reports these GPs) */
+  names: string[];
+  recipient: boolean;
+  fes: string[];
+  gps: number;
+  target: number;
+  achieved: number;
+  gap: number;
+  doneGps: number;
+  pendingGps: number;
+  proofFiles: number;
+  lastUpdated: string | null;
+  categories: Record<GpCategory, number>;
+  notClassified: number;
+  pendingFe: number;
+  returnedFrt: number;
+  verified: number;
 }
 
 export type GpReviewRole = "AM" | "SME" | "COH";
 /** SME_RETURNED = the SME sent it back to the Area Manager · COH_RETURNED = the COH sent it back to the SME */
 export type GpReviewState = "RETURNED" | "AM_APPROVED" | "SME_RETURNED" | "SME_FORWARDED" | "COH_RETURNED" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
-export type GpStage = "NONE" | "PENDING_AM" | GpReviewState;
+export type GpStage = "NONE" | "PENDING_FE" | "RETURNED_FRT" | "PENDING_AM" | GpReviewState;
 export type GpReviewAction = "AM_APPROVE" | "AM_RETURN" | "SME_FORWARD" | "SME_RETURN" | "COH_LETTER" | "COH_AMC" | "COH_RETURN";
 export interface GpReviewStep {
-  role: "FE" | "AM" | "SME" | "COH" | "ADMIN";
-  action: GpReviewAction | "EDIT" | "ADD" | "REASSIGN" | "ND_REOPEN";
+  role: "FRT" | "FE" | "AM" | "SME" | "COH" | "ADMIN";
+  action: GpReviewAction | FeCheckAction | "EDIT" | "ADD" | "REASSIGN" | "ND_REOPEN";
   label: string;
   category: GpCategory | null;
   date: string | null;
@@ -2000,7 +2044,7 @@ export interface GpFeSubmission {
   feName: string | null;
   /** who submitted the line (FE, or the Area Manager on the FE's behalf) */
   submittedBy: string | null;
-  submittedByRole: "FE" | "AM";
+  submittedByRole: "FRT" | "FE" | "AM";
   category: GpCategory | null;
   remark: string | null;
   submittedAt: string | null;
@@ -2085,7 +2129,23 @@ export interface TicketProofFile {
   previewable: boolean;
   /** monitoring rows: ticket the file was uploaded in */
   ticket?: string | null;
+  /** a live camera photo (FRT Daily Achievement): where and when it was taken (absent = an upload without location) */
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number | null;
+  capturedAt?: string | null;
+  source?: "CAMERA" | null;
 }
+
+/** Location / time of a live camera photo, sent with it (proofMeta) */
+export interface CameraGeo {
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  capturedAt: string;
+}
+/** A proof file taken with the camera carries its location / time */
+export type GeoFile = File & { geo?: CameraGeo };
 
 export interface GpMonitorFilters {
   circle?: string;
@@ -2114,6 +2174,9 @@ export interface GpMonitorKpis {
   /** of those, GPs with at least one proof document */
   categoryWithDocument: Record<GpCategory, number>;
   notClassified: number;
+  /** GPs whose AMC conversion the COH recorded (each GP once) – absent in older responses */
+  amcConverted?: number;
+  amcConvertedWithDocument?: number;
 }
 
 export interface GpMonitorOptions {
@@ -2213,6 +2276,8 @@ export interface TicketTaskFe {
   returnedGps?: number;
   awaitingGps?: number;
   addedGps?: number;
+  /** submitted by the FRT, waiting for the FE's Verify / Return */
+  pendingFeGps?: number;
 }
 
 export interface TicketTask {
@@ -2222,9 +2287,15 @@ export interface TicketTask {
   amEmail: string | null;
   /** FE = a Field Engineer's view (only their GPs) · SME / COH = a reviewer's view (only the GPs the Area Manager /
    * the SME forwarded to them) · null = the whole task */
-  scope?: { kind: "FE"; fieldEngineer: string; email: string | null } | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis } | null;
+  scope?:
+    | { kind: "FE"; fieldEngineer: string; email: string | null }
+    | { kind: "FRT"; fieldEngineer: null; email: null; frtCode: string | null; frtName: string; fes: string[] }
+    | { kind: "SME" | "COH"; fieldEngineer: null; email: null; kpis?: ReviewerKpis }
+    | null;
   /** FE-wise split (empty in a Field Engineer's view) */
   fes?: TicketTaskFe[];
+  /** FRT-wise split (whole task, or an FE's own GPs) */
+  frts?: TicketTaskFrt[];
   circle: string | null;
   cbhName: string | null;
   week: { id: string; start: string; end: string };
@@ -2232,7 +2303,7 @@ export interface TicketTask {
   sourceFile: string;
   totals: { gps: number; target: number; achieved: number; gap: number; pct: number | null; weekGps: number; pendingGps: number; doneGps: number; openGps: number; proofFiles: number; categories?: Record<GpCategory, number>; notClassified?: number;
     addedGps?: number; review?: { awaiting: number; returned: number; amApproved: number; smeForwarded: number; letterSubmitted: number; amcConverted: number; ndOpen?: number; ndApproved?: number;
-      smeReturned?: number; cohReturned?: number } };
+      smeReturned?: number; cohReturned?: number; pendingFe?: number; returnedFrt?: number } };
   blocks: { block: string; gps: number; target: number; achieved: number; gap: number }[];
   gps: TicketTaskGp[];
   /** Area Manager / admin: the FEs of the ticket a GP can be reassigned to */
@@ -2273,6 +2344,8 @@ export interface TaskPreviewRow {
   gap: number;
   feName?: string | null;
   feEmail?: string | null;
+  /** FRT team of the GP in the Escalation Matrix (null = none – the FE reports it) */
+  frtCode?: string | null;
 }
 
 export interface SharePerson {
@@ -2312,6 +2385,11 @@ export interface TaskBreakdown {
   fes: (TaskFigures & { name: string; email: string | null; emails: string[] })[];
   /** GPs without an FE in the Escalation Matrix (null = none) */
   unmapped: TaskFigures | null;
+  /** FRT-wise target: each FRT code of the GPs, its FE(s) and the FRT accounts that join the ticket (logins empty = no
+   * FRT login – the FE reports these GPs) */
+  frts?: (TaskFigures & { code: string; fes: string[]; logins: string[] })[];
+  /** GPs without an FRT code (shown only when some GPs have one) */
+  noFrt?: TaskFigures | null;
   /** the same AM on AMC Conversion → area manager-wise table (Ach / AMC Date inside the week) */
   page: { weekTarget: number; weekReady: number; weekConverted: number } | null;
   definitions: string[];
@@ -2383,7 +2461,7 @@ export interface TicketApi {
   /** Daily progress with Done / Pending per GP and proof documents per GP (upload progress 0–1) */
   submitProgressForm(
     id: number,
-    items: { taskGpId: number; status?: GpStatus; category?: GpCategory; remark?: string | null; gpName?: string; block?: string | null }[],
+    items: { taskGpId: number; status?: GpStatus; category?: GpCategory; remark?: string | null; gpCode?: string; gpName?: string; block?: string | null }[],
     note: string | undefined,
     proofs: { taskGpId: number; file: File }[],
     onProgress?: (fraction: number) => void,
@@ -2399,6 +2477,8 @@ export interface TicketApi {
   ): Promise<TicketDetail>;
   /** Area Manager / admin: give a GP of the task to another FE of the ticket (history kept) */
   reassignGp(id: number, gpId: number, body: { recipientId: number; remark?: string }): Promise<TicketDetail>;
+  /** FE: verify the FRT's Daily Achievement (to the Area Manager) or return it to the FRT */
+  feCheck(id: number, body: { taskGpIds: number[]; action: FeCheckAction; remark: string }): Promise<TicketDetail>;
   /** SME (for the Area Manager's approval) / COH (for the SME's forward) of the ticket's circle */
   getReviewContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
   /** Same-origin URL of a GP proof document (download, or inline preview for PDF / images) */
@@ -2439,6 +2519,8 @@ export interface TicketApi {
 // FE → AM → SME → COH → Corporate Team – MGG
 
 export type NdStatus =
+  | "FRT_PROPOSED"
+  | "PENDING_FE"
   | "PROPOSED"
   | "E1_DONE"
   | "PENDING_AM"
@@ -2452,8 +2534,33 @@ export type NdStatus =
   | "REJECTED"
   | "WITHDRAWN";
 export type NdRevisit = "COORDINATION" | "FRT_VISIT" | "FRT_UPDATED" | "REVIEWED";
-export type NdRole = "FE" | "AM" | "SME" | "COH" | "MGG";
-export type NdAction = "AM_FORWARD" | "AM_RETURN" | "SME_RECOMMEND" | "SME_RETURN" | "COH_FORWARD" | "COH_RETURN" | "MGG_APPROVE" | "MGG_REJECT" | "WITHDRAW";
+export type NdRole = "FRT" | "FE" | "AM" | "SME" | "COH" | "MGG";
+export type NdAction =
+  | "AM_FORWARD"
+  | "AM_RETURN"
+  | "SME_RECOMMEND"
+  | "SME_RETURN"
+  | "COH_FORWARD"
+  | "COH_RETURN"
+  | "MGG_APPROVE"
+  | "MGG_REJECT"
+  | "WITHDRAW"
+  | "FRT_SUBMIT"
+  | "FRT_WITHDRAW"
+  | "FE_FORWARD"
+  | "FE_RETURN_FRT";
+
+/** E1 / E2 completeness of a case (latest form of each, FRT or FE) – the FE forwards to the AM only when complete */
+export interface NdFormPart {
+  filled: boolean;
+  complete: boolean;
+  missing: string[];
+  /** who filled the latest form */
+  by: "FRT" | "FE" | null;
+  byName: string | null;
+  frtFilled: boolean;
+  feFilled: boolean;
+}
 
 export interface NdCaseRow {
   id: number;
@@ -2510,6 +2617,8 @@ export interface NdRecord {
   frtTeam: string | null;
   frtVisit: string | null;
   outcome: "A" | "C" | "D" | null;
+  /** who filled the form: FRT (optional E1 / E2) or FE */
+  role?: "FRT" | "FE";
   by: string;
   at: string | null;
   files: NdFile[];
@@ -2552,7 +2661,11 @@ export interface NdCaseDetail {
   records: NdRecord[];
   history: NdEvent[];
   otherRounds: { id: number; ref: string; round: number; status: NdStatus; statusLabel: string }[];
-  can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[] };
+  can: { verify: boolean; justify: boolean; withdraw: boolean; revisitCoordination: boolean; revisitVisit: boolean; actions: NdAction[]; formMode?: "optional" | "required" };
+  /** E1 / E2 completeness – FE_FORWARD needs complete */
+  forms?: { e1: NdFormPart; e2: NdFormPart; complete: boolean };
+  /** proposed by the FRT (FRT → FE review → AM) */
+  frtCase?: boolean;
   mggMembers: number;
   /** the Corporate Team – MGG people the COH forwarded the case to (account = can sign in and decide) */
   mggPicked?: { name: string; email: string; account: boolean }[];
@@ -2578,7 +2691,10 @@ export type NdFormKind = "verification" | "justification" | "revisit";
 
 export interface NonDoableApi {
   getSummary(): Promise<NdSummary>;
-  listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
+  /** `kpi` = "ROLE:card" – exactly the cases that KPI card counts */
+  listCases(q: { status?: string; q?: string; mine?: boolean; ticket?: number; page?: number; size?: number; kpi?: string }): Promise<{ total: number; page: number; size: number; items: NdCaseRow[] }>;
+  /** The case list with the same filters as an Excel workbook */
+  casesXlsxUrl(q: { status?: string; q?: string; mine?: boolean; ticket?: number; kpi?: string }): string;
   getCase(id: number): Promise<NdCaseDetail>;
   getContacts(id: number, role: "SME" | "COH" | "MGG"): Promise<ReviewContacts>;
   /** E1 / E2 / revisit forms with evidence and site photographs (upload progress 0–1) */

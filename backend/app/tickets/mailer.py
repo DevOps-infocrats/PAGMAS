@@ -53,10 +53,11 @@ def _ticket_email(db, t: Ticket, r: TicketRecipient, task, tj, scope, shared: tu
     action = None
     if tj is not None:
         T = tj["totals"]
-        who = f"Field Engineer {r.name} (Area Manager {task.am_name})" if scope is not None else f"Area Manager {task.am_name}"
+        frt = r.role == "FRT"
+        who = (f"FRT {r.frt_code} – {r.name}" if frt else f"Field Engineer {r.name}") + f" (Area Manager {task.am_name})" if scope is not None else f"Area Manager {task.am_name}"
         summary += [("Area Manager", task.am_name), ("Week", f"Week {task.week_code[2:]} ({task.week_start:%d %b} – {task.week_end:%d %b %Y})")]
         if scope is not None:
-            summary.append(("Field Engineer", r.name))
+            summary.append(("FRT" if frt else "Field Engineer", f"{r.name} ({r.frt_code})" if frt else r.name))
         intro.append(f"GP-wise weekly task – {who}, Week {task.week_code[2:]}. The figures below are {'your GPs only' if scope is not None else 'all GPs of the task'}.")
         kpis = [
             L.Kpi("Assigned GPs", f"{T['gps']:,}", "info", f"{T['weekGps']} this week · {T['pendingGps']} pending"),
@@ -103,7 +104,7 @@ def _message(db, t: Ticket, r: TicketRecipient, shared: tuple[str, str] | None =
     from . import task as tasks
 
     task = db.get(TicketTask, t.id)
-    scope = tasks.FeScope(r.name, r.fe_mail) if r.role == "FE" else None
+    scope = tasks.FeScope(r.name, r.fe_mail) if r.role == "FE" else tasks.FrtScope(tasks.frt_norm(r.frt_code) or "\0", r.name) if r.role == "FRT" else None
     tj = tasks.task_json(db, t, scope) if task is not None else None  # the same figures the dashboard shows this person
     subject = f"[{t.code}] {'Shared by ' + shared[0] + ': ' if shared else ''}{t.subject}"[:250]
     msg = L.message(r.email, subject, _ticket_email(db, t, r, task, tj, scope, shared))

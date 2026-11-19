@@ -31,6 +31,7 @@ from ..mail.audience import LEVEL_LABELS, Assignment, assignments_of, check_assi
 from ..models import AuditLog, Dataset, EscalationImport, ImportReport, User, UserScope, ValidationIssue
 from ..security.core import hash_password, password_problems
 from ..security.deps import CurrentUser, audit, require_admin
+from ..security.frt_login import frt_login_email, is_frt_login
 
 router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin)])
 def _run_locked(dataset_id: int) -> None:
@@ -566,13 +567,16 @@ class ScopeIn(BaseModel):
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    # empty = an FRT account that signs in with its FRT code (frtCode required; app.security.frt_login)
+    email: EmailStr | None = None
     name: str = Field(min_length=2, max_length=120)
     role: Literal["admin", "viewer"] = "viewer"
     password: str = Field(min_length=1, max_length=128)
     # Circle / BA / district / block / GP areas of a viewer: what they see on the dashboard and receive in the AMC Conversion e-mails
     # (security/access.py, mail/audience.py; a block / GP chosen inside a chosen circle narrows it); admins see everything
     scopes: list[ScopeIn] = Field(default_factory=list, max_length=500)
+    # FRT team login: the Escalation Matrix FRT code this viewer works for (reports the Daily Achievement of its GPs)
+    frt_code: str | None = Field(default=None, alias="frtCode", max_length=60)
 
 
 class UserUpdate(BaseModel):
@@ -582,6 +586,24 @@ class UserUpdate(BaseModel):
     is_active: bool | None = Field(default=None, alias="isActive")
     password: str | None = Field(default=None, max_length=128)
     scopes: list[ScopeIn] | None = Field(default=None, max_length=500)  # None = unchanged, [] = remove all
+    frt_code: str | None = Field(default=None, alias="frtCode", max_length=60)  # None = unchanged, "" = not an FRT
+
+
+def _frt_code(value: str | None, role: str) -> str | None:
+    """The FRT code to store: spaces collapsed, upper case; it must be an FRT code of the active Escalation Matrix (when
+    one is uploaded). Admins are never FRT accounts."""
+    from ..analytics.escalation import _active
+    from ..tickets.task import frt_norm
+
+    code = frt_norm(value)
+    if code is None:
+        return None
+    if role != "viewer":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "An FRT code is given to a Viewer account only (not to an admin)")
+    act = _active()
+    if act is not None and "frt_code" in act[1].columns and code not in {frt_norm(c) for c in act[1]["frt_code"]}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"FRT code '{code}' is not in the active Escalation Matrix – check the code")
+    return code
 
 
 def _active_store() -> Store | None:
@@ -602,6 +624,9 @@ def _user_json(u: User, scopes: list[Assignment] | None = None, labels: dict[str
         "isActive": u.is_active,
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
         "locked": bool(u.locked_until),
+        "frtCode": u.frt_code,
+        # "frt" = created with the FRT code only: signs in with the code, has no e-mail (the address is not deliverable)
+        "loginType": "frt" if is_frt_login(u.email) else "email",
         "scopes": [{"level": a.level, "id": a.id, "label": (labels or {}).get(a.level, {}).get(a.id), "valid": labels is None or a.id in labels.get(a.level, {})} for a in (scopes or [])],
     }
 
@@ -674,21 +699,32 @@ def user_location_gps(
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
 def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    email = body.email.lower()
-    if db.scalars(select(User).where(func.lower(User.email) == email)).first():
-        raise HTTPException(status.HTTP_409_CONFLICT, "A user with this email already exists")
+    if body.email:
+        email = body.email.lower()
+        if db.scalars(select(User).where(func.lower(User.email) == email)).first():
+            raise HTTPException(status.HTTP_409_CONFLICT, "A user with this email already exists")
+    else:  # FRT login without e-mail: the FRT code (checked against the Escalation Matrix below) is the login name
+        if body.role != "viewer" or not (body.frt_code or "").strip():
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Enter the e-mail – or, for an FRT team login, the FRT code (Viewer role)")
+        email = frt_login_email(_frt_code(body.frt_code, body.role) or "")
+        if db.scalars(select(User).where(func.lower(User.email) == email)).first():
+            raise HTTPException(status.HTTP_409_CONFLICT, f"An FRT login for code {body.frt_code.strip().upper()} already exists – edit that user instead")
     problems = password_problems(body.password, email)
     if problems:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Password needs " + "; ".join(problems))
-    u = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password))
+    frt = _frt_code(body.frt_code, body.role)
+    u = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password), frt_code=frt)
     db.add(u)
     db.flush()
     _set_scopes(db, u, body.scopes)
     db.commit()
     from ..tickets.service import link_recipients
+    from ..tickets.task import sync_frt_user
 
     link_recipients(db, u.id, u.email)  # tickets already sent to this e-mail (e.g. as SME / COH) appear for the new user
-    audit(db, "user_created", request, admin.id, f"{email} ({body.role}, {len(body.scopes) if body.role == 'viewer' else 0} area(s))")
+    if frt:
+        sync_frt_user(db, u)  # the open task tickets with GPs of this FRT code
+    audit(db, "user_created", request, admin.id, f"{email} ({body.role}, {len(body.scopes) if body.role == 'viewer' else 0} area(s){f', FRT {frt}' if frt else ''})")
     return _users_json(db, [u])[0]
 
 
@@ -744,6 +780,19 @@ def import_users(
     finally:
         target.unlink(missing_ok=True)
 
+    # FRT codes: only codes of the active Escalation Matrix (a typo never creates a login for nobody's GPs)
+    from ..analytics.escalation import _active
+    from ..tickets.task import frt_norm
+
+    act = _active()
+    matrix_codes = {frt_norm(c) for c in act[1]["frt_code"]} - {None} if act is not None and "frt_code" in act[1].columns else None
+    for r in rows:
+        if r.problem or r.frt_code is None:
+            continue
+        if matrix_codes is not None and frt_norm(r.frt_code) not in matrix_codes:
+            r.problem = f"FRT code '{r.frt_code}' is not in the active Escalation Matrix"
+        elif matrix_codes is None and r.frt_only:
+            r.problem = "No Escalation Matrix is uploaded – an FRT login cannot be checked"
     with_areas = has_area_columns(rows)
     st = _active_store() if with_areas else None
     resolver = AreaResolver(st.gps if st is not None else None) if with_areas else None
@@ -755,18 +804,26 @@ def import_users(
         problem = r.problem or area_problem
         status_, reason = ("SKIPPED", problem) if problem else ("EXISTS", "Already a dashboard user – not changed (areas too)") if r.email in existing else ("NEW", None)
         area_text = [f"{LEVEL_LABELS[lvl]}: {labels.get(lvl, {}).get(i, i)}" for lvl, i in areas]
-        items.append({"row": r.row, "name": r.name, "email": r.email, "status": status_, "reason": reason, "areas": area_text, "password": "FILE" if r.password is not None else "TEMPORARY"})
+        items.append({
+            "row": r.row, "name": r.name, "email": None if r.frt_only else r.email, "status": status_, "reason": reason if not (r.frt_only and status_ == "EXISTS") else "An FRT login for this code already exists – not changed",
+            "areas": area_text, "password": "FILE" if r.password is not None else "TEMPORARY", "frtCode": r.frt_code, "frtLogin": r.frt_only,
+        })
         if status_ == "NEW":
             new.append((r, areas))
     created = 0
     if not dry_run and new:
         temp = hash_password(s.user_import_password) if any(r.password is None for r, _ in new) else None  # hashed once
-        users = [(User(email=r.email, name=r.name, role="viewer", password_hash=hash_password(r.password) if r.password is not None else temp), areas) for r, areas in new]
+        users = [(User(email=r.email, name=r.name, role="viewer", password_hash=hash_password(r.password) if r.password is not None else temp, frt_code=frt_norm(r.frt_code) if r.frt_code else None), areas) for r, areas in new]
         db.add_all(u for u, _ in users)
         db.flush()
         db.add_all(UserScope(user_id=u.id, level=lvl, scope_id=i) for u, areas in users for lvl, i in areas)
         db.commit()
         created = len(new)
+        from ..tickets.task import sync_frt_user
+
+        for u, _areas in users:
+            if u.frt_code:
+                sync_frt_user(db, u)  # FRT accounts join the open task tickets of their GPs
         for it in items:
             if it["status"] == "NEW":
                 it["status"] = "CREATED"
@@ -799,6 +856,11 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
     if u.id == admin.id and body.email and body.email.lower() != u.email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Change your own e-mail address from a second admin account")
     revoke = False
+    frt_only = is_frt_login(u.email)
+    if frt_only and body.role == "admin":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "This user signs in with an FRT code – give them an e-mail before making them an admin")
+    if frt_only and body.frt_code is not None and not body.frt_code.strip() and not body.email:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "This user signs in with the FRT code – give them an e-mail before removing it")
     if body.name:
         u.name = body.name.strip()
     if body.email and body.email.lower() != u.email:
@@ -806,12 +868,23 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
         if db.scalars(select(User).where(func.lower(User.email) == email, User.id != u.id)).first():
             raise HTTPException(status.HTTP_409_CONFLICT, "A user with this email already exists")
         u.email, revoke = email, True
+    frt_before, active_before = u.frt_code, u.is_active
     if body.role and body.role != u.role:
         u.role, revoke = body.role, True
         if body.role == "admin" and body.scopes is None:
             body.scopes = []  # admins keep no areas
+        if body.role == "admin" and body.frt_code is None:
+            body.frt_code = ""  # admins are never FRT accounts
     if body.scopes is not None:
         _set_scopes(db, u, body.scopes)
+    if body.frt_code is not None:
+        u.frt_code = _frt_code(body.frt_code, u.role)
+        if is_frt_login(u.email) and u.frt_code:  # a code-only login follows its new code (the login name changes)
+            new_login = frt_login_email(u.frt_code)
+            if new_login != u.email:
+                if db.scalars(select(User).where(func.lower(User.email) == new_login, User.id != u.id)).first():
+                    raise HTTPException(status.HTTP_409_CONFLICT, f"An FRT login for code {u.frt_code} already exists")
+                u.email, revoke = new_login, True
     if body.is_active is not None and body.is_active != u.is_active:
         u.is_active, revoke = body.is_active, True
     if body.password:
@@ -823,6 +896,10 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
     if revoke:
         u.token_version += 1
     db.commit()
+    if u.frt_code != frt_before or (u.frt_code and u.is_active != active_before):
+        from ..tickets.task import sync_frt_user
+
+        sync_frt_user(db, u)  # open task tickets follow the new FRT code (or its removal)
     changes = body.model_dump(exclude_none=True, exclude={"password", "scopes"})
     if body.scopes is not None:
         changes["areas"] = len(body.scopes) if u.role == "viewer" else 0

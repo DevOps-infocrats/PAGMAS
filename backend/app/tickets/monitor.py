@@ -185,6 +185,8 @@ def _gp_record(rows: list[Row], every: list[Row] | None = None, basis: str | Non
         "files": files,
         "tickets": sorted({r.code for r in rows}),
         "gpCategory": cat_row.g.gp_category if cat_row is not None else None,
+        # review state of the same GP row as the category (AMC_CONVERTED = the COH recorded the AMC conversion)
+        "review": (cat_row.g if cat_row is not None else g).review,
         "categoryAt": iso(cat_at),
         "categoryTicket": cat_row.code if cat_row is not None else None,
         "_date": (_local_date(cat_at) if cat_at else _local_date(last)) if basis == "category" else (_local_date(when) if done else _local_date(last)),
@@ -298,6 +300,9 @@ def _counts(recs: list[dict[str, Any]]) -> dict[str, Any]:
         "categories": {c: sum(1 for x in recs if x["gpCategory"] == c) for c in CATEGORIES},
         "categoryWithDocument": {c: sum(1 for x in recs if x["gpCategory"] == c and x["files"]) for c in CATEGORIES},
         "notClassified": sum(1 for x in recs if not x["gpCategory"]),
+        # AMC conversion recorded by the COH (after the letter submission) – each GP once, like the categories
+        "amcConverted": sum(1 for x in recs if x.get("review") == "AMC_CONVERTED"),
+        "amcConvertedWithDocument": sum(1 for x in recs if x.get("review") == "AMC_CONVERTED" and x["files"]),
     }
 
 

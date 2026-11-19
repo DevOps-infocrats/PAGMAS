@@ -66,7 +66,7 @@ export function KpiTabs({
       <div
         role="tablist"
         aria-label="Key metrics"
-        className="grid grid-cols-1 border-b border-border sm:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-2 border-b border-border xl:grid-cols-4"
       >
         {kpis.map((k, i) => {
           const active = k.key === selected?.key;
@@ -93,10 +93,9 @@ export function KpiTabs({
                 }
               }}
               className={cn(
-                "relative cursor-pointer px-4 py-3.5 text-left transition-colors hover:bg-accent/60 focus-visible:z-10",
-                i > 0 && "border-t border-border sm:border-t-0",
-                i % 2 === 1 && "sm:border-l",
-                i >= 2 && "sm:border-t xl:border-t-0",
+                "relative min-w-0 cursor-pointer px-3 py-3 text-left transition-colors hover:bg-accent/60 focus-visible:z-10 sm:px-4 sm:py-3.5",
+                i % 2 === 1 && "border-l border-border",
+                i >= 2 && "border-t border-border xl:border-t-0",
                 i > 0 && "xl:border-l",
                 active && "bg-primary-soft/40",
               )}

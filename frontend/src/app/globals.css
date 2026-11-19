@@ -773,3 +773,40 @@ html[data-splash="done"] .splash-inner {
     inset: 0;
   }
 }
+
+/* ---------------------------------------------------------------- phones (portal used in the field)
+   Wide tables keep scrolling inside their card; on a phone the first column (GP / circle / name) stays visible while
+   the rest scrolls. In @layer base: a table that already styles its sticky first column keeps its own classes. */
+@layer base {
+  /* A scroll box contains its absolutely positioned content (e.g. a screen-reader-only label in a table header):
+     without it such content escapes the box and widens the whole page on a phone. Base layer: a box that is itself
+     absolute / fixed / sticky keeps its own position class. */
+  .overflow-x-auto,
+  .overflow-auto {
+    position: relative;
+  }
+  @media (max-width: 767px) {
+    :is(.overflow-x-auto, .overflow-auto) > table > :is(thead, tbody, tfoot) > tr > :is(th, td):first-child {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+      background-color: var(--card);
+      box-shadow: inset -1px 0 0 var(--border);
+    }
+    :is(.overflow-x-auto, .overflow-auto) > table > thead > tr > :is(th, td):first-child {
+      z-index: 2;
+      background-color: var(--muted);
+    }
+  }
+}
+
+/* Phones: a little less horizontal padding inside cards, so content gets the width (sides only – top / bottom
+   padding of every card stays as designed). */
+@media (max-width: 639px) {
+  .p-5,
+  .p-6,
+  .px-5,
+  .px-6 {
+    padding-inline: 1rem;
+  }
+}

@@ -50,7 +50,7 @@ function KpiValueText({ kpi, size }: { kpi: KpiValue; size: "hero" | "compact" }
   const { num, unit } = splitValue(kpi.value, def.unit);
   const suffix = unit || def.suffix;
   return (
-    <p className={cn("flex items-baseline gap-1 font-bold tracking-tight text-heading", size === "hero" ? "text-[1.5rem] leading-8" : "text-lg")}>
+    <p className={cn("flex items-baseline gap-1 font-bold tracking-tight text-heading", size === "hero" ? "text-[1.25rem] leading-7 sm:text-[1.5rem] sm:leading-8" : "text-lg")}>
       <span className={cn(kpi.value == null && "text-muted-foreground")}>{num}</span>
       {kpi.value != null && suffix && (
         <span className={cn("font-medium text-muted-foreground", size === "hero" ? "text-sm" : "text-xs")}>{suffix}</span>
@@ -106,7 +106,7 @@ export function KpiBody({
       </div>
       <div className="flex items-end justify-between gap-3">
         <KpiValueText kpi={kpi} size="hero" />
-        <Sparkline values={kpi.history} className="mb-1.5 shrink-0" />
+        <Sparkline values={kpi.history} className="mb-1.5 hidden shrink-0 sm:block" />
       </div>
       <DeltaChip kpi={kpi} compareLabel={compareLabel} />
     </div>

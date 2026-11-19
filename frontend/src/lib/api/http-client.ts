@@ -1,4 +1,4 @@
-import type { AdminApi, DashboardApi, EscalationSheetQuery, FieldQuery, KpiListQuery, NonDoableApi, TicketApi } from "./contracts";
+import type { AdminApi, DashboardApi, EscalationSheetQuery, FieldQuery, GeoFile, KpiListQuery, NonDoableApi, TicketApi } from "./contracts";
 import { ApiError } from "./errors";
 
 /**
@@ -264,6 +264,9 @@ export const httpTicketApi: TicketApi = {
       body.append("proofs", p.file, p.file.name);
       body.append("proofGps", String(p.taskGpId));
     }
+    // the location / time of every camera photo, in the order of the files (null = an upload without location)
+    const geo = proofs.map((p) => (p.file as GeoFile).geo ?? null);
+    if (geo.some(Boolean)) body.append("proofMeta", JSON.stringify(geo));
     return upload(`/tickets/${id}/progress-form`, body, onProgress);
   },
   getReviewContacts: (id, role) => request(`/tickets/${id}/review-contacts${qs({ role })}`),
@@ -275,6 +278,7 @@ export const httpTicketApi: TicketApi = {
     return upload(`/tickets/${id}/review-form`, form, onProgress);
   },
   reassignGp: (id, gpId, body) => request(`/tickets/${id}/gps/${gpId}/reassign`, { method: "POST", body: JSON.stringify(body) }),
+  feCheck: (id, body) => request(`/tickets/${id}/fe-check`, { method: "POST", body: JSON.stringify(body) }),
   progressFileUrl: (id, inline) => `${API_BASE}/tickets/progress-files/${id}${inline ? "?inline=true" : ""}`,
   getGpMonitorSummary: (f, basis) => request(`/tickets/gp-monitor/summary${qs({ ...f, basis })}`),
   listGpMonitor: (q) =>
@@ -285,7 +289,8 @@ export const httpTicketApi: TicketApi = {
 
 export const httpNdApi: NonDoableApi = {
   getSummary: () => request("/nondoable/summary"),
-  listCases: (q) => request(`/nondoable/cases${qs({ status: q.status, q: q.q, mine: q.mine ? "true" : undefined, ticket: q.ticket, page: q.page, size: q.size })}`),
+  listCases: (q) => request(`/nondoable/cases${qs({ status: q.status, q: q.q, mine: q.mine ? "true" : undefined, ticket: q.ticket, page: q.page, size: q.size, kpi: q.kpi })}`),
+  casesXlsxUrl: (q) => `${API_BASE}/nondoable/cases/export.xlsx${qs({ status: q.status, q: q.q, mine: q.mine ? "true" : undefined, ticket: q.ticket, kpi: q.kpi })}`,
   getCase: (id) => request(`/nondoable/cases/${id}`),
   getContacts: (id, role) => request(`/nondoable/cases/${id}/contacts${qs({ role })}`),
   submitForm: (id, kind, data, files, revisit, onProgress) => {

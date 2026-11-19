@@ -154,7 +154,7 @@ function JobRow({ job, outcome, now, onShowRun, onCheckColumns }: { job: UploadJ
         </p>
       </div>
 
-      <ol className="grid grid-cols-4 gap-2" aria-label={`Progress of ${job.name}`}>
+      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label={`Progress of ${job.name}`}>
         {STEPS.map((label, s) => {
           const failed = failedAt === s;
           const done = !failed && (failedAt != null ? s < failedAt : s < current);

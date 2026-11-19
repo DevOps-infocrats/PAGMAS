@@ -232,6 +232,7 @@ function UserTicketList({ tick, onOpen }: { tick: number; onOpen: (id: number) =
 const MY_ROLE: Record<Exclude<TicketDetail["myRole"], null | "ASSIGNEE">, string> = {
   AM: "Area Manager",
   FE: "FE",
+  FRT: "FRT",
   SME: "SME",
   COH: "COH",
   CBH: "CBH",
@@ -264,6 +265,13 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
               ) : t.myRole === "AM" || t.myRole === "ASSIGNEE" ? (
                 <>
                   {(t.task.fes ?? []).filter((f) => f.name).length} Field Engineer{(t.task.fes ?? []).filter((f) => f.name).length === 1 ? "" : "s"} under you
+                </>
+              ) : t.task.scope?.kind === "FRT" ? (
+                <>
+                  {/* the FRT: their FRT code and the FE who verifies their Daily Achievement */}
+                  FRT <b className="font-semibold text-foreground">{t.task.scope.frtCode ?? "—"}</b> · FE{" "}
+                  <b className="font-semibold text-foreground">{t.task.scope.fes.length ? t.task.scope.fes.join(", ") : "—"}</b> · Area Manager{" "}
+                  <b className="font-semibold text-foreground">{t.task.areaManager}</b>
                 </>
               ) : (
                 <>
@@ -322,7 +330,7 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
           onChanged(n);
         }}
       />
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <SubmissionHistory t={t} emptyText="Nothing submitted yet." />
         <div className="space-y-5">
           <RecipientsCard t={t} />

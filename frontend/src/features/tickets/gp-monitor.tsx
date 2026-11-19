@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Eye, FileCheck2, ListX, MailCheck, RotateCcw, Search, Wrench, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, BadgeCheck, ChevronLeft, ChevronRight, Eye, FileCheck2, ListX, MailCheck, RotateCcw, Search, Wrench, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { SearchableSelect } from "@/components/filters/searchable-select";
@@ -35,7 +35,7 @@ export function CategoryKpiCards({ k, loading, hrefFor, active }: { k?: GpMonito
   const total = k?.total ?? 0;
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {GP_CATEGORIES.map((c) => {
           const n = k?.categories?.[c.code] ?? 0;
           const docs = k?.categoryWithDocument?.[c.code] ?? 0;
@@ -55,6 +55,17 @@ export function CategoryKpiCards({ k, loading, hrefFor, active }: { k?: GpMonito
             />
           );
         })}
+        {/* AMC conversion recorded by the COH after the letter submission (each GP once) */}
+        <MiniKpi
+          loading={loading}
+          icon={BadgeCheck}
+          tone="var(--good)"
+          label="AMC Converted"
+          info="GPs of the GP-wise task tickets whose AMC conversion the COH has recorded (after the letter submission) – each GP once."
+          value={formatCount(k?.amcConverted ?? 0)}
+          unit="GPs"
+          caption={k ? `${pct(k.amcConverted ?? 0, total)} of ${formatCount(total)} · ${formatCount(k.amcConvertedWithDocument ?? 0)} with document` : undefined}
+        />
       </div>
       {k && (
         <p className="text-[0.71875rem] text-muted-foreground">

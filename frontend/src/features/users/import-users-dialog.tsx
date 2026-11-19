@@ -113,7 +113,7 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
             </div>
             <ul className="list-disc space-y-0.5 pl-4 text-[0.75rem] text-muted-foreground">
               <li>
-                <b>*</b> Name and Email are required; every other column is optional and can be deleted.
+                <b>*</b> Name and Email are required – an FRT team login needs no Email: fill FRT Code instead (a code of the Escalation Matrix; the FRT signs in with it). Every other column is optional and can be deleted.
               </li>
               <li>Password: at least 12 characters with 3 of lower-case, upper-case, digits, symbols (a weak one skips the row). Empty = the temporary password.</li>
               <li>
@@ -185,10 +185,21 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
                 </thead>
                 <tbody>
                   {result.items.map((it) => (
-                    <tr key={`${it.row}:${it.email}`} className="border-b border-border/60 last:border-0">
+                    <tr key={`${it.row}:${it.email ?? it.frtCode ?? ""}`} className="border-b border-border/60 last:border-0">
                       <td className="px-3 py-1.5 text-muted-foreground">{it.row}</td>
                       <td className="px-3 py-1.5">{it.name || "—"}</td>
-                      <td className="px-3 py-1.5 text-muted-foreground">{it.email || "—"}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">
+                        {it.frtLogin ? (
+                          <span>
+                            Login: <b className="font-semibold text-foreground">{it.frtCode}</b> (FRT code)
+                          </span>
+                        ) : (
+                          <>
+                            {it.email || "—"}
+                            {it.frtCode && <span className="ml-1 rounded bg-primary-soft px-1 text-xs font-semibold text-primary">FRT {it.frtCode}</span>}
+                          </>
+                        )}
+                      </td>
                       {result.withAreas && (
                         <td className="px-3 py-1.5 text-xs">
                           {it.areas?.length ? it.areas.join(" · ") : it.status === "SKIPPED" ? "—" : <span className="text-warning-text">Every circle</span>}

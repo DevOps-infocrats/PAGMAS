@@ -420,7 +420,7 @@ function AdminTicketDetail({ id, tick, onChanged }: { id: number; tick: number; 
 
       {t.task && <TaskPanel t={t} admin onChanged={(next, n) => (setLocal(next), onChanged(n))} />}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <SubmissionHistory t={t} emptyText="The user has not submitted any work yet." />
         <div className="space-y-5">
           <Card className="p-5">

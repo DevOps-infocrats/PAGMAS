@@ -34,7 +34,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
   return (
     <div className="space-y-3">
       {/* Row 1: Total Blocks, HOTO Done Blocks, HOTO Done (GPs), Non-AMC GPs */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
           compact
           dense
@@ -90,7 +90,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
       </div>
 
       {/* Row 2: Total GPs, AMC GPs, Total Fibre Route (RKM) */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         <StatCard
           compact
           dense
@@ -168,7 +168,7 @@ export function CircleKpis({ s, loading, stateName, asOf, circleId }: { s?: Summ
       </div>
 
       {/* Row 3: uptime (MTD) */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
           compact
           dense

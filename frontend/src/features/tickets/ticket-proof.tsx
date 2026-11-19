@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Eye, FileText } from "lucide-react";
+import { Download, Eye, FileText, MapPin } from "lucide-react";
 import { ticketApi, type GpStatus, type TicketProofFile } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { fileSize, ticketTime } from "./ticket-parts";
@@ -37,6 +37,20 @@ export function ProofList({ files, compact, emptyText = "Proof Not Uploaded" }: 
                 {fileSize(f.size)} · {ticketTime(f.uploadedAt)}
                 {f.ticket ? ` · ${f.ticket}` : ""}
               </span>
+            )}
+            {f.latitude != null && f.longitude != null && (
+              // a live camera photo: where (opens the map) and when it was taken
+              <a
+                href={`https://www.google.com/maps?q=${f.latitude},${f.longitude}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-[0.6875rem] font-medium text-good-text hover:underline"
+                title={`Camera photo · location ${f.latitude}, ${f.longitude}${f.accuracy != null ? ` (±${Math.round(f.accuracy)} m)` : ""} · taken ${ticketTime(f.capturedAt ?? null)}`}
+              >
+                <MapPin className="size-3 shrink-0" aria-hidden />
+                {f.latitude.toFixed(5)}, {f.longitude.toFixed(5)}
+                {f.capturedAt && <span className="text-muted-foreground"> · {ticketTime(f.capturedAt)}</span>}
+              </a>
             )}
           </span>
           {f.previewable && (

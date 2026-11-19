@@ -59,13 +59,22 @@ REVIEW_LABEL = {
 
 
 def stage_of(g: TicketTaskGp, nd_open: bool = False) -> str:
-    """NONE (with the FE) · PENDING_AM (Rectification Done, waiting for the Area Manager) · or the review state."""
+    """NONE (with the FE) · PENDING_FE / RETURNED_FRT (the FRT's Daily Achievement before the FE verified it) ·
+    PENDING_AM (Rectification Done, waiting for the Area Manager) · or the review state."""
+    from .task import FRT_OPEN
+
+    if g.frt_stage in FRT_OPEN and g.review in (None, "RETURNED") and not nd_open:
+        return g.frt_stage
     if g.review:
         return g.review
     return "PENDING_AM" if g.gp_category == "A" and not nd_open else "NONE"
 
 
 def stage_label(stage: str) -> str:
+    from .task import FRT_STAGE_LABEL
+
+    if stage in FRT_STAGE_LABEL:
+        return FRT_STAGE_LABEL[stage]
     return PENDING_AM_LABEL if stage == "PENDING_AM" else REVIEW_LABEL.get(None if stage == "NONE" else stage, stage)
 
 
@@ -93,6 +102,7 @@ STEPS: dict[str, Step] = {
 ACTION_LABEL = {
     **{k: s.label for k, s in STEPS.items()}, "EDIT": "GP details edited", "ADD": "GP added to the ticket", "ND_REOPEN": "Moved to the Non-Doable workflow",
     "REASSIGN": "GP reassigned to another FE",
+    "FE_VERIFY": "Verified by FE – sent to the Area Manager", "FE_RETURN": "Returned to FRT by FE",
 }
 # steps that hand the GP on with the reviewer's own evidence: the AM's verification proof (to the SME) and the SME's
 # review proof (to the COH) – stored on the step's progress line, apart from the FE's proof
@@ -268,6 +278,8 @@ def apply(
             raise ReviewError(409, f"GP {g.gp_code} is in Non-Doable case {c.ref} ({nd.STATUS_LABEL[c.status]}) – it is reviewed in Non-Doable Cases")
         if g.review not in step.frm:
             raise ReviewError(409, f"GP {g.gp_code} is '{REVIEW_LABEL.get(g.review, g.review)}' – this step is not possible now. Reload the ticket.")
+        if step.role == "AM" and tasks.frt_stage_open(g):  # the FRT's Daily Achievement: the FE verifies it first
+            raise ReviewError(409, f"GP {g.gp_code} is '{stage_label(g.frt_stage)}' – the FE verifies the FRT's Daily Achievement before the Area Manager")
         if action == "AM_APPROVE" and g.gp_category != "A":
             raise ReviewError(422, f"GP {g.gp_code}: only a GP marked Rectification Done can be approved (Non-Doable goes through its Non-Doable case)")
         if action == "AM_RETURN":

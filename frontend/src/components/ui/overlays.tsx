@@ -198,7 +198,8 @@ export function DialogContent({
       <D.Overlay className="fixed inset-0 z-50 bg-black/40" />
       <D.Content
         className={cn(
-          "fixed left-1/2 top-[12vh] z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl outline-none",
+          // max height + own scroll: a long dialog never runs off a phone screen (callers may set their own top / max-h)
+          "fixed left-1/2 top-[12vh] z-50 max-h-[calc(100dvh-12vh-1rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 overflow-y-auto overscroll-contain rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl outline-none",
           className,
         )}
         {...props}

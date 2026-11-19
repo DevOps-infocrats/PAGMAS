@@ -14,6 +14,7 @@ import { Dialog } from "@/components/ui/overlays";
 import { Card } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { IS_LIVE, adminApi, api, type EscalationImportRun, type ReconciliationRow } from "@/lib/api";
+import { cn } from "@/lib/utils/cn";
 import { formatCount, formatDate, formatDateTime, formatDuration } from "@/lib/utils/format";
 import type { IngestionRun } from "@/types";
 import { ColumnCheckDialog, ColumnMapperCard, type ColumnNext, type ColumnSource } from "./column-mapper";
@@ -268,7 +269,7 @@ function OperationsContent() {
         </Card>
       ) : (
         <Card>
-          <div className="grid grid-cols-1 divide-y divide-border sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4">
             {!runs
               ? Array.from({ length: 4 }, (_, i) => <KpiSkeleton key={i} />)
               : [
@@ -281,7 +282,17 @@ function OperationsContent() {
                   { label: "Critical issues", value: formatCount(latest?.issueCounts?.critical ?? latest?.validationErrors.length) },
                   { label: "Warnings", value: formatCount(latest?.issueCounts?.warning ?? null) },
                 ].map((s, i) => (
-                  <div key={s.label} className={`space-y-1.5 p-5 ${i >= 4 ? "lg:border-t lg:border-border" : ""} ${i % 4 ? "lg:border-l lg:border-border" : ""}`}>
+                  // phones / tablets: 2 per row; desktop: 4 per row (the same borders between the cells)
+                  <div
+                    key={s.label}
+                    className={cn(
+                      "min-w-0 space-y-1.5 border-border p-5",
+                      i >= 2 && "border-t",
+                      i % 2 === 1 && "border-l",
+                      i >= 2 && i < 4 && "lg:border-t-0",
+                      i % 4 !== 0 && "lg:border-l",
+                    )}
+                  >
                     <p className="text-[0.8125rem] text-muted-foreground">{s.label}</p>
                     <div className={s.small ? "break-all text-sm font-medium" : "text-lg font-semibold"}>{s.value}</div>
                   </div>

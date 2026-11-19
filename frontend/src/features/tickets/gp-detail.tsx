@@ -12,7 +12,7 @@ import { ProofList } from "./ticket-proof";
 import { REVIEW_STAGE, ReviewDialog, canStep, stageOf } from "./ticket-review";
 
 const week = (task: TicketTask) => task.week.id.replace("W-", "Week ");
-const ROLE: Record<string, string> = { FE: "FE", AM: "Area Manager", SME: "SME", COH: "COH", ADMIN: "Admin" };
+const ROLE: Record<string, string> = { FRT: "FRT", FE: "FE", AM: "Area Manager", SME: "SME", COH: "COH", ADMIN: "Admin" };
 
 function StageBadge({ g }: { g: TicketTaskGp }) {
   const s = REVIEW_STAGE[stageOf(g)];
