@@ -17,6 +17,27 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
 
+class Role(Base):
+    """An access role made in Roles & Access (app.security.roles): WHICH dashboard pages its users see, on a laptop and
+    on a phone, and the page a phone / laptop opens after sign-in. The SAME for every user of the role – WHICH data they
+    see is the user's own areas (user_scopes). Built-in roles (`key`: viewer, am, fe, frt) can be edited, not deleted.
+    Admins are not a Role row: an admin (users.role = "admin") always sees every page.
+    `pages` is JSON text: {"<page key>": {"laptop": bool, "phone": bool}} – page keys of app.security.roles.PAGES."""
+
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str | None] = mapped_column(String(20), unique=True, nullable=True)  # built-in id, None = admin-made
+    name: Mapped[str] = mapped_column(String(60), unique=True)
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    pages: Mapped[str] = mapped_column(Text, default="{}")
+    laptop_home: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    phone_home: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -24,6 +45,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(20), default="viewer")  # admin | viewer
+    # Viewers only: the access role (pages / phone – app.security.roles); NULL = the built-in Viewer role (every page)
+    role_id: Mapped[int | None] = mapped_column(ForeignKey("roles.id", ondelete="SET NULL"), nullable=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Incremented on logout-all / password change / deactivation -> invalidates issued tokens.

@@ -8,6 +8,7 @@ import { Logo } from "@/components/brand/logo";
 import { Tooltip } from "@/components/ui/overlays";
 import { useFilters } from "@/hooks/use-filters";
 import { useSession } from "@/hooks/use-session";
+import { usePageAccess } from "@/lib/auth/access";
 import { IS_LIVE } from "@/lib/api";
 import { AMC_PATH, AMC_VIEWS, amcViewFrom } from "@/lib/amc-views";
 import { BLOCK_PATH, BLOCK_VIEWS, blockViewFrom } from "@/lib/block-views";
@@ -57,12 +58,13 @@ export function SidebarContent({
   };
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const { session, isAdmin, logout } = useSession();
+  const access = usePageAccess(); // Roles & Access: only the pages of the user's role on this device
   const initials = session?.name.split(" ").map((p) => p[0]).join("").slice(0, 2) ?? "··";
 
   return (
     <div className="sidebar-surface relative flex h-full flex-col text-sidebar-foreground">
       <div className={cn("flex h-14 shrink-0 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "gap-2.5 px-5")}>
-        <Link href={hrefTo("/dashboard")} onClick={onNavigate} aria-label="Pratap – Circle Overview" className="flex items-center gap-2.5 rounded">
+        <Link href={hrefTo(access.home)} onClick={onNavigate} aria-label="Pratap – Circle Overview" className="flex items-center gap-2.5 rounded">
           {collapsed ? <Logo variant="mark" width={28} eager /> : <Logo variant="wordmark" width={92} eager />}
         </Link>
         {!collapsed && (
@@ -87,7 +89,7 @@ export function SidebarContent({
 
       <nav aria-label="Main" className={cn("scroll-thin flex-1 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}>
         {NAV.map((group, gi) => {
-          const items = group.items.filter((i) => !i.adminOnly || isAdmin);
+          const items = group.items.filter((i) => (!i.adminOnly || isAdmin) && (!i.pageKey || access.can(i.pageKey)));
           if (!items.length) return null;
           return (
             <div key={group.label} className={cn(gi > 0 && "mt-5")}>

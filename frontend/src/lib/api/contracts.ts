@@ -672,6 +672,68 @@ export interface AppUser {
   frtCode?: string | null;
   /** frt = created with the FRT code only: signs in with the FRT code (no e-mail) */
   loginType?: "email" | "frt";
+  /** Roles & Access: the viewer's access role (null = the built-in Viewer role; admins have none) */
+  roleId?: number | null;
+  roleName?: string | null;
+}
+
+/** Roles & Access – the dashboard pages a role can show (backend app.security.roles.PAGES) */
+export type PageKey =
+  | "overview"
+  | "circle-insights"
+  | "block-insights"
+  | "gp-insights"
+  | "amc-conversion"
+  | "field-team"
+  | "reports"
+  | "tickets-user"
+  | "tickets-nondoable";
+
+export interface PageAccess {
+  laptop: boolean;
+  phone: boolean;
+}
+
+export interface AccessRole {
+  id: number;
+  /** built-in role id (viewer / am / fe / frt) – edited, never deleted; null = made by an admin */
+  key: string | null;
+  name: string;
+  description: string | null;
+  system: boolean;
+  pages: Record<PageKey, PageAccess>;
+  /** the page opened after sign-in on a laptop / a phone */
+  laptopHome: PageKey | null;
+  phoneHome: PageKey | null;
+  /** accounts with this role */
+  users: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface RolesResponse {
+  pages: { key: PageKey; label: string; group: string }[];
+  roles: AccessRole[];
+  admins: number;
+}
+
+export interface RoleBody {
+  name?: string;
+  description?: string | null;
+  pages?: Partial<Record<PageKey, PageAccess>>;
+  laptopHome?: PageKey | null;
+  phoneHome?: PageKey | null;
+}
+
+/** What the signed-in user's role shows (GET /auth/me) – the server enforces the same pages */
+export interface Permissions {
+  /** admins: every page, also the admin pages */
+  all: boolean;
+  roleId: number | null;
+  roleName: string;
+  pages: Record<PageKey, PageAccess>;
+  laptopHome: PageKey | null;
+  phoneHome: PageKey | null;
 }
 
 export interface UserLocations {
@@ -693,6 +755,8 @@ export interface UserCreateBody {
   password: string;
   scopes?: { level: UserScopeLevel; id: string }[];
   frtCode?: string | null;
+  /** viewers: the access role (null / omitted = the built-in Viewer role) */
+  roleId?: number | null;
 }
 
 /** Bulk import of dashboard users from an Excel / CSV file (Name + Email columns) */
@@ -712,6 +776,8 @@ export interface UserImportItem {
   /** FRT Code column; frtLogin = no e-mail – the user signs in with this FRT code */
   frtCode?: string | null;
   frtLogin?: boolean;
+  /** Role column (Roles & Access): the role the new user gets ("Viewer" = empty) */
+  role?: string;
 }
 
 export interface UserImportResult {
@@ -736,6 +802,8 @@ export interface UserUpdateBody {
   name?: string;
   email?: string;
   role?: "admin" | "viewer";
+  /** sent = set (null = the built-in Viewer role); omitted = unchanged */
+  roleId?: number | null;
   isActive?: boolean;
   password?: string;
   scopes?: { level: UserScopeLevel; id: string }[];
@@ -1709,6 +1777,11 @@ export interface AdminApi {
   updateUser(id: number, body: UserUpdateBody): Promise<AppUser>;
   /** permanently removes the account (tickets and history stay, without the user link) */
   deleteUser(id: number): Promise<{ deleted: number }>;
+  /** Roles & Access: access roles and the pages a role can show */
+  listRoles(): Promise<RolesResponse>;
+  createRole(body: RoleBody & { name: string; pages: Partial<Record<PageKey, PageAccess>> }): Promise<AccessRole>;
+  updateRole(id: number, body: RoleBody): Promise<AccessRole>;
+  deleteRole(id: number): Promise<{ ok: boolean }>;
   /** dryRun = preview only; otherwise creates the new Viewer accounts with the temporary password */
   importUsers(file: File, dryRun: boolean): Promise<UserImportResult>;
   getUserLocations(): Promise<UserLocations>;

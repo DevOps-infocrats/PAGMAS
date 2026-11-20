@@ -147,3 +147,46 @@ def test_template_downloads_and_its_examples_are_never_imported(client):
     assert all("Example row" in it["reason"] for it in p["items"])
     login(client, VIEWER)
     assert client.get(f"{URL}/template.xlsx").status_code == 403
+
+
+def test_role_column_gives_each_new_user_an_access_role(client):
+    """Roles & Access: the Role column = a role name (any case); empty = the built-in Viewer role; Admin or an unknown
+    role skips the row. The template has the Role column."""
+    from app.models import Role
+    from python_calamine import CalamineWorkbook
+
+    csrf = login(client)
+    emails = ("role.am@pratap-test.in", "role.fe@pratap-test.in", "role.none@pratap-test.in", "role.admin@pratap-test.in", "role.bad@pratap-test.in")
+    _cleanup(*emails)
+    data = _xlsx([
+        ["Name", "Email", "Role"],
+        ["Role Am", emails[0], "AM"],
+        ["Role Fe", emails[1], " fe "],
+        ["Role None", emails[2], None],
+        ["Role Admin", emails[3], "Admin"],
+        ["Role Bad", emails[4], "Boss"],
+    ])
+    p = _post(client, csrf, data).json()
+    by = {it["email"]: it for it in p["items"]}
+    assert (by[emails[0]]["status"], by[emails[0]]["role"]) == ("NEW", "AM")
+    assert (by[emails[1]]["status"], by[emails[1]]["role"]) == ("NEW", "FE")
+    assert (by[emails[2]]["status"], by[emails[2]]["role"]) == ("NEW", "Viewer")
+    assert by[emails[3]]["status"] == "SKIPPED" and "Admin cannot be imported" in by[emails[3]]["reason"]
+    assert by[emails[4]]["status"] == "SKIPPED" and "Role 'Boss' does not exist" in by[emails[4]]["reason"]
+    try:
+        r = _post(client, csrf, data, dry=False).json()
+        assert r["created"] == 3
+        with SessionLocal() as db:
+            roles = {r.key: r.id for r in db.scalars(select(Role)) if r.key}
+            got = {u.email: (u.role, u.role_id) for u in db.scalars(select(User).where(User.email.in_(emails)))}
+        assert got == {emails[0]: ("viewer", roles["am"]), emails[1]: ("viewer", roles["fe"]), emails[2]: ("viewer", None)}
+        listed = {u["email"]: u["roleName"] for u in client.get("/api/v1/users").json() if u["email"] in emails}
+        assert listed == {emails[0]: "AM", emails[1]: "FE", emails[2]: None}  # None = the built-in Viewer (shown as Viewer)
+    finally:
+        _cleanup(*emails)
+    # the template: Role column right after Password, with the role names in its instructions
+    t = client.get(f"{URL}/template.xlsx")
+    wb = CalamineWorkbook.from_filelike(io.BytesIO(t.content))
+    head = wb.get_sheet_by_name("Users").to_python()[0]
+    assert head[:4] == ["Name", "Email", "Password", "Role"] and "FRT Code" in head
+    assert any("Roles now: Viewer, AM, FE, FRT" in str(c) for row in wb.get_sheet_by_name("Instructions").to_python() for c in row)

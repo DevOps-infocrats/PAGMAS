@@ -19,7 +19,7 @@ import { CohReviewTable } from "./coh-review-table";
 import { GpDetailDialog } from "./gp-detail";
 import { useReviewerNdCases, ndPendingFor } from "./nd-gp-rows";
 import { SmeReviewTable } from "./sme-review-table";
-import { TicketNdCases } from "./non-doable-view";
+import { NdFillDialog, TicketNdCases } from "./non-doable-view";
 import { GpStatusBadge, PROOF_ACCEPT, ProofList } from "./ticket-proof";
 import { REVIEW_STAGE, ReviewBar, ReviewCell, ReviewDialog, canStep, reviewable, stageOf } from "./ticket-review";
 
@@ -67,6 +67,8 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const [draft, setDraft] = useState<Draft>({});
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // FRT: Non-Doable cases shown in the E1 / E2 popup (just = opened by the Daily Achievement just submitted)
+  const [ndFill, setNdFill] = useState<{ ids: number[]; just: boolean } | null>(null);
   const [sent, setSent] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   // FE / FRT view = only their GPs; SME view = only the GPs the Area Manager forwarded to this SME (cut by the backend)
@@ -81,7 +83,8 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
   const frtScope = task.scope && task.scope.kind === "FRT" ? task.scope : null;
   // the FRT on a phone: Camera photo (with location) required; on a laptop: upload a photo file
   const isPhone = useIsPhone();
-  const camOnly = !!frtScope && isPhone;
+  // FRT and FE on a phone: the proof photo is a live Camera photo (location / date / time); laptop = file upload
+  const camOnly = (!!frtScope || !!scoped) && isPhone;
   const fes = task.fes ?? [];
   const frts = task.frts ?? [];
   const showFe = !scoped && !frtScope && !smeView && task.gps.some((g) => g.feName);
@@ -198,6 +201,13 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
     setError(null);
     try {
       const next = await ticketApi.submitProgressForm(t.id, changed, note.trim() || undefined, allProofs, allProofs.length ? (f) => setSent(f) : undefined, newGps);
+      // FRT: the Non-Doable cases this submission opened – their optional E1 / E2 in a popup right here
+      if (frtScope) {
+        const ids = (next.task?.gps ?? [])
+          .filter((g) => g.ndCase?.open && (changed.some((c) => c.taskGpId === g.id && c.category === "D") || newGps.some((n) => n.category === "D" && n.gpCode === g.gpCode)))
+          .map((g) => g.ndCase!.id);
+        if (ids.length) setNdFill({ ids, just: true });
+      }
       setDraft({});
       setRows([]);
       setNote("");
@@ -539,6 +549,21 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
 
       {roles.length > 0 && t.status !== "CLOSED" && <ReviewBar t={t} roles={roles} selected={selected} onClear={() => setPicked(new Set())} onChanged={onChanged} />}
 
+      {/* FRT: optional E1 / E2 of its Non-Doable cases in a popup (after the submission or from the GP row) */}
+      {frtScope && (
+        <NdFillDialog
+          caseIds={ndFill?.ids ?? null}
+          justSubmitted={!!ndFill?.just}
+          onClose={() => setNdFill(null)}
+          onChanged={() =>
+            ticketApi
+              .get(t.id)
+              .then((next) => onChanged(next, null))
+              .catch(() => undefined)
+          }
+        />
+      )}
+
       {/* Non-Doable cases of this ticket waiting for the user (e.g. COH: Forward → Corporate Team – MGG), same actions as Non-Doable Cases */}
       {!admin && t.status !== "CLOSED" && (
         <TicketNdCases
@@ -681,7 +706,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{camOnly ? CAMERA_HINT : EVIDENCE_HINT}</span>}
                     </td>
                     <td className="w-[9.5rem] px-2 py-2.5">
-                      <FrtCheckBadge g={g} />
+                      <FrtCheckBadge g={g} onOpenNd={(id) => setNdFill({ ids: [id], just: false })} />
                     </td>
                   </tr>
                 );
@@ -860,12 +885,25 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         <td className="w-[11rem] px-2 py-2">
                           <span className="flex flex-wrap items-center gap-2">
                             <FrtProofChips saved={g.files} draft={x.d?.files ?? []} disabled={busy} onRemove={(i) => set(g.id, { files: (x.d?.files ?? []).filter((_, j) => j !== i) })} />
+                            {x.textEdit && camOnly && (
+                              // FE on a phone: a live Camera photo (location / date / time) – same as the FRT
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setCamFor(g)}
+                                className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                                title="Take a live photo – its location, date and time are saved with it"
+                                aria-label={`Camera photo for ${g.gpCode}`}
+                              >
+                                <Camera className="size-4" />
+                              </button>
+                            )}
                             {x.textEdit && (
                               <label
                                 className={cn("flex size-10 cursor-pointer items-center justify-center rounded-md border border-dashed border-primary/50 text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}
-                                title="Upload a photo (JPG / PNG) or a document"
+                                title={camOnly ? "Attach a document" : "Upload a photo (JPG / PNG) or a document"}
                               >
-                                <Plus className="size-4" aria-hidden />
+                                {camOnly ? <Paperclip className="size-4" aria-hidden /> : <Plus className="size-4" aria-hidden />}
                                 <input
                                   type="file"
                                   multiple
@@ -876,13 +914,13 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                                     addFiles(g.id, e.target.files);
                                     e.target.value = "";
                                   }}
-                                  aria-label={`Upload proof for ${g.gpCode}`}
+                                  aria-label={`${camOnly ? "Attach a document" : "Upload proof"} for ${g.gpCode}`}
                                 />
                               </label>
                             )}
                             {!x.textEdit && g.files.length === 0 && <span className="text-[0.75rem] text-muted-foreground">No proof</span>}
                           </span>
-                          {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{EVIDENCE_HINT}</span>}
+                          {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{camOnly ? CAMERA_HINT : EVIDENCE_HINT}</span>}
                         </td>
                         <td className="px-2 py-2">
                           {checkButtons(g, x) ??
@@ -991,12 +1029,25 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         <td className="w-[12rem] px-2 py-2">
                           <span className="flex flex-wrap items-center gap-2">
                             <FrtProofChips saved={g.files} draft={x.d?.files ?? []} disabled={busy} onRemove={(i) => set(g.id, { files: (x.d?.files ?? []).filter((_, j) => j !== i) })} />
+                            {x.textEdit && camOnly && (
+                              // FE on a phone: a live Camera photo (location / date / time) – same as the FRT
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setCamFor(g)}
+                                className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                                title="Take a live photo – its location, date and time are saved with it"
+                                aria-label={`Camera photo for ${g.gpCode}`}
+                              >
+                                <Camera className="size-4" />
+                              </button>
+                            )}
                             {x.textEdit && (
                               <label
                                 className={cn("flex size-10 cursor-pointer items-center justify-center rounded-md border border-dashed border-primary/50 text-primary hover:bg-primary-soft", busy && "pointer-events-none opacity-50")}
-                                title="Upload a photo (JPG / PNG) or a document"
+                                title={camOnly ? "Attach a document" : "Upload a photo (JPG / PNG) or a document"}
                               >
-                                <Plus className="size-4" aria-hidden />
+                                {camOnly ? <Paperclip className="size-4" aria-hidden /> : <Plus className="size-4" aria-hidden />}
                                 <input
                                   type="file"
                                   multiple
@@ -1007,13 +1058,13 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                                     addFiles(g.id, e.target.files);
                                     e.target.value = "";
                                   }}
-                                  aria-label={`Upload proof for ${g.gpCode}`}
+                                  aria-label={`${camOnly ? "Attach a document" : "Upload proof"} for ${g.gpCode}`}
                                 />
                               </label>
                             )}
                             {!x.textEdit && g.files.length === 0 && <span className="text-[0.75rem] text-muted-foreground">No proof</span>}
                           </span>
-                          {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{EVIDENCE_HINT}</span>}
+                          {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{camOnly ? CAMERA_HINT : EVIDENCE_HINT}</span>}
                         </td>
                         <td className="w-[9rem] px-2 py-2.5">
                           <ReviewCell g={g} />
@@ -1513,7 +1564,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
           })}
         </ul>
       )}
-      {frtScope && (
+      {(frtScope || scoped) && (
         <CameraCapture open={camFor !== null} gpCode={camFor?.gpCode ?? ""} gpName={camFor?.gpName} onClose={() => setCamFor(null)} onCapture={(f) => camFor && addCameraFile(camFor.id, f)} />
       )}
       {!smeView && <GpDetailDialog t={t} g={task.gps.find((g) => g.id === detailId) ?? null} roles={roles} onClose={() => setDetailId(null)} onChanged={onChanged} />}

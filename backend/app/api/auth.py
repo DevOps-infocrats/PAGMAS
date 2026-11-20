@@ -119,7 +119,11 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     token, exp = create_session_token(user.id, user.role, user.token_version, remember=body.remember)
     _set_session_cookies(response, token, _cookie_max_age(exp, body.remember))
     audit(db, "login", request, user.id)
-    return {"user": user_json(user), "expiresAt": exp.isoformat()}
+    from ..security.roles import permissions
+
+    me_ = CurrentUser(id=user.id, email=user.email, name=user.name, role=user.role, role_id=user.role_id)
+    # the pages of the user's role (and the page a phone / laptop opens first) – app.security.roles
+    return {"user": user_json(user), "expiresAt": exp.isoformat(), "permissions": permissions(db, me_)}
 
 
 @router.post("/logout")
@@ -136,11 +140,12 @@ def logout(request: Request, response: Response, user: CurrentUser = Depends(get
 
 @router.get("/me")
 def me(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    """The signed-in user and what part of the data they see (data access)."""
+    """The signed-in user, what part of the data they see (data access) and which pages (their role)."""
     from ..security.access import access_summary
+    from ..security.roles import permissions
 
     _link_tickets(db, user.id, user.email)
-    return {"user": user_json(user), "access": access_summary(db, user)}
+    return {"user": user_json(user), "access": access_summary(db, user), "permissions": permissions(db, user)}
 
 
 def _link_tickets(db: Session, user_id: int, email: str) -> None:

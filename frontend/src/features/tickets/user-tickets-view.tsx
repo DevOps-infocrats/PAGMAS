@@ -323,20 +323,25 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
           }}
         />
       )}
-      <WorkSubmission
-        t={t}
-        onChanged={(next, n) => {
-          setLocal(next);
-          onChanged(n);
-        }}
-      />
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <SubmissionHistory t={t} emptyText="Nothing submitted yet." />
-        <div className="space-y-5">
-          <RecipientsCard t={t} />
-          <ActivityLog t={t} />
-        </div>
-      </div>
+      {/* FRT / FE: only the GP-wise task (Daily Achievement) – no work submission, history, recipients or activity */}
+      {t.task?.scope?.kind !== "FRT" && t.task?.scope?.kind !== "FE" && (
+        <>
+          <WorkSubmission
+            t={t}
+            onChanged={(next, n) => {
+              setLocal(next);
+              onChanged(n);
+            }}
+          />
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <SubmissionHistory t={t} emptyText="Nothing submitted yet." />
+            <div className="space-y-5">
+              <RecipientsCard t={t} />
+              <ActivityLog t={t} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

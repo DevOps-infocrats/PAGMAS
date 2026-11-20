@@ -16,6 +16,7 @@ const FORMAT: { col: string; required?: boolean; example: string }[] = [
   { col: "Name", required: true, example: "Ravi Kumar" },
   { col: "Email", required: true, example: "ravi@pratap.co.in" },
   { col: "Password", example: "Ravi@Pratap2026" },
+  { col: "Role", example: "AM" },
   { col: "Circle", example: "Rajasthan" },
   { col: "BA", example: "Jaipur" },
   { col: "District", example: "" },
@@ -36,6 +37,29 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
   const [result, setResult] = useState<UserImportResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tplBusy, setTplBusy] = useState(false);
+
+  /** The template is fetched in the page and saved from a blob – a plain link can be blocked by the browser on a
+   * site with a self-signed certificate ("Not secure"); the PPT / Excel downloads work the same way. */
+  const downloadTemplate = async () => {
+    setTplBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(TEMPLATE_HREF, { credentials: "same-origin", cache: "no-store" });
+      if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? "Sign in again as an admin to download the template." : `Template download failed (${res.status})`);
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "user-import-template.xlsx";
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Template download failed");
+    } finally {
+      setTplBusy(false);
+    }
+  };
 
   const run = async (f: File, dryRun: boolean) => {
     setBusy(true);
@@ -76,7 +100,7 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
         <div className="shrink-0 pr-8">
           <DialogTitle className="text-base font-bold">Import users</DialogTitle>
           <DialogDescription className="text-[0.8125rem] text-muted-foreground">
-            Excel (.xlsx, .xlsm, .xlsb) or CSV. Every new e-mail address becomes a <b>Viewer</b>; existing users are not changed.
+            Excel (.xlsx, .xlsm, .xlsb) or CSV. Every new e-mail address becomes a user with the <b>Role</b> of the file (empty = Viewer); existing users are not changed.
           </DialogDescription>
         </div>
 
@@ -84,9 +108,9 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
           <div className="shrink-0 space-y-2 rounded-lg border border-border bg-muted/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold">File format</span>
-              <a href={TEMPLATE_HREF} download className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
-                <Download className="size-3.5" aria-hidden /> Download template (.xlsx)
-              </a>
+              <button type="button" onClick={downloadTemplate} disabled={tplBusy} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline disabled:opacity-60">
+                {tplBusy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Download className="size-3.5" aria-hidden />} Download template (.xlsx)
+              </button>
             </div>
             <div className="overflow-x-auto rounded-md border border-border bg-card">
               <table className="w-full min-w-[40rem] text-xs">
@@ -116,6 +140,10 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
                 <b>*</b> Name and Email are required – an FRT team login needs no Email: fill FRT Code instead (a code of the Escalation Matrix; the FRT signs in with it). Every other column is optional and can be deleted.
               </li>
               <li>Password: at least 12 characters with 3 of lower-case, upper-case, digits, symbols (a weak one skips the row). Empty = the temporary password.</li>
+              <li>
+                Role: a role of <b>Roles &amp; Access</b> (e.g. AM, FE, FRT) – it decides which pages the user sees. Empty = Viewer. Admin or an unknown role skips the
+                row.
+              </li>
               <li>
                 Circle / BA / District / Block / GP decide what the user sees – the most specific filled column counts (Rajasthan + Jaipur = only Jaipur BA). Several
                 values: separate with commas. All empty = every circle.
@@ -176,7 +204,7 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
               <table className="w-full min-w-[35rem] text-sm">
                 <thead className="sticky top-0 bg-card">
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                    {["Row", "Name", "Email", ...(result.withAreas ? ["Areas"] : []), ...(result.withPasswords ? ["Password"] : []), "Result"].map((c) => (
+                    {["Row", "Name", "Email", "Role", ...(result.withAreas ? ["Areas"] : []), ...(result.withPasswords ? ["Password"] : []), "Result"].map((c) => (
                       <th key={c} scope="col" className="px-3 py-2 font-medium">
                         {c}
                       </th>
@@ -200,6 +228,7 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
                           </>
                         )}
                       </td>
+                      <td className="px-3 py-1.5 text-xs">{it.role ?? "Viewer"}</td>
                       {result.withAreas && (
                         <td className="px-3 py-1.5 text-xs">
                           {it.areas?.length ? it.areas.join(" · ") : it.status === "SKIPPED" ? "—" : <span className="text-warning-text">Every circle</span>}
@@ -214,7 +243,7 @@ export function ImportUsersDialog({ onDone }: { onDone: (msg: string) => void })
                   ))}
                   {!result.items.length && (
                     <tr>
-                      <td colSpan={4 + (result.withAreas ? 1 : 0) + (result.withPasswords ? 1 : 0)} className="px-3 py-4 text-center text-muted-foreground">
+                      <td colSpan={5 + (result.withAreas ? 1 : 0) + (result.withPasswords ? 1 : 0)} className="px-3 py-4 text-center text-muted-foreground">
                         No user rows found under the header.
                       </td>
                     </tr>

@@ -15,9 +15,10 @@ from ..analytics.store import Store
 from ..db import get_db
 from ..security.access import get_user_store
 from ..security.deps import CurrentUser, audit, get_current_user, require_admin
+from ..security.roles import require_page
 from .analytics import OptBlock, OptCircle, OptDistrict, OptWeekId, _period
 
-router = APIRouter(prefix="/field-team", tags=["field-team"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/field-team", tags=["field-team"], dependencies=[Depends(get_current_user), Depends(require_page("field-team"))])
 
 Search = Annotated[str | None, Query(max_length=80)]
 Page = Annotated[int, Query(ge=1, le=10_000)]

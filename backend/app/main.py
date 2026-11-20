@@ -20,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .analytics.store import NoDataError
 from .analytics.views import NotFound
-from .api import admin, analytics, auth, escalation, mail, nondoable, tickets
+from .api import admin, analytics, auth, escalation, mail, nondoable, roles, tickets
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
 from .models import Dataset, EscalationImport, User
@@ -139,8 +139,11 @@ async def lifespan(_: FastAPI):
     _bootstrap()
     from .mail.service import ensure_default_templates, start_scheduler, stop_scheduler
 
+    from .security.roles import ensure_system_roles
+
     with SessionLocal() as db:
         ensure_default_templates(db)  # the 3 built-in templates; never overwrites an edited one
+        ensure_system_roles(db)  # the built-in access roles (Viewer, AM, FE, FRT); never overwrites an edited one
     start_scheduler()  # only with AMC_REPORT_EMAILS_ENABLED=true; first check one minute later – start-up sends nothing
     yield
     stop_scheduler()
@@ -210,3 +213,4 @@ app.include_router(escalation.router, prefix="/api/v1")
 app.include_router(mail.router, prefix="/api/v1")
 app.include_router(tickets.router, prefix="/api/v1")
 app.include_router(nondoable.router, prefix="/api/v1")
+app.include_router(roles.router, prefix="/api/v1")

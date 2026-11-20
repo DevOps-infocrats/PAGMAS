@@ -33,7 +33,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@
 import { Card, Input } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useSession } from "@/hooks/use-session";
-import { IS_LIVE, adminApi, ndApi, type NdAction, type NdCaseDetail, type NdCaseRow, type NdFile, type NdRecord, type NdRole, type NdStatus, type ReviewContacts } from "@/lib/api";
+import { IS_LIVE, adminApi, ndApi, type NdAction, type NdCaseDetail, type NdCaseRow, type NdFile, type NdFormPart, type NdRecord, type NdRole, type NdStatus, type ReviewContacts } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 import { CATEGORY } from "./gp-category";
@@ -148,7 +148,7 @@ const KPI_SPEC: Record<NdRole, { title: string; cards: [string, string, string][
     title: "FRT",
     cards: [
       ["total", "My Non-Doable Cases", "Cases you proposed on your GPs"],
-      ["withYou", "With You", "Fill E1 / E2 (optional) and submit to your FE"],
+      ["withYou", "With You", "Returned by your FE – correct it and submit to your FE again"],
       ["pendingFe", "Pending FE Review", "Submitted – your FE reviews it"],
       ["inReview", "In Review", "With the AM / SME / COH / MGG"],
       ["approved", "Approved", "Closed as Non-Doable"],
@@ -763,6 +763,9 @@ export function ActionPanel({ d, onChanged, compact = false }: { d: NdCaseDetail
         <span className="text-[0.78125rem] text-warning-text">Forward to AM is possible after E1 and E2 are complete.</span>
       )}
       {d.can.actions.includes("FRT_SUBMIT") && <span className="text-[0.78125rem] text-muted-foreground">E1 / E2 are optional for you – your FE completes them.</span>}
+      {c.status === "PENDING_FE" && d.can.formMode === "optional" && (
+        <span className="text-[0.78125rem] text-muted-foreground">The case is with your FE – you may add E1 / E2 (optional) until your FE starts filling them.</span>
+      )}
       {c.status === "PENDING_COH" && d.mggMembers === 0 && d.can.actions.includes("COH_FORWARD") && (
         <span className="text-[0.78125rem] text-warning-text">No {MGG} account is authorised yet – type the MGG name and e-mail in Forward.</span>
       )}
@@ -886,7 +889,7 @@ function CaseForm({ d, kind, onCancel, onDone }: { d: NdCaseDetail; kind: FormKi
       const api = { verify: "verification", justify: "justification", revisitCoordination: "revisit", revisitVisit: "revisit" } as const;
       const data = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x.trim()]));
       await ndApi.submitForm(d.case.id, api[kind], data, { evidence, photos }, kind === "revisitCoordination" ? "COORDINATION" : kind === "revisitVisit" ? "VISIT" : undefined, setProgress);
-      onDone(`${FORM_META[kind].title} saved for ${d.case.ref}.${optional ? " Submit the case to your FE when ready." : d.case.status === "PENDING_FE" ? " Forward to the AM when E1 and E2 are complete." : " Everyone concerned has been notified."}`);
+      onDone(`${FORM_META[kind].title} saved for ${d.case.ref}.${optional ? (d.case.status === "PENDING_FE" ? " Your FE sees it with the case." : " Submit the case to your FE when ready.") : d.case.status === "PENDING_FE" ? " Forward to the AM when E1 and E2 are complete." : " Everyone concerned has been notified."}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the form");
       setBusy(false);
@@ -1166,6 +1169,110 @@ function TicketNdRow({ c, tick, onChanged }: { c: NdCaseRow; tick: number; onCha
         ) : (
           <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Loading" />
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The FRT on its ticket page: its Non-Doable cases in a popup – right after the Daily Achievement that proposed them,
+ * or from the GP row – with the optional E1 / E2 forms, without leaving the page. Only the forms the backend allows
+ * now (`can.verify` / `can.justify`: until the FE fills a form); everything else stays in Non-Doable Cases.
+ */
+export function NdFillDialog({ caseIds, justSubmitted = false, onClose, onChanged }: { caseIds: number[] | null; justSubmitted?: boolean; onClose: () => void; onChanged?: () => void }) {
+  const [tick, setTick] = useState(0);
+  const [pick, setPick] = useState<{ d: NdCaseDetail; kind: FormKind } | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const close = () => {
+    setPick(null);
+    setNotice(null);
+    onClose();
+  };
+  return (
+    <Dialog open={!!caseIds?.length} onOpenChange={(o) => !o && close()}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto">
+        {pick ? (
+          <CaseForm
+            d={pick.d}
+            kind={pick.kind}
+            onCancel={() => setPick(null)}
+            onDone={(text) => {
+              setPick(null);
+              setNotice({ ok: true, text });
+              setTick((x) => x + 1);
+              onChanged?.();
+            }}
+          />
+        ) : (
+          <div className="space-y-4 p-5">
+            <div>
+              <DialogTitle className="text-lg font-bold">{justSubmitted ? "Non-Doable sent to your FE" : "Non-Doable case"}</DialogTitle>
+              <DialogDescription className="mt-1 text-sm text-muted-foreground">
+                {justSubmitted ? "Your Daily Achievement is saved and the case is with your FE now. " : ""}
+                You may fill E1 / E2 here (optional – every field) until your FE starts filling them; your FE completes them and sends the case to the Area Manager.
+              </DialogDescription>
+            </div>
+            <NoticeBar notice={notice} onClose={() => setNotice(null)} />
+            <div className="space-y-2">
+              {caseIds?.map((id) => (
+                <NdFillRow key={id} id={id} tick={tick} onPick={(d, kind) => setPick({ d, kind })} />
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={close}>
+                {justSubmitted ? "Later" : "Close"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function NdFillRow({ id, tick, onPick }: { id: number; tick: number; onPick: (d: NdCaseDetail, kind: FormKind) => void }) {
+  const q = useApiQuery(`nd-case:${id}:${tick}`, () => ndApi.getCase(id));
+  const d = q.data;
+  if (q.error) return <p className="rounded-lg border border-border px-3 py-2 text-[0.8125rem] text-critical-text">{q.error.message}</p>;
+  if (!d)
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-[0.8125rem] text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden /> Loading the case…
+      </div>
+    );
+  const c = d.case;
+  const forms = (["verify", "justify"] as const).filter((k) => d.can[k]);
+  const part = (label: string, p?: NdFormPart) =>
+    p?.filled ? (
+      <span className="inline-flex items-center gap-1 text-success-text">
+        <CheckCircle2 className="size-3.5" aria-hidden /> {label} filled{p.byName ? ` by ${p.byName}` : ""}
+      </span>
+    ) : (
+      <span className="text-muted-foreground">{label} not filled yet</span>
+    );
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-card px-3 py-2.5 text-[0.8125rem]">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-semibold text-foreground">{c.ref}</span>
+        <span className="min-w-0 truncate">
+          GP {d.gp.gpCode} – {d.gp.gpName ?? "—"}
+        </span>
+        <NdStatusBadge status={c.status} label={c.statusLabel} />
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[0.78125rem]">
+        {part("E1", d.forms?.e1)}
+        {part("E2", d.forms?.e2)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {forms.map((k) => (
+          <Button key={k} size="sm" variant="primary" onClick={() => onPick(d, k)}>
+            <FileText /> {k === "verify" ? "Fill E1 – Physical verification" : "Fill E2 – Justification"}
+          </Button>
+        ))}
+        {!forms.length && <span className="text-muted-foreground">{c.pendingWith ? `With ${c.pendingWith} now – nothing more is needed from you.` : "Nothing to fill now."}</span>}
+        <Link href={`/dashboard/tickets/non-doable?case=${c.id}`} className="ml-auto text-[0.78125rem] font-medium text-primary hover:underline">
+          Open full case →
+        </Link>
       </div>
     </div>
   );

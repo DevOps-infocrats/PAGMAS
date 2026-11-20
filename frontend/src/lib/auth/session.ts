@@ -1,4 +1,4 @@
-import { IS_LIVE } from "@/lib/api";
+import { IS_LIVE, type Permissions } from "@/lib/api";
 import { request } from "@/lib/api/http-client";
 import type { Role } from "@/types";
 import { clearSessionCookie, demoLogin, readSessionCookie, writeSessionCookie } from "./demo-auth";
@@ -14,17 +14,19 @@ export interface SessionUser {
   role: Role;
   /** Data access: "all" = every state; "areas" = only the listed areas (assigned in User Management). */
   access?: { scope: "all" | "areas"; areas: string[] };
+  /** Roles & Access: the pages of the user's role (laptop / phone) and the start pages; absent = every page */
+  permissions?: Permissions;
 }
 
 export const SESSION_COOKIE_NAME = IS_LIVE ? "pratap_session" : "pratap_demo_session";
 
 export async function signIn(email: string, password: string, remember: boolean): Promise<SessionUser> {
   if (IS_LIVE) {
-    const res = await request<{ user: SessionUser }>("/auth/login", {
+    const res = await request<{ user: SessionUser; permissions?: Permissions }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email: email.trim(), password, remember }),
     });
-    return res.user;
+    return { ...res.user, permissions: res.permissions };
   }
   const s = await demoLogin(email, password);
   writeSessionCookie(s, remember);
@@ -48,8 +50,8 @@ export function fetchCurrentUser(): Promise<SessionUser | null> {
 
 async function loadCurrentUser(): Promise<SessionUser | null> {
   try {
-    const res = await request<{ user: SessionUser; access?: SessionUser["access"] }>("/auth/me");
-    return { ...res.user, access: res.access };
+    const res = await request<{ user: SessionUser; access?: SessionUser["access"]; permissions?: Permissions }>("/auth/me");
+    return { ...res.user, access: res.access, permissions: res.permissions };
   } catch {
     return null;
   }

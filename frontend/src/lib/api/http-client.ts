@@ -187,6 +187,10 @@ export const httpAdminApi: AdminApi = {
   createUser: (body) => request("/users", { method: "POST", body: JSON.stringify(body) }),
   updateUser: (id, body) => request(`/users/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteUser: (id) => request(`/users/${id}/delete`, { method: "POST" }),
+  listRoles: () => request("/roles"),
+  createRole: (body) => request("/roles", { method: "POST", body: JSON.stringify(body) }),
+  updateRole: (id, body) => request(`/roles/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteRole: (id) => request(`/roles/${id}`, { method: "DELETE" }),
   importUsers: (file, dryRun) => {
     const body = new FormData();
     body.append("file", file);

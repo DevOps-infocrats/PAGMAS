@@ -577,6 +577,8 @@ class UserCreate(BaseModel):
     scopes: list[ScopeIn] = Field(default_factory=list, max_length=500)
     # FRT team login: the Escalation Matrix FRT code this viewer works for (reports the Daily Achievement of its GPs)
     frt_code: str | None = Field(default=None, alias="frtCode", max_length=60)
+    # Roles & Access: the viewer's access role (pages, phone – app.security.roles); None = the built-in Viewer role
+    role_id: int | None = Field(default=None, alias="roleId", ge=1)
 
 
 class UserUpdate(BaseModel):
@@ -587,6 +589,8 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, max_length=128)
     scopes: list[ScopeIn] | None = Field(default=None, max_length=500)  # None = unchanged, [] = remove all
     frt_code: str | None = Field(default=None, alias="frtCode", max_length=60)  # None = unchanged, "" = not an FRT
+    # sent = set (null = the built-in Viewer role); not sent = unchanged. Admins have no access role.
+    role_id: int | None = Field(default=None, alias="roleId", ge=1)
 
 
 def _frt_code(value: str | None, role: str) -> str | None:
@@ -606,6 +610,23 @@ def _frt_code(value: str | None, role: str) -> str | None:
     return code
 
 
+def _access_role(db: Session, role_id: int | None, role: str) -> int | None:
+    """The access role to store: only for a viewer (admins see every page), and it must exist."""
+    from ..models import Role
+
+    if role != "viewer" or role_id is None:
+        return None
+    if db.get(Role, role_id) is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The chosen role does not exist any more – reload the page")
+    return role_id
+
+
+def _role_names(db: Session) -> dict[int, str]:
+    from ..models import Role
+
+    return {r.id: r.name for r in db.scalars(select(Role))}
+
+
 def _active_store() -> Store | None:
     from ..analytics.store import NoDataError
 
@@ -615,12 +636,15 @@ def _active_store() -> Store | None:
         return None
 
 
-def _user_json(u: User, scopes: list[Assignment] | None = None, labels: dict[str, dict[str, str]] | None = None) -> dict:
+def _user_json(u: User, scopes: list[Assignment] | None = None, labels: dict[str, dict[str, str]] | None = None, roles: dict[int, str] | None = None) -> dict:
     return {
         "id": u.id,
         "email": u.email,
         "name": u.name,
         "role": u.role,
+        # access role (Roles & Access): None = the built-in Viewer role / an admin
+        "roleId": u.role_id if u.role != "admin" else None,
+        "roleName": "Admin" if u.role == "admin" else (roles or {}).get(u.role_id or 0),
         "isActive": u.is_active,
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
         "locked": bool(u.locked_until),
@@ -635,7 +659,8 @@ def _users_json(db: Session, users: list[User]) -> list[dict]:
     st = _active_store()
     labels = locations(st) if st is not None else None
     sc = assignments_of(db, [u.id for u in users])
-    return [_user_json(u, sc.get(u.id, []), labels) for u in users]
+    roles = _role_names(db)
+    return [_user_json(u, sc.get(u.id, []), labels, roles) for u in users]
 
 
 def _set_scopes(db: Session, user: User, items: list[ScopeIn]) -> None:
@@ -713,7 +738,7 @@ def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends
     if problems:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Password needs " + "; ".join(problems))
     frt = _frt_code(body.frt_code, body.role)
-    u = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password), frt_code=frt)
+    u = User(email=email, name=body.name.strip(), role=body.role, password_hash=hash_password(body.password), frt_code=frt, role_id=_access_role(db, body.role_id, body.role))
     db.add(u)
     db.flush()
     _set_scopes(db, u, body.scopes)
@@ -732,13 +757,18 @@ USER_IMPORT_MAX_MB = 5
 
 
 @router.get("/users/import/template.xlsx")
-def user_import_template() -> Response:
+def user_import_template(db: Session = Depends(get_db)) -> Response:
     """The Import users file to fill in: the columns the import reads (Name, Email, Password, Circle, BA, District,
     Block, GP) with example rows (@example.com – never imported) spelt from the active data, and an Instructions sheet."""
     from ..ingestion.users import TEMPLATE_FILE, build_template
 
+    from ..models import Role
+    from ..security.roles import ensure_system_roles
+
     st = _active_store()
-    data = build_template(st.gps if st is not None else None, get_settings().user_import_password)
+    ensure_system_roles(db)
+    roles = [r.name for r in db.scalars(select(Role).order_by(Role.key.is_(None), Role.id))]  # the role names to write
+    data = build_template(st.gps if st is not None else None, get_settings().user_import_password, roles)
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{TEMPLATE_FILE}"', "Cache-Control": "no-store"})
 
 
@@ -793,6 +823,24 @@ def import_users(
             r.problem = f"FRT code '{r.frt_code}' is not in the active Escalation Matrix"
         elif matrix_codes is None and r.frt_only:
             r.problem = "No Escalation Matrix is uploaded – an FRT login cannot be checked"
+    # Roles & Access: the Role column = a role name (empty = the built-in Viewer role); Admin is never imported
+    from ..models import Role
+
+    role_rows = list(db.scalars(select(Role)))
+    by_name = {r.name.lower(): r for r in role_rows}
+    role_names = ", ".join(r.name for r in sorted(role_rows, key=lambda x: (x.key is None, x.id)))
+
+    def _role(r) -> tuple[int | None, str, str | None]:
+        """(role id to store – None = Viewer, the role shown, problem)"""
+        if not r.role:
+            return None, "Viewer", None
+        if r.role.lower() == "admin":
+            return None, r.role, "Admin cannot be imported – make admins with Add user"
+        hit = by_name.get(r.role.lower())
+        if hit is None:
+            return None, r.role, f"Role '{r.role}' does not exist – roles: {role_names}"
+        return (None if hit.key == "viewer" else hit.id), hit.name, None
+
     with_areas = has_area_columns(rows)
     st = _active_store() if with_areas else None
     resolver = AreaResolver(st.gps if st is not None else None) if with_areas else None
@@ -800,20 +848,22 @@ def import_users(
     existing = {e.lower() for e in db.scalars(select(User.email).where(func.lower(User.email).in_([r.email for r in rows if not r.problem])))}
     items, new = [], []
     for r in rows:
+        role_id, role_name, role_problem = _role(r)
         areas, area_problem = resolver.resolve(r.areas) if resolver is not None and not r.problem else ([], None)
-        problem = r.problem or area_problem
+        problem = r.problem or role_problem or area_problem
         status_, reason = ("SKIPPED", problem) if problem else ("EXISTS", "Already a dashboard user – not changed (areas too)") if r.email in existing else ("NEW", None)
         area_text = [f"{LEVEL_LABELS[lvl]}: {labels.get(lvl, {}).get(i, i)}" for lvl, i in areas]
         items.append({
             "row": r.row, "name": r.name, "email": None if r.frt_only else r.email, "status": status_, "reason": reason if not (r.frt_only and status_ == "EXISTS") else "An FRT login for this code already exists – not changed",
             "areas": area_text, "password": "FILE" if r.password is not None else "TEMPORARY", "frtCode": r.frt_code, "frtLogin": r.frt_only,
+            "role": role_name,
         })
         if status_ == "NEW":
-            new.append((r, areas))
+            new.append((r, areas, role_id))
     created = 0
     if not dry_run and new:
-        temp = hash_password(s.user_import_password) if any(r.password is None for r, _ in new) else None  # hashed once
-        users = [(User(email=r.email, name=r.name, role="viewer", password_hash=hash_password(r.password) if r.password is not None else temp, frt_code=frt_norm(r.frt_code) if r.frt_code else None), areas) for r, areas in new]
+        temp = hash_password(s.user_import_password) if any(r.password is None for r, _a, _rid in new) else None  # hashed once
+        users = [(User(email=r.email, name=r.name, role="viewer", role_id=rid, password_hash=hash_password(r.password) if r.password is not None else temp, frt_code=frt_norm(r.frt_code) if r.frt_code else None), areas) for r, areas, rid in new]
         db.add_all(u for u, _ in users)
         db.flush()
         db.add_all(UserScope(user_id=u.id, level=lvl, scope_id=i) for u, areas in users for lvl, i in areas)
@@ -840,7 +890,7 @@ def import_users(
         "temporaryPassword": s.user_import_password,
         "withPasswords": has_password_column(rows),
         # new users without a password in the file (they get the temporary password)
-        "temporaryCount": sum(1 for r, _ in new if r.password is None),
+        "temporaryCount": sum(1 for r, _a, _rid in new if r.password is None),
         "withAreas": with_areas,
         "items": items,
     }
@@ -875,6 +925,10 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
             body.scopes = []  # admins keep no areas
         if body.role == "admin" and body.frt_code is None:
             body.frt_code = ""  # admins are never FRT accounts
+    if u.role == "admin":
+        u.role_id = None  # admins see every page – no access role
+    elif "role_id" in body.model_fields_set:
+        u.role_id = _access_role(db, body.role_id, u.role)
     if body.scopes is not None:
         _set_scopes(db, u, body.scopes)
     if body.frt_code is not None:

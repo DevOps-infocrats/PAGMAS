@@ -1295,6 +1295,11 @@ def submit_progress(
                         f"FRT {frt.name} ({frt.code}) submitted the Daily Achievement of {len(to_fe)} GP{'s' if len(to_fe) != 1 else ''} ({codes}). Check the proof and remark, then Verify (to the Area Manager) or Return to FRT.")
             else:
                 _notify(db, fe_ids, t, "PROGRESS", f"{t.code}: FRT {frt.code} daily progress", f"FRT {frt.name} ({frt.code}) updated {len(changes)} GP line{'s' if len(changes) != 1 else ''}{extra}.")
+            if cases:  # Non-Doable by the FRT: the case is with the FE now – E1 / E2 are the FE's to fill / complete
+                _notify(
+                    db, rv._fe_users(db, t, [g for g, _c in cases]) - {user.id}, t, "NONDOABLE", f"{t.code}: Non-Doable proposed by FRT {frt.code}",
+                    "; ".join(f"{c.ref} – GP {g.gp_code} ({g.gp_name})" for g, c in cases) + ". Fill / complete the E1 physical verification and the E2 justification, then forward it to the Area Manager.",
+                )
         elif scope is not None:  # an FE reported: their Area Manager follows it too (dashboard + e-mail)
             from ..models import TicketRecipient
 
