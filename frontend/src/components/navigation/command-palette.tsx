@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/overlays";
 import { useFilters } from "@/hooks/use-filters";
 import { useSession } from "@/hooks/use-session";
+import { usePageAccess } from "@/lib/auth/access";
 import { api, type SearchResult } from "@/lib/api";
 import { ALL_NAV_ITEMS } from "./nav-config";
 
@@ -17,6 +18,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const [results, setResults] = useState<{ q: string; items: SearchResult[] }>({ q: "", items: [] });
   const { navigate } = useFilters();
   const { isAdmin } = useSession();
+  const access = usePageAccess();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -54,7 +56,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     if (r.type === "gp") navigate("/dashboard/gp-insights", { circle: r.circleId, district: r.districtId, block: r.blockId, gp: r.id });
   };
 
-  const pages = ALL_NAV_ITEMS.filter((i) => (!i.adminOnly || isAdmin) && i.label.toLowerCase().includes(q.toLowerCase()));
+  const pages = ALL_NAV_ITEMS.filter((i) => (!i.adminOnly || isAdmin) && (!i.pageKey || access.can(i.pageKey)) && i.label.toLowerCase().includes(q.toLowerCase()));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

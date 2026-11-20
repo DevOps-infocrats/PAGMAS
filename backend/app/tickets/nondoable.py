@@ -1,8 +1,9 @@
 """Non-Doable GP exception and approval workflow (FE → AM → SME → COH → Corporate Team – MGG).
 
 FRT GPs (an FRT account of the ticket reports the GP – app.tickets.task): the FRT proposes Non-Doable in its Daily
-Achievement (FRT_PROPOSED), may fill E1 / E2 (optional – every field, saved as the FRT's own rows) and submits it to the
-FE (FRT_SUBMIT → PENDING_FE) with or without them. The FE reviews it: completes / corrects E1 and E2 (the FE's own rows;
+Achievement – that submission sends the case straight to the FE (PENDING_FE, events PROPOSED_FRT + FRT_SUBMIT). The FRT
+may still add E1 / E2 (optional – every field, saved as the FRT's own rows) until the FE fills a form; a case the FE
+returns to the FRT (FRT_PROPOSED) is submitted again with FRT_SUBMIT. The FE reviews it: completes / corrects E1 and E2 (the FE's own rows;
 the FRT's rows stay unchanged), and FE_FORWARD sends it to the Area Manager (PENDING_AM) ONLY when the latest E1 and E2
 are complete (forms_check) – or returns it to the FRT (FE_RETURN_FRT) / withdraws it. From PENDING_AM on, unchanged.
 
@@ -101,7 +102,7 @@ STEPS: dict[str, Step] = {
     "WITHDRAW": Step("FE", "E2", "Proposal withdrawn by FE", ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE"), "WITHDRAWN"),
     # FRT GPs: the FRT hands its proposal (with or without E1 / E2) to the FE, who verifies / completes it for the AM
     "FRT_SUBMIT": Step("FRT", "E1", "Submitted by FRT to FE for review", ("FRT_PROPOSED",), "PENDING_FE"),
-    "FRT_WITHDRAW": Step("FRT", "E1", "Proposal withdrawn by FRT", ("FRT_PROPOSED",), "WITHDRAWN"),
+    "FRT_WITHDRAW": Step("FRT", "E1", "Proposal withdrawn by FRT", ("FRT_PROPOSED", "PENDING_FE"), "WITHDRAWN"),
     "FE_FORWARD": Step("FE", "E2", "Verified by FE – forwarded to AM", ("PENDING_FE",), "PENDING_AM"),
     "FE_RETURN_FRT": Step("FE", "E2", "Returned by FE to FRT", ("PENDING_FE",), "FRT_PROPOSED"),
 }
@@ -369,14 +370,18 @@ def on_progress(db: Session, t: Ticket, g: TicketTaskGp, user: CurrentUser, new_
         return None
     fe = _fe_recipients(db, t, g)
     c = NdCase(
-        ticket_id=t.id, task_gp_id=g.id, gp_code=g.gp_code, round=(last.round + 1) if last is not None else 1, status="FRT_PROPOSED" if by_frt else "PROPOSED",
+        ticket_id=t.id, task_gp_id=g.id, gp_code=g.gp_code, round=(last.round + 1) if last is not None else 1, status="PENDING_FE" if by_frt else "PROPOSED",
         fe_name=fe[0].name if fe else g.fe_name, fe_email=fe[0].email if fe else g.fe_email, created_by_id=user.id, created_by_name=user.name, created_at=at, updated_at=at,
     )
     db.add(c)
     db.flush()
     c.ref = f"ND-{c.id:06d}"
     if by_frt:
+        # the FRT's Daily Achievement IS its submission: the case goes straight to the FE, who fills / completes E1 and
+        # E2 (FE_FORWARD to the AM only when they are complete). The FRT may still add its optional E1 / E2 until the FE
+        # fills a form (frt_may_fill).
         _event(db, c, user, "E1", "PROPOSED_FRT", "FRT", None, "FRT_PROPOSED", remark=remark, at=at)
+        _event(db, c, user, "E1", "FRT_SUBMIT", "FRT", "FRT_PROPOSED", "PENDING_FE", remark="Sent to the FE with the Daily Achievement", at=at)
     else:
         _event(db, c, user, "E1", "PROPOSED", "FE", None, "PROPOSED", remark=remark, at=at)
     return c
@@ -493,6 +498,19 @@ def _announce(db: Session, c: NdCase, t: Ticket, g: TicketTaskGp, user: CurrentU
     return list(mail.items())
 
 
+def frt_may_fill(db: Session, c: NdCase, roles: set[str] | list[str] | tuple[str, ...]) -> bool:
+    """The FRT's optional E1 / E2: while the case is with the FRT (FRT_PROPOSED – e.g. returned by the FE), or with the
+    FE (PENDING_FE, sent with the Daily Achievement) as long as the FE has not filled a form yet – the FE's forms are
+    the latest then and an FRT form never replaces them."""
+    if "FRT" not in roles or "FE" in roles:
+        return False
+    if c.status == "FRT_PROPOSED":
+        return True
+    if c.status != "PENDING_FE":
+        return False
+    return db.scalar(select(NdRecord.id).where(NdRecord.case_id == c.id, NdRecord.role == "FE", NdRecord.kind.in_(("VERIFICATION", "JUSTIFICATION"))).limit(1)) is None
+
+
 def _closed(t: Ticket) -> None:
     if t.status == "CLOSED":
         raise NdError(409, "This ticket is closed – the Non-Doable case cannot change any more")
@@ -503,11 +521,11 @@ def submit_form(db: Session, case_id: int, user: CurrentUser, kind: str, data: d
     Returns the case, the e-mail list and the audit event id."""
     c, t, g, roles = _load(db, case_id, user)
     _closed(t)
-    # the FRT fills E1 / E2 only while the case is with it (FRT_PROPOSED) – every field optional; anything else is the FE's
-    frt_turn = c.status == "FRT_PROPOSED" and "FRT" in roles and kind in ("VERIFICATION", "JUSTIFICATION")
+    # the FRT fills E1 / E2 (every field optional) while the case is with it, or with the FE before the FE's own forms
+    frt_turn = frt_may_fill(db, c, roles) and kind in ("VERIFICATION", "JUSTIFICATION")
     if not frt_turn and "FE" not in roles:
         if "FRT" in roles:
-            raise NdError(409 if kind in ("VERIFICATION", "JUSTIFICATION") else 403, "The FRT fills E1 / E2 only while the case is with the FRT – it is now with your FE")
+            raise NdError(409 if kind in ("VERIFICATION", "JUSTIFICATION") else 403, "Your FE is filling E1 / E2 now – the FRT's optional forms are closed for this case")
         raise NdError(403, "Only the Field Engineer of this GP can submit this form")
     if not frt_turn and c.status == "FRT_PROPOSED":
         raise NdError(409, "The case is with the FRT – it comes to you once the FRT submits it")
@@ -1151,7 +1169,7 @@ def detail(db: Session, case_id: int, user: CurrentUser) -> dict[str, Any]:
     others = list(db.scalars(select(NdCase).where(NdCase.task_gp_id == g.id, NdCase.id != c.id).order_by(NdCase.id)))
     open_ = t.status != "CLOSED"
     fe, w = "FE" in roles and open_, c.status
-    frt_turn = "FRT" in roles and open_ and w == "FRT_PROPOSED"
+    frt_turn = open_ and frt_may_fill(db, c, roles)
     chk = forms_check(db, c)
     can = {
         "verify": (fe and w in ("PROPOSED", "E1_DONE", "RETURNED_FE", "PENDING_FE")) or frt_turn,

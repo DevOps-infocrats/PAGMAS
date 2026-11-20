@@ -23,6 +23,8 @@ class CurrentUser:
     email: str
     name: str
     role: str
+    # access role of a viewer (app.security.roles); None = not loaded / the built-in Viewer role
+    role_id: int | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -99,7 +101,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> Current
     if request.method not in SAFE_METHODS and not csrf_matches(request.cookies.get(CSRF_COOKIE), request.headers.get(CSRF_HEADER)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "CSRF token missing or invalid")
 
-    return CurrentUser(id=user.id, email=user.email, name=user.name, role=user.role)
+    return CurrentUser(id=user.id, email=user.email, name=user.name, role=user.role, role_id=user.role_id)
 
 
 def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

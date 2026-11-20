@@ -165,6 +165,8 @@ export function UsersTable({
   const [ba, setBa] = useState<string | undefined>();
   const [district, setDistrict] = useState<string | undefined>();
   const [role, setRole] = useState(ALL);
+  // the roles of the accounts (Admin first) – Roles & Access
+  const roleNames = useMemo(() => [...new Set(users.map(roleLabel))].sort((a, b) => (a === "Admin" ? -1 : b === "Admin" ? 1 : a.localeCompare(b))), [users]);
   const [status, setStatus] = useState(ALL);
   const [card, setCard] = useState<Card>("all");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "name", desc: false });
@@ -188,7 +190,7 @@ export function UsersTable({
   const q = text.trim().toLowerCase();
   const shown = rows.filter(({ u, cv }) => {
     if (q && !`${u.name} ${u.email} ${u.frtCode ?? ""}`.toLowerCase().includes(q)) return false;
-    if (role !== ALL && u.role !== role) return false;
+    if (role !== ALL && roleLabel(u) !== role) return false;
     if (status !== ALL && (status === "Active") !== u.isActive) return false; // a locked user counts by its active / inactive state
     if (circle && !inCircle(cv, circle)) return false;
     if (ba && !inBa(cv, ba, idx)) return false;
@@ -223,7 +225,7 @@ export function UsersTable({
     ["active", "Active", users.filter((u) => u.isActive).length, "var(--good)"],
     ["inactive", "Inactive", users.filter((u) => !u.isActive).length, "var(--muted-foreground)"],
     ["admin", "Admins", users.filter((u) => u.role === "admin").length, "var(--series-7)"],
-    ["viewer", "Viewers", users.filter((u) => u.role === "viewer").length, "var(--series-3)"],
+    ["viewer", "Other roles", users.filter((u) => u.role === "viewer").length, "var(--series-3)"],
     ["never", "Never signed in", users.filter((u) => !u.lastLoginAt).length, "var(--warning)"],
   ];
 
@@ -233,7 +235,7 @@ export function UsersTable({
       [
         u.name,
         u.loginType === "frt" ? `${u.frtCode ?? ""} (FRT code login)` : u.email,
-        u.role === "admin" ? "Admin" : "Viewer",
+        roleLabel(u),
         u.frtCode ?? "",
         cv.all ? "All" : cv.circleText,
         cv.all ? "All" : cv.baText,
@@ -361,12 +363,8 @@ export function UsersTable({
             if (v) setRole(v);
             reset();
           }}
-          options={[
-            { value: ALL, label: "All roles" },
-            { value: "admin", label: "Admin" },
-            { value: "viewer", label: "Viewer" },
-          ]}
-          className="w-32"
+          options={[{ value: ALL, label: "All roles" }, ...roleNames.map((n) => ({ value: n, label: n }))]}
+          className="w-36"
         />
         <Select
           ariaLabel="Status"
@@ -454,7 +452,7 @@ export function UsersTable({
                   </td>
                   <td className="px-3 py-2.5">
                     <span className={cn("rounded-full px-2 py-0.5 text-[0.71875rem] font-semibold", u.role === "admin" ? "bg-[color-mix(in_srgb,var(--series-7)_14%,transparent)] text-[var(--series-7)]" : "bg-muted text-foreground")}>
-                      {u.role === "admin" ? "Admin" : "Viewer"}
+                      {roleLabel(u)}
                     </span>
                     {u.frtCode && (
                       <span className="mt-1 block w-fit rounded bg-primary-soft px-1.5 py-0.5 text-[0.65625rem] font-semibold text-primary" title="FRT login – reports the Daily Achievement of the GPs of this FRT code">
@@ -529,6 +527,9 @@ export function UsersTable({
   );
 }
 
+/** The role shown for a user: Admin, else their access role (Roles & Access) – no role = the built-in Viewer. */
+export const roleLabel = (u: AppUser) => (u.role === "admin" ? "Admin" : (u.roleName ?? "Viewer"));
+
 /** The roles and areas explanation, folded. */
 export function RolesHelp() {
   return (
@@ -537,10 +538,10 @@ export function RolesHelp() {
         <Info className="size-4" aria-hidden /> How roles and areas work
       </summary>
       <p className="mt-2 text-muted-foreground">
-        <b>Admin</b> – manages data, users and mail; sees and receives every circle. <b>Viewer</b> – reads dashboards. A viewer with areas sees only those areas on
-        every page, list and download, and receives the AMC Conversion e-mail for them. A viewer without an area sees every state but receives no e-mail. Area
-        Managers, SME, COH and CBH are taken from the Escalation Matrix and do not need an account. An FRT code makes the viewer an FRT login (Daily Achievement
-        of that FRT code&apos;s GPs).
+        <b>Admin</b> – manages data, users and mail; sees every page and every circle. Every other account has a <b>role</b> (Viewer, AM, FE, FRT or one made in{" "}
+        <b>Roles &amp; Access</b>) – the role decides <b>which pages</b> it sees on a laptop and on a phone, the same for every user of the role. The user&apos;s{" "}
+        <b>areas</b> decide <b>which data</b>: a user with areas sees only those areas on every page, list and download, and receives the AMC Conversion e-mail for
+        them; without an area they see every state but receive no e-mail. An FRT code makes the account an FRT login (Daily Achievement of that FRT code&apos;s GPs).
       </p>
     </details>
   );

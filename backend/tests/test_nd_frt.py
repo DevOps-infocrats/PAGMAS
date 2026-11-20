@@ -1,7 +1,8 @@
 """Non-Doable proposed by the FRT: FRT → FE review → Area Manager (app.tickets.nondoable).
 
-* the FRT proposes Non-Doable in its Daily Achievement (remark + photo) – the case starts with the FRT;
-* the FRT MAY fill E1 / E2 (every field optional) and submits to the FE with or without them;
+* the FRT proposes Non-Doable in its Daily Achievement (remark + photo) – that submission sends the case straight to
+  the FE (PENDING_FE); the FRT MAY still add E1 / E2 (every field optional) until the FE fills a form;
+* a case the FE returns to the FRT (FRT_PROPOSED) is corrected and submitted again (FRT_SUBMIT) or withdrawn;
 * the FE reviews it: completes / corrects E1 / E2 (own rows – the FRT's rows stay), and can forward to the Area Manager
   ONLY when the latest E1 and E2 are complete (backend rule) – or return it to the FRT / withdraw it;
 * only the right role acts at each stage; the AM gets the case only after the FE's forward; full history kept.
@@ -48,29 +49,21 @@ def _user_id(email):
 
 def test_frt_partial_forms_fe_completes_and_forwards(client, frt_org, mail):  # noqa: F811
     tid, g, cid = _frt_case(client, frt_org)
+    # the Daily Achievement sent the case straight to the FE – no separate "Submit to FE" by the FRT
     d = _case(client, cid, FRT).json()
-    assert d["case"]["status"] == "FRT_PROPOSED" and d["case"]["pendingWith"] == "FRT" and d["case"]["mine"] is True
-    assert d["can"]["verify"] and d["can"]["justify"] and d["can"]["formMode"] == "optional" and "FRT_SUBMIT" in d["can"]["actions"]
+    assert d["case"]["status"] == "PENDING_FE" and d["case"]["pendingWith"] == "FE" and d["case"]["mine"] is False  # waiting on the FE
+    assert d["can"]["verify"] and d["can"]["justify"] and d["can"]["formMode"] == "optional"
+    assert "FRT_SUBMIT" not in d["can"]["actions"] and "FRT_WITHDRAW" in d["can"]["actions"]
     assert d["frtCase"] is True and d["forms"]["complete"] is False
     hf = _h(client, FRT)
+    assert _act(client, hf, cid, "FRT_SUBMIT").status_code == 409  # already with the FE
     assert _form(client, hf, cid, "verification", {}).status_code == 422  # nothing at all
-    # partial E1 by the FRT: accepted (optional), the case stays with the FRT
+    # partial E1 by the FRT (optional) while the FE has not filled anything: accepted, the case stays with the FE
     r = _form(client, hf, cid, "verification", {"reason": "Pole line destroyed by landslide"})
     assert r.status_code == 200, r.text
-    assert r.json()["case"]["status"] == "FRT_PROPOSED"
-    # nobody else acts while it is with the FRT
-    h1 = _h(client, FE1)
-    assert _form(client, h1, cid, "verification", E1, evidence=[("s.pdf", PDF, "application/pdf")]).status_code == 409
-    assert _act(client, h1, cid, "FE_FORWARD", remark="Checked").status_code == 409
-    assert _act(client, _h(client, VIEWER), cid, "AM_FORWARD", remark="Skipping", to=[{"name": "S", "email": "s@pratap-test.in"}]).status_code == 409
-
-    # the FRT submits to the FE (E1 partial, no E2) – then can no longer change the forms
-    hf = _h(client, FRT)
-    r = _act(client, hf, cid, "FRT_SUBMIT", remark="E2 left for the FE")
-    assert r.status_code == 200, r.text
     assert r.json()["case"]["status"] == "PENDING_FE"
-    assert _form(client, hf, cid, "justification", E2).status_code == 409
     assert _act(client, hf, cid, "FE_FORWARD", remark="FRT trying").status_code == 403
+    assert _act(client, _h(client, VIEWER), cid, "AM_FORWARD", remark="Skipping", to=[{"name": "S", "email": "s@pratap-test.in"}]).status_code == 409
 
     # the FE: notified, forwarding blocked while E1 / E2 are incomplete (clear message)
     h1 = _h(client, FE1)
@@ -88,6 +81,11 @@ def test_frt_partial_forms_fe_completes_and_forwards(client, frt_org, mail):  # 
     r = _form(client, h1, cid, "verification", E1, evidence=[("survey.pdf", PDF, "application/pdf")], photos=[("site.png", PNG, "image/png")])
     assert r.status_code == 200 and r.json()["case"]["status"] == "PENDING_FE"
     assert r.json()["case"]["physical"] == "SUBMITTED" and r.json()["case"]["evidence"] == "SUBMITTED"  # E1 complete with its first photos
+    # the FE has filled a form: the FRT's optional forms are closed (an FRT form never replaces the FE's)
+    hf = _h(client, FRT)
+    assert _form(client, hf, cid, "justification", E2).status_code == 409
+    assert _case(client, cid, FRT).json()["can"]["verify"] is False
+    h1 = _h(client, FE1)
     r = _form(client, h1, cid, "justification", E2)
     assert r.status_code == 200 and r.json()["case"]["status"] == "PENDING_FE"
     d = client.get(f"/api/v1/nondoable/cases/{cid}").json()
@@ -107,7 +105,7 @@ def test_frt_partial_forms_fe_completes_and_forwards(client, frt_org, mail):  # 
         am_note = db.scalars(select(TicketNotification).where(TicketNotification.user_id == _user_id(VIEWER[0]), TicketNotification.kind == "NONDOABLE", TicketNotification.ticket_id == tid)).all()
     frt_id, fe_id = _user_id(FRT[0]), _user_id(FE1[0])
     assert evs == [
-        ("PROPOSED_FRT", "FRT", frt_id), ("VERIFICATION", "FRT", frt_id), ("FRT_SUBMIT", "FRT", frt_id),
+        ("PROPOSED_FRT", "FRT", frt_id), ("FRT_SUBMIT", "FRT", frt_id), ("VERIFICATION", "FRT", frt_id),
         ("VERIFICATION", "FE", fe_id), ("JUSTIFICATION", "FE", fe_id), ("FE_FORWARD", "FE", fe_id),
     ]
     assert am_note  # the Area Manager was notified only by the FE's forward (nothing earlier reached the AM)
@@ -120,7 +118,6 @@ def test_frt_complete_forms_fe_only_verifies(client, frt_org, mail):  # noqa: F8
     assert _form(client, hf, cid, "verification", {**E1, "visitorName": "Frt One"}, photos=[("site.png", PNG, "image/png")]).status_code == 200
     assert _form(client, hf, cid, "justification", E2).status_code == 200
     assert _case(client, cid, FRT).json()["forms"]["complete"] is True
-    assert _act(client, _h(client, FRT), cid, "FRT_SUBMIT").status_code == 200  # remark optional
     h1 = _h(client, FE1)
     r = _act(client, h1, cid, "FE_FORWARD", remark="FRT's E1 / E2 checked – correct")
     assert r.status_code == 200, r.text
@@ -132,8 +129,7 @@ def test_frt_complete_forms_fe_only_verifies(client, frt_org, mail):  # noqa: F8
 def test_frt_submits_without_forms_return_withdraw_and_permissions(client, frt_org, mail):  # noqa: F811
     tid, g, cid = _frt_case(client, frt_org)
     hf = _h(client, FRT)
-    assert _act(client, hf, cid, "FRT_SUBMIT").status_code == 200  # no E1 / E2 at all – allowed for the FRT
-    assert _act(client, hf, cid, "FRT_SUBMIT").status_code == 409  # no double submission
+    assert _act(client, hf, cid, "FRT_SUBMIT").status_code == 409  # sent with the Daily Achievement already (no E1 / E2 at all)
     # the Area Manager / another FE cannot do the FE's review
     assert _act(client, _h(client, VIEWER), cid, "FE_FORWARD", remark="AM trying").status_code == 403
     assert _case(client, cid, FE2).status_code == 404
@@ -144,6 +140,7 @@ def test_frt_submits_without_forms_return_withdraw_and_permissions(client, frt_o
     assert _act(client, h1, cid, "FE_RETURN_FRT").status_code == 422
     r = _act(client, h1, cid, "FE_RETURN_FRT", reason="Add the site photographs")
     assert r.status_code == 200 and r.json()["case"]["status"] == "FRT_PROPOSED"
+    assert _case(client, cid, FRT).json()["can"]["actions"] == ["FRT_SUBMIT", "FRT_WITHDRAW"]
     hf = _h(client, FRT)
     assert _form(client, hf, cid, "verification", {"findings": "Landslide area"}, photos=[("site.png", PNG, "image/png")]).status_code == 200
     # the FRT withdraws its proposal: the GP is no longer Non-Doable – Proposed
@@ -160,7 +157,6 @@ def test_frt_waits_for_the_fe_revisit_after_mgg_rejection(client, frt_org, mail)
     for email, pw in (SME, COH, MGG):
         assert client.post("/api/v1/users", json={"email": email, "name": email.split("@")[0].replace(".", " ").title(), "password": pw}, headers=ha).status_code in (201, 409)
     tid, g, cid = _frt_case(client, frt_org)
-    assert _act(client, _h(client, FRT), cid, "FRT_SUBMIT").status_code == 200
     h1 = _h(client, FE1)
     assert _form(client, h1, cid, "verification", E1, evidence=[("survey.pdf", PDF, "application/pdf")], photos=[("site.png", PNG, "image/png")]).status_code == 200
     assert _form(client, h1, cid, "justification", E2).status_code == 200
@@ -191,3 +187,21 @@ def test_frt_waits_for_the_fe_revisit_after_mgg_rejection(client, frt_org, mail)
     assert r.status_code == 200, r.text
     row = next(x for x in r.json()["task"]["gps"] if x["id"] == g)
     assert row["gpCategory"] == "A" and row["frtStage"] == "PENDING_FE"
+
+
+def test_frt_daily_achievement_sends_the_case_to_the_fe_who_fills_e1_e2(client, frt_org, mail):  # noqa: F811
+    """The FRT chooses Non-Doable and submits the Daily Achievement without E1 / E2: the FE is notified, fills E1 and E2
+    and only then forwards to the Area Manager (never earlier)."""
+    tid, _g, cid = _frt_case(client, frt_org)
+    h1 = _h(client, FE1)
+    notes = [n for n in client.get("/api/v1/tickets/notifications").json()["items"] if n["kind"] == "NONDOABLE" and n["ticketId"] == tid]
+    assert notes and "E1" in notes[0]["body"]
+    d = client.get(f"/api/v1/nondoable/cases/{cid}").json()
+    assert d["case"]["pendingWith"] == "FE" and d["can"]["verify"] and d["can"]["justify"] and d["can"]["formMode"] == "required"
+    assert "FE_FORWARD" in d["can"]["actions"] and "FE_RETURN_FRT" in d["can"]["actions"]
+    assert _act(client, h1, cid, "FE_FORWARD", remark="Too early").status_code == 422  # E1 / E2 missing
+    assert _form(client, h1, cid, "verification", E1, evidence=[("survey.pdf", PDF, "application/pdf")], photos=[("site.png", PNG, "image/png")]).status_code == 200
+    assert _act(client, h1, cid, "FE_FORWARD", remark="E2 still missing").status_code == 422
+    assert _form(client, h1, cid, "justification", E2).status_code == 200
+    r = _act(client, h1, cid, "FE_FORWARD", remark="Verified on site")
+    assert r.status_code == 200 and r.json()["case"]["status"] == "PENDING_AM"

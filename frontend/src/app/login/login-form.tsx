@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/controls";
 import { Input, Label } from "@/components/ui/primitives";
 import { Tooltip } from "@/components/ui/overlays";
 import { IS_LIVE } from "@/lib/api";
+import { homeHref } from "@/lib/auth/access";
 import { signIn } from "@/lib/auth/session";
 import { loginSchema, type LoginValues } from "@/lib/validations/auth";
 
@@ -36,10 +37,12 @@ export function LoginForm() {
   const onSubmit = async (values: LoginValues) => {
     setFormError(null);
     try {
-      await signIn(values.email, values.password, values.remember);
+      const user = await signIn(values.email, values.password, values.remember);
       const next = params.get("next");
+      // Roles & Access: without a ?next= the start page of the user's role on this device (phone / laptop)
+      const phone = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
       // Only allow internal dashboard paths (prevents open redirects via ?next=).
-      const safe = next && /^\/dashboard(\/[\w-]*)*(\?[^\s]*)?$/.test(next) ? next : "/dashboard";
+      const safe = next && /^\/dashboard(\/[\w-]*)*(\?[^\s]*)?$/.test(next) ? next : homeHref(user.permissions, phone);
       router.replace(safe);
       router.refresh();
     } catch (e) {

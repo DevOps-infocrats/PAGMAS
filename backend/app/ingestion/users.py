@@ -39,6 +39,8 @@ PASSWORD_HEADERS = {"password", "initial password", "temporary password", "login
 # FRT team login: the Escalation Matrix FRT code. A row with an FRT code and NO e-mail creates an account that signs in
 # with the FRT code (app.security.frt_login); with an e-mail, the code is set on that account.
 FRT_HEADERS = {"frt code", "frt", "frt id", "frt team", "frt team code", "frt login"}
+# Roles & Access: the access role of the new user (a role name; empty = the built-in Viewer role) – checked by the import
+ROLE_HEADERS = {"role", "access role", "user role", "dashboard role", "portal role"}
 EXAMPLE_FRT_PREFIX = "EXAMPLE"
 _AREA_NAMES = set().union(*AREA_HEADERS.values())
 
@@ -53,6 +55,7 @@ class ImportRow:
     password: str | None = field(default=None, repr=False)  # from the Password column; None = the temporary password
     frt_code: str | None = None  # FRT Code column (normalised); checked against the Escalation Matrix by the import
     frt_only: bool = False  # no e-mail: the account signs in with the FRT code
+    role: str | None = None  # Role column as typed (None = empty = the built-in Viewer role); checked by the import
 
 
 def _header(cell: object) -> str:
@@ -117,6 +120,7 @@ def read_users(path: Path) -> list[ImportRow]:
     area_cols = {lvl: j for lvl in AREA_ORDER for j in [next((j for j, h in enumerate(heads) if h in AREA_HEADERS[lvl] and j not in (nc, ec)), None)] if j is not None}
     pc = next((j for j, h in enumerate(heads) if h in PASSWORD_HEADERS and j not in (nc, ec)), None)
     fc = next((j for j, h in enumerate(heads) if h in FRT_HEADERS and j not in (nc, ec)), None)
+    rc = next((j for j, h in enumerate(heads) if h in ROLE_HEADERS and j not in (nc, ec)), None)
     from ..security.frt_login import frt_code_norm, frt_login_email
     out: list[ImportRow] = []
     seen: set[str] = set()
@@ -132,6 +136,8 @@ def read_users(path: Path) -> list[ImportRow]:
         frt_only = not raw and code is not None
         email = frt_login_email(code) if frt_only else valid_address(raw)
         r = ImportRow(row=i, name=name, email=email or raw, areas={lvl: _values(row[j] if j < len(row) else None) for lvl, j in area_cols.items()}, frt_code=code, frt_only=frt_only)
+        role_cell = row[rc] if rc is not None and rc < len(row) else None
+        r.role = " ".join(str(role_cell).split()) or None if not is_blank(role_cell) else None
         pw_cell = row[pc] if pc is not None and pc < len(row) else None
         if not is_blank(pw_cell):
             if isinstance(pw_cell, float) and pw_cell.is_integer():
@@ -244,7 +250,7 @@ class AreaResolver:
 # ---------------------------------------------------------------- template (User Management → Import users)
 
 TEMPLATE_FILE = "user-import-template.xlsx"
-TEMPLATE_COLUMNS = ("Name", "Email", "Password", "Circle", "BA", "District", "Block", "GP", "FRT Code")  # read by the headers above
+TEMPLATE_COLUMNS = ("Name", "Email", "Password", "Role", "Circle", "BA", "District", "Block", "GP", "FRT Code")  # read by the headers above
 EXAMPLE_DOMAIN = "example.com"  # rows of the template: never imported (replace them with real users)
 
 
@@ -257,10 +263,10 @@ def _template_examples(g: pd.DataFrame | None) -> list[list[object]]:
             first = sub.iloc[0]
             circle, ba, block = str(first["circle"]).title(), " ".join(str(first["ba"]).split()).title(), str(first["block_name"]).title()
     return [
-        ["Ravi Kumar", f"ravi.kumar@{EXAMPLE_DOMAIN}", "Ravi@Pratap2026", circle, ba, None, None, None, None],
-        ["Sita Devi", f"sita.devi@{EXAMPLE_DOMAIN}", None, circle, ba, None, block, None, None],
-        ["Neha Sharma", f"neha.sharma@{EXAMPLE_DOMAIN}", "Neha#Bsnl12345", circle, None, None, None, None, None],
-        ["FRT Team Kota", None, "Frt@Pratap2026", None, None, None, None, None, f"{EXAMPLE_FRT_PREFIX}-FRT-1"],
+        ["Ravi Kumar", f"ravi.kumar@{EXAMPLE_DOMAIN}", "Ravi@Pratap2026", "AM", circle, ba, None, None, None, None],
+        ["Sita Devi", f"sita.devi@{EXAMPLE_DOMAIN}", None, "FE", circle, ba, None, block, None, None],
+        ["Neha Sharma", f"neha.sharma@{EXAMPLE_DOMAIN}", "Neha#Bsnl12345", None, circle, None, None, None, None, None],
+        ["FRT Team Kota", None, "Frt@Pratap2026", "FRT", None, None, None, None, None, f"{EXAMPLE_FRT_PREFIX}-FRT-1"],
     ]
 
 
@@ -279,10 +285,10 @@ def _ba_list(g: pd.DataFrame | None) -> str:
 
 def _first_ba(g: pd.DataFrame | None) -> str:
     row = _template_examples(g)[0]
-    return str(row[4] or "Jaipur")
+    return str(row[5] or "Jaipur")
 
 
-def build_template(g: pd.DataFrame | None, temporary_password: str) -> bytes:
+def build_template(g: pd.DataFrame | None, temporary_password: str, roles: list[str] | None = None) -> bytes:
     """The import file to fill in: a Users sheet (the columns the import reads, three example rows) and an
     Instructions sheet (what each column means and how to write the values)."""
     import xlsxwriter
@@ -293,7 +299,7 @@ def build_template(g: pd.DataFrame | None, temporary_password: str) -> bytes:
     opt = wb.add_format({"bold": True, "bg_color": "#E8F1FB", "border": 1})
     eg = wb.add_format({"italic": True, "font_color": "#6B7280"})
     ws = wb.add_worksheet("Users")
-    widths = (22, 32, 20, 16, 18, 18, 20, 16, 18)
+    widths = (22, 32, 20, 14, 16, 18, 18, 20, 16, 18)
     for c, (title, w) in enumerate(zip(TEMPLATE_COLUMNS, widths)):
         ws.write(0, c, title, need if title in ("Name", "Email") else opt)
         ws.set_column(c, c, w)
@@ -303,7 +309,9 @@ def build_template(g: pd.DataFrame | None, temporary_password: str) -> bytes:
                 ws.write_string(r, c, str(v), eg)
     ws.freeze_panes(1, 0)
     ws.write_comment(0, 2, "Optional. At least 12 characters with 3 of: lower-case, upper-case, digits, symbols. Empty = the temporary password.")
-    ws.write_comment(0, 8, "FRT team login: the FRT code exactly as in the Escalation Matrix. With no e-mail, the user signs in with this FRT code and the password.")
+    names = ", ".join(roles) if roles else "Viewer, AM, FE, FRT"
+    ws.write_comment(0, 3, f"Optional. The access role (Roles & Access) – which pages the user sees: {names}. Empty = Viewer. Admin cannot be imported.")
+    ws.write_comment(0, 9, "FRT team login: the FRT code exactly as in the Escalation Matrix. With no e-mail, the user signs in with this FRT code and the password.")
 
     info = wb.add_worksheet("Instructions")
     bold = wb.add_format({"bold": True})
@@ -315,6 +323,7 @@ def build_template(g: pd.DataFrame | None, temporary_password: str) -> bytes:
         ("Name", "Required. The user's full name."),
         ("Email", "The e-mail the user signs in with (required unless an FRT Code is given). An address that is already a dashboard user is not changed."),
         ("FRT Code", "Optional – FRT team login. The FRT code exactly as in the Escalation Matrix (FRT Code column). With an e-mail: that user reports the GPs of this FRT code. Without an e-mail: the user signs in with the FRT code and the password (one such login per FRT code). A code that is not in the Escalation Matrix skips the row."),
+        ("Role", f"Optional. The access role made in Roles & Access – it decides WHICH pages the user sees (laptop / phone); the areas below decide WHICH data. Roles now: {names}. Empty = Viewer (every page). An unknown role, or Admin, skips the row (an admin is made with Add user)."),
         ("Password", f"Optional. The user's own password: at least 12 characters with 3 of lower-case, upper-case, digits, symbols, and not containing the e-mail name. Empty = the temporary password {temporary_password}. A weak password skips the row."),
         ("Circle", "Optional. State / circle name, e.g. Rajasthan."),
         ("BA", "Optional. Business area name, e.g. Jaipur."),
@@ -347,6 +356,7 @@ def build_template(g: pd.DataFrame | None, temporary_password: str) -> bytes:
         ("Every row", "Fill Name and Email in every row – a row without an e-mail cannot become a user (except an FRT login with its FRT code).", "Ravi Kumar | ravi@pratap.co.in"),
         ("FRT login", "No e-mail? Write the FRT code in FRT Code and a password – the FRT signs in with the code.", "FRT Team Kota | (empty) | Frt@Pratap2026 | … | RJKOTA-001"),
         ("Password", "At least 12 characters with 3 of: small letters, capital letters, numbers, symbols; do not use the e-mail name.", "Ravi@Pratap2026"),
+        ("Role", f"The role name exactly as in Roles & Access (capital / small letters do not matter). Roles now: {names}.", "AM"),
         ("Existing users", "The import only creates new users. To change the areas or password of an existing user, use Edit on User Management.", "Edit → Areas"),
         ("Example rows", f"Delete the grey example rows (@{EXAMPLE_DOMAIN}) and write your own users.", "Your users only"),
     ]

@@ -27,6 +27,7 @@ from ..reports.pdf import render_weekly_report
 from ..reports.review_pptx import SECTIONS as DECK_SECTIONS, render_review_deck
 from ..security.access import get_user_store
 from ..security.deps import CurrentUser, audit, get_current_user
+from ..security.roles import INSIGHTS, require_page
 
 router = APIRouter(tags=["analytics"], dependencies=[Depends(get_current_user)])
 
@@ -59,25 +60,25 @@ def meta(store: Store = Depends(get_user_store)) -> dict:
     return views.meta(store)
 
 
-@router.get("/overview")
+@router.get("/overview", dependencies=[Depends(require_page(*INSIGHTS))])
 def overview(week: OptWeekId = None, compare: OptWeekId = None, store: Store = Depends(get_user_store)) -> dict:
     w, c = _period(store, week, compare)
     return store.memo(("overview", w, c), lambda: views.overview(store, w, c))
 
 
-@router.get("/circles/{circle_id}/insights")
+@router.get("/circles/{circle_id}/insights", dependencies=[Depends(require_page("circle-insights"))])
 def circle_insights(circle_id: CircleId, week: OptWeekId = None, compare: OptWeekId = None, store: Store = Depends(get_user_store)) -> dict:
     w, c = _period(store, week, compare)
     return store.memo(("circle", circle_id, w, c), lambda: views.circle_insights(store, circle_id, w, c))
 
 
-@router.get("/blocks/{block_id}/insights")
+@router.get("/blocks/{block_id}/insights", dependencies=[Depends(require_page("block-insights"))])
 def block_insights(block_id: BlockId, week: OptWeekId = None, compare: OptWeekId = None, store: Store = Depends(get_user_store)) -> dict:
     w, c = _period(store, week, compare)
     return store.memo(("block", block_id, w, c), lambda: views.block_insights(store, block_id, w, c))
 
 
-@router.get("/gps")
+@router.get("/gps", dependencies=[Depends(require_page("gp-insights"))])
 def list_gps(
     week: OptWeekId = None,
     circle: OptCircle = None,
@@ -96,7 +97,7 @@ XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 KpiSearch = Annotated[str | None, Query(max_length=80)]
 
 
-@router.get("/kpi-lists/{kind}.xlsx")
+@router.get("/kpi-lists/{kind}.xlsx", dependencies=[Depends(require_page(*INSIGHTS))])
 def kpi_drilldown_xlsx(
     request: Request,
     kind: Annotated[KpiKind, Path()],
@@ -118,7 +119,7 @@ def kpi_drilldown_xlsx(
     return Response(data, media_type=XLSX_MEDIA, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
-@router.get("/kpi-lists/{kind}")
+@router.get("/kpi-lists/{kind}", dependencies=[Depends(require_page(*INSIGHTS))])
 def kpi_drilldown(
     kind: Annotated[KpiKind, Path()],
     week: OptWeekId = None,
@@ -137,7 +138,7 @@ def kpi_drilldown(
     return kpi_list(store, kind, w, circle, district, block, search, sort, page, page_size, date)
 
 
-@router.get("/gps/{gp_code}")
+@router.get("/gps/{gp_code}", dependencies=[Depends(require_page("gp-insights"))])
 def gp_detail(gp_code: GpCode, week: OptWeekId = None, store: Store = Depends(get_user_store), db: Session = Depends(get_db)) -> dict:
     w, _ = _period(store, week, None)
     issues = [
@@ -183,7 +184,7 @@ def _data_quality(db: Session, store: Store) -> list[dict]:
     return out
 
 
-@router.get("/reports/weekly")
+@router.get("/reports/weekly", dependencies=[Depends(require_page("reports"))])
 def weekly_report(
     week: OptWeekId = None,
     compare: OptWeekId = None,
@@ -197,7 +198,7 @@ def weekly_report(
     return store.memo(("weekly", w, c, circle, district, block), lambda: views.weekly_report(store, w, c, circle, district, block, _data_quality(db, store)))
 
 
-@router.get("/reports/weekly.pdf")
+@router.get("/reports/weekly.pdf", dependencies=[Depends(require_page("reports"))])
 def weekly_report_pdf(
     week: OptWeekId = None,
     compare: OptWeekId = None,
@@ -267,13 +268,13 @@ def _csv(value: str | None, allowed: set[str], what: str) -> list[str] | None:
     return items
 
 
-@router.get("/reviews/management")
+@router.get("/reviews/management", dependencies=[Depends(require_page("reports"))])
 def management_review_json(week: OptWeekId = None, compare: OptWeekId = None, store: Store = Depends(get_user_store), db: Session = Depends(get_db)) -> dict:
     w, c = _review_period(store, week, compare)
     return _fresh(_review(store, db, w, c))
 
 
-@router.get("/reviews/management.pptx")
+@router.get("/reviews/management.pptx", dependencies=[Depends(require_page("reports"))])
 def management_review_pptx(
     request: Request,
     week: OptWeekId = None,
@@ -300,7 +301,7 @@ def management_review_pptx(
     return Response(deck, media_type=PPTX_MEDIA, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
-@router.get("/amc-conversion")
+@router.get("/amc-conversion", dependencies=[Depends(require_page("amc-conversion"))])
 def amc_conversion_plan(week: OptWeekId = None, compare: OptWeekId = None, store: Store = Depends(get_user_store)) -> dict:
     """AMC conversion plan (management plan file) vs execution (GPs by AMC date), counted up to the selected
     week's end or the last date with data. Default = the file's latest week, i.e. execution up to the latest data."""
@@ -310,7 +311,7 @@ def amc_conversion_plan(week: OptWeekId = None, compare: OptWeekId = None, store
     return store.memo(("amc-conversion", w, c, stamp), lambda: amc_conversion(store, w, c))
 
 
-@router.get("/amc-plan/summary")
+@router.get("/amc-plan/summary", dependencies=[Depends(require_page("amc-conversion"))])
 def amc_plan(week: OptWeekId = None, date: OptDate = None, store: Store = Depends(get_user_store)) -> dict:
     """GP-wise AMC conversion plan vs achievement (Planned Date / Ach Date of the GP sheet). Default = the file's latest
     week; `date` = as of a picked day (its month and week (as in the master data sheet), capped at the data date)."""
@@ -318,7 +319,7 @@ def amc_plan(week: OptWeekId = None, date: OptDate = None, store: Store = Depend
     return store.memo(("amc-plan", w, date), lambda: amc_plan_summary(store, w, date))
 
 
-@router.get("/amc-plan/area-managers")
+@router.get("/amc-plan/area-managers", dependencies=[Depends(require_page("amc-conversion"))])
 def amc_plan_by_area_manager(
     circle: Annotated[str, Query(pattern=r"^[a-z0-9-]{1,40}$")],
     week: OptWeekId = None,
@@ -335,7 +336,7 @@ def amc_plan_by_area_manager(
         raise HTTPException(404, "Unknown state") from None
 
 
-@router.get("/amc-plan/timeline")
+@router.get("/amc-plan/timeline", dependencies=[Depends(require_page("amc-conversion"))])
 def amc_plan_months_weeks(week: OptWeekId = None, store: Store = Depends(get_user_store)) -> dict:
     """Month-wise and week-wise GP-wise AMC plan vs achievement, per state (counts of Planned Date / Ach Date)."""
     w, _ = _period(store, week, None)

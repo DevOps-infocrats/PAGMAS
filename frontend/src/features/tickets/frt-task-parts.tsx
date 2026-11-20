@@ -108,11 +108,21 @@ export function FrtProofChips({ saved, draft, onRemove, disabled }: { saved: Tic
 }
 
 /** Where the FRT's report of a GP is: with the FE, returned, verified, in a Non-Doable case, or not sent yet. */
-export function FrtCheckBadge({ g }: { g: TicketTaskGp }) {
+export function FrtCheckBadge({ g, onOpenNd }: { g: TicketTaskGp; onOpenNd?: (caseId: number) => void }) {
   const pill = "inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[0.71875rem] font-semibold";
+  if (g.ndCase?.open && onOpenNd) {
+    // the case in a popup on this page: optional E1 / E2 while the FRT may still fill them
+    const fill = g.ndCase.status === "PENDING_FE" || g.ndCase.status === "FRT_PROPOSED";
+    const nd = g.ndCase;
+    return (
+      <button type="button" onClick={() => onOpenNd(nd.id)} className={cn(pill, "bg-warning-soft text-warning-text hover:underline")} title={`${nd.label} – ${fill ? "fill E1 / E2 (optional)" : "view the case"}`}>
+        {nd.ref} · {fill ? "Fill E1 / E2" : "View case"} →
+      </button>
+    );
+  }
   if (g.ndCase?.open)
     return (
-      // opens the case: E1 / E2 (optional for the FRT) and Submit to FE
+      // opens the case (with the FE; the FRT may add optional E1 / E2 until the FE fills them)
       <Link href={`/dashboard/tickets/non-doable?case=${g.ndCase.id}`} className={cn(pill, "bg-warning-soft text-warning-text hover:underline")} title={`${g.ndCase.label} – open the case`}>
         {g.ndCase.ref} · Open case →
       </Link>
@@ -191,7 +201,8 @@ export function FrtSteps({ fes, camera }: { fes: string[]; camera: boolean }) {
         Choose <b>Rectification Done</b>, <b>Revisit Required</b> or <b>Non-Doable – Proposed</b> for each GP with a remark and a photo – on a phone take it with
         the <b>Camera</b> (its location, date and time are saved with it – allow camera and location), on a laptop use <b>Upload photo</b> (JPG / PNG) – then{" "}
         <b>Submit Daily Progress</b>. Your FE{fes.length ? ` (${fes.join(", ")})` : ""} checks it and sends it to the Area Manager, or returns it to you with the reason.
-        Non-Doable opens a case: fill E1 / E2 if you can (optional) and <b>Submit to FE</b> from the &quot;Non-Doable cases waiting for you&quot; strip or Non-Doable Cases.
+        Non-Doable opens a case that goes straight to your FE with the Daily Progress – the FE fills E1 / E2 and sends it to the Area Manager. You may add
+        E1 / E2 yourself (optional) from Non-Doable Cases until your FE starts filling them.
       </p>
     </details>
   );

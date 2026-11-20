@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@
 import { Card, Input, Label } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { useSession } from "@/hooks/use-session";
-import { IS_LIVE, adminApi, type AppUser, type UserGpOption, type UserLocations, type UserScopeLevel } from "@/lib/api";
+import { IS_LIVE, adminApi, type AccessRole, type AppUser, type UserGpOption, type UserLocations, type UserScopeLevel } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { ImportUsersDialog } from "./import-users-dialog";
 import { RolesHelp, UsersTable } from "./users-table-parts";
@@ -83,6 +83,7 @@ function UsersContent() {
   const [tick, setTick] = useState(0);
   const users = useApiQuery(IS_LIVE ? `users:${tick}` : null, () => adminApi.listUsers());
   const locations = useApiQuery(IS_LIVE ? "user-locations" : null, () => adminApi.getUserLocations());
+  const roles = useApiQuery(IS_LIVE ? `roles:${tick}` : null, () => adminApi.listRoles()); // Roles & Access
   const options = useMemo(() => scopeOptions(locations.data), [locations.data]);
   const [editing, setEditing] = useState<Editing>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -160,6 +161,7 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
             self={editing.mode === "edit" && editing.user.email === session?.email}
             options={options}
             hasData={locations.data?.hasData ?? false}
+            roles={roles.data?.roles ?? []}
             onDone={(text) => {
               setEditing(null);
               setMsg({ ok: true, text });
@@ -189,12 +191,14 @@ function UserDialog({
   self,
   options,
   hasData,
+  roles,
   onDone,
 }: {
   editing: NonNullable<Editing>;
   self: boolean;
   options: AreaOptions;
   hasData: boolean;
+  roles: AccessRole[];
   onDone: (msg: string) => void;
 }) {
   const user = editing.mode === "edit" ? editing.user : null;
@@ -202,7 +206,14 @@ function UserDialog({
   // FRT team login without e-mail: the user signs in with the FRT code (app.security.frt_login on the backend)
   const [byCode, setByCode] = useState(user?.loginType === "frt");
   const [email, setEmail] = useState(user?.loginType === "frt" ? "" : (user?.email ?? ""));
-  const [role, setRole] = useState<"admin" | "viewer">(user?.role ?? "viewer");
+  // Role select: "admin", "default" (the built-in Viewer role – roleId null) or "role:<id>" (an access role)
+  const viewerRole = roles.find((r) => r.key === "viewer");
+  const valueOf = (id: number | null | undefined) => (id == null || id === viewerRole?.id ? "default" : `role:${id}`);
+  const initialRoleId = user && user.role !== "admin" ? (user.roleId ?? null) : null;
+  const [access, setAccess] = useState<string>(user?.role === "admin" ? "admin" : valueOf(initialRoleId));
+  const role: "admin" | "viewer" = access === "admin" ? "admin" : "viewer";
+  const roleId = access.startsWith("role:") ? Number(access.slice(5)) : null;
+  const frtRole = roles.find((r) => r.key === "frt");
   const [password, setPassword] = useState("");
   // FRT team login: the Escalation Matrix FRT code this viewer reports the Daily Achievement for ("" = not an FRT)
   const [frtCode, setFrtCode] = useState(user?.frtCode ?? "");
@@ -252,13 +263,14 @@ function UserDialog({
           name: name.trim(),
           ...(newEmail ? { email: newEmail } : {}),
           ...(self ? {} : { role }),
+          ...(!self && role === "viewer" && roleId !== (valueOf(initialRoleId) === "default" ? null : initialRoleId) ? { roleId } : {}),
           ...(password ? { password } : {}),
           scopes: sc,
           ...(frt !== (user.frtCode ?? "") ? { frtCode: frt } : {}),
         });
         onDone(`${name.trim()} saved.`);
       } else {
-        await adminApi.createUser({ name: name.trim(), ...(byCode ? {} : { email: email.trim() }), role, password, scopes: sc, ...(frt ? { frtCode: frt } : {}) });
+        await adminApi.createUser({ name: name.trim(), ...(byCode ? {} : { email: email.trim() }), role, password, scopes: sc, ...(frt ? { frtCode: frt } : {}), ...(roleId ? { roleId } : {}) });
         onDone(byCode ? `FRT login ${frt.toUpperCase()} created – the user signs in with the FRT code and the password.` : `User ${email.trim()} created.`);
       }
     } catch (err) {
@@ -290,7 +302,7 @@ function UserDialog({
               <input type="radio" name="login-by" checked={!byCode} onChange={() => setByCode(false)} className="accent-[var(--primary)]" /> E-mail
             </label>
             <label className="inline-flex cursor-pointer items-center gap-1.5">
-              <input type="radio" name="login-by" checked={byCode} onChange={() => { setByCode(true); setRole("viewer"); }} className="accent-[var(--primary)]" /> FRT code (no e-mail)
+              <input type="radio" name="login-by" checked={byCode} onChange={() => { setByCode(true); if (access === "admin" || (!user && access === "default")) setAccess(frtRole ? `role:${frtRole.id}` : "default"); }} className="accent-[var(--primary)]" /> FRT code (no e-mail)
             </label>
           </div>
         )}
@@ -309,14 +321,16 @@ function UserDialog({
             <Select
               ariaLabel="Role"
               className="w-full"
-              value={role}
-              disabled={self || byCode}
-              onValueChange={(v) => setRole(v as "admin" | "viewer")}
+              value={access}
+              disabled={self}
+              onValueChange={setAccess}
               options={[
-                { value: "viewer", label: "Viewer" },
-                { value: "admin", label: "Admin" },
+                ...(byCode ? [] : [{ value: "admin", label: "Admin – every page" }]),
+                { value: "default", label: viewerRole ? `${viewerRole.name} (default)` : "Viewer (default)" },
+                ...roles.filter((r) => r.key !== "viewer").map((r) => ({ value: `role:${r.id}`, label: r.name })),
               ]}
             />
+            <p className="text-[0.6875rem] text-muted-foreground">The role decides the pages (Roles &amp; Access); the areas below decide the data.</p>
           </div>
           <Field id="u-pass" label={user ? "New password (optional)" : "Initial password"} type="password" value={password} onChange={setPassword} autoComplete="new-password" />
         </div>
