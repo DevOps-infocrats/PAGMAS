@@ -677,6 +677,161 @@ export interface AppUser {
   roleName?: string | null;
 }
 
+/** Ticket Report (backend app.tickets.report) – one BSNL ticket week (Saturday – Friday) */
+export type TicketReportRole = "AM" | "FE" | "FRT" | "SME" | "COH";
+export type TicketPendingBucket = "not_filled" | "field" | "fe_verify" | "am" | "sme" | "coh" | "nd" | "closed";
+export interface TicketReportWeek {
+  code: string;
+  start: string;
+  end: string;
+  tickets: number;
+}
+export interface TicketReport {
+  week: TicketReportWeek | null;
+  weeks: TicketReportWeek[];
+  circles: string[];
+  circle?: string | null;
+  today?: string;
+  cards: {
+    tickets: number;
+    closed: number;
+    gps: number;
+    done: number;
+    amcConverted: number;
+    nonDoable: number;
+    nonDoableApproved: number;
+    submissions: number;
+    submittedToday: number;
+  } | null;
+  /** per role: tickets generated in the week with that role, its people and GPs; daily work on the week's days */
+  roles: {
+    role: TicketReportRole;
+    people: number;
+    withoutAccount: number;
+    /** FRT: teams (FRT codes) that have a login */
+    withAccount?: number;
+    tickets: number;
+    gps: number;
+    done: number;
+    pending: number;
+    submissions: number;
+    activePeople: number;
+    /** SME / COH: review steps on the week's days */
+    reviewed?: number;
+    /** SME / COH: those steps, latest first – who, which GP, when */
+    steps?: {
+      at: string;
+      action: string;
+      by: string | null;
+      gpCode: string | null;
+      gpName: string | null;
+      block: string | null;
+      ticketId: number;
+      ticket: string | null;
+      remark: string | null;
+    }[];
+    /** AM / FE / FRT: GP status totals, returns, logins never used */
+    status?: Record<"A" | "B" | "C" | "D" | "E" | "none", number>;
+    returns?: number;
+    neverSignedIn?: number;
+    reviews?: number;
+  }[];
+  days: { date: string; future: boolean }[];
+  /** AM / FE / FRT: their part of the week's tickets and their daily submissions per day (local date → counts) */
+  people: {
+    role: "AM" | "FE" | "FRT";
+    name: string;
+    email: string | null;
+    account: boolean;
+    circles: string[];
+    tickets: number;
+    gps: number;
+    done: number;
+    /** per local day: Daily Achievement submissions (subs / gps / done) and review steps (reviews, acts = label → count) */
+    days: Record<string, { subs: number; gps: number; done: number; reviews?: number; acts?: Record<string, number> }>;
+    activeDays: number;
+    submissions: number;
+    /** FRT: its FRT code(s) and the Field Engineer(s) of its GPs (the FE it works under) */
+    frtCodes?: string[];
+    fes?: string[];
+    /** the day the login was created (days before it: no login yet); null = no login */
+    loginSince?: string | null;
+    /** the day their first ticket of the week was generated (days before it: no ticket yet) */
+    ticketSince?: string | null;
+    /** their GPs by current status: A–E (Daily Achievement category), none = not filled */
+    status?: Record<"A" | "B" | "C" | "D" | "E" | "none", number>;
+    /** times their work was returned (FRT ← FE, FE ← AM, AM ← SME / COH) on the week's GPs */
+    returns?: number;
+    lastLogin?: string | null;
+    /** last DAILY submission (any ticket) – null = never */
+    lastSubmission?: string | null;
+    /** review steps this week (FE verify / return, AM approve / return, Non-Doable steps) and the last activity of any kind */
+    reviews?: number;
+    lastActive?: string | null;
+  }[];
+  completed: {
+    gpCode: string | null;
+    gpName: string | null;
+    block: string | null;
+    ticketId: number;
+    ticket: string | null;
+    what: "DONE" | "LETTER_SUBMITTED" | "AMC_CONVERTED" | "ND_APPROVED";
+    by: string | null;
+    byRole: string | null;
+    at: string | null;
+  }[];
+  completedTotal?: number;
+  trend: { week: string; tickets: number; gps: number; done: number }[];
+  /** where each GP of the week waits now (stage as on the ticket page), with whom and since when */
+  pending?: {
+    buckets: { key: TicketPendingBucket; label: string; count: number; overdue: number }[];
+    items: {
+      gpCode: string | null;
+      gpName: string | null;
+      block: string | null;
+      ticketId: number;
+      ticket: string | null;
+      bucket: TicketPendingBucket;
+      stage: string;
+      who: string;
+      whoRole: string;
+      since: string | null;
+      days: number;
+    }[];
+    overdueDays: number;
+  };
+  /** GP returns on the week's tickets – who sent it back, to whom, why; top = most returned to */
+  returns?: {
+    items: {
+      at: string;
+      gpCode: string | null;
+      gpName: string | null;
+      block: string | null;
+      ticketId: number;
+      ticket: string | null;
+      by: string | null;
+      byRole: string | null;
+      to: string;
+      toRole: string;
+      frtCode: string | null;
+      remark: string | null;
+    }[];
+    top: { role: string; name: string; count: number }[];
+  };
+  /** per Area Manager: GPs, achieved, % (highest first) and where the GPs not achieved wait now */
+  amAchievement?: {
+    name: string;
+    account: boolean;
+    circles: string[];
+    tickets: number;
+    gps: number;
+    done: number;
+    pct: number;
+    ticketIds?: number[];
+    waiting: Partial<Record<TicketPendingBucket, number>>;
+  }[];
+}
+
 /** Roles & Access – the dashboard pages a role can show (backend app.security.roles.PAGES) */
 export type PageKey =
   | "overview"
@@ -2559,6 +2714,8 @@ export interface TicketApi {
   /** Admin: Done / Pending GPs of the GP-wise tasks (each GP once) */
   /** basis "category": the date filter = the day the category was chosen (as in the category tables) */
   getGpMonitorSummary(f: GpMonitorFilters, basis?: "status" | "category"): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;
+  /** Ticket Report (admin): a ticket week – generated per role, daily submissions per person and day, completed work */
+  getTicketReport(q: { week?: string; circle?: string }): Promise<TicketReport>;
   /** GPs of one status (Done / Pending) or of one current category (A–E) */
   listGpMonitor(q: GpMonitorFilters & { status?: GpStatus; category?: GpCategory; sort?: GpMonitorSort; desc?: boolean; page?: number; pageSize?: number }): Promise<GpMonitorPage>;
   getGpMonitorDetail(gpCode: string): Promise<GpMonitorDetail>;
