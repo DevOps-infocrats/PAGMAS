@@ -58,7 +58,7 @@ function RolesContent() {
       {q.error && <ErrorState error={q.error} />}
       {IS_LIVE && !data && !q.error && <TableSkeleton rows={6} />}
       {msg && (
-        <p role="status" className={cn("mb-4 rounded-lg border px-4 py-2.5 text-sm", msg.ok ? "border-success/40 bg-success-soft text-success-text" : "border-critical/40 bg-critical-soft text-critical-text")}>
+        <p role="status" className={cn("mb-4 rounded-lg border px-4 py-2.5 text-sm", msg.ok ? "border-good/40 bg-good-soft text-good-text" : "border-critical/40 bg-critical-soft text-critical-text")}>
           {msg.text}
         </p>
       )}

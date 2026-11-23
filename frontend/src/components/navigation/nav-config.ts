@@ -1,4 +1,4 @@
-import { Ban, Boxes, ClipboardCheck, FileBarChart2, KeyRound, Mail, PhoneCall, Target, Ticket, LayoutDashboard, Map, MapPin, ServerCog, Settings, Users, type LucideIcon } from "lucide-react";
+import { Ban, Boxes, CalendarRange, ClipboardCheck, FileBarChart2, KeyRound, Mail, PhoneCall, Target, Ticket, LayoutDashboard, Map, MapPin, ServerCog, Settings, Users, type LucideIcon } from "lucide-react";
 import type { PageKey } from "@/lib/api";
 
 export interface NavItem {
@@ -46,6 +46,7 @@ export const NAV: NavGroup[] = [
     label: "Ticket Management",
     items: [
       { label: "Admin Tickets", href: "/dashboard/tickets/admin", icon: ClipboardCheck, adminOnly: true },
+      { label: "Ticket Report", href: "/dashboard/tickets/report", icon: CalendarRange, adminOnly: true },
       { label: "User Tickets", href: "/dashboard/tickets/user", icon: Ticket, pageKey: "tickets-user" },
       { label: "Non-Doable Cases", href: "/dashboard/tickets/non-doable", icon: Ban, pageKey: "tickets-nondoable" },
     ],

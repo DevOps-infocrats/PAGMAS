@@ -359,6 +359,32 @@ def _monitor_filters(
     return {"circle": circle, "areaManager": areaManager, "fe": fe, "block": block, "week": week, "ticket": ticket, "gpCode": gpCode, "gpName": gpName, "search": search, "dateFrom": dateFrom, "dateTo": dateTo}
 
 
+ReportWeek = Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")]
+ReportCircle = Annotated[str | None, Query(min_length=1, max_length=80)]
+
+
+@router.get("/report", dependencies=[Depends(require_admin)])
+def ticket_report(week: ReportWeek = None, circle: ReportCircle = None, db: Session = Depends(get_db)) -> dict:
+    """Ticket Report (read only): tickets generated in a ticket week per role (AM / FE / FRT / SME / COH), the daily
+    submissions per person and day of that week, and what was completed in it (app.tickets.report)."""
+    from ..tickets import report
+
+    return report.build(db, week, circle)
+
+
+@router.get("/report.xlsx", dependencies=[Depends(require_admin)])
+def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, db: Session = Depends(get_db)) -> Response:
+    from ..tickets import report
+
+    data = report.build(db, week, circle)
+    code = (data.get("week") or {}).get("code", "no-week")
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", circle).strip("_") if circle else ""
+    name = f"Ticket_Report_{code}" + (f"_{safe}" if safe else "") + ".xlsx"
+    return Response(report.xlsx(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
 @router.get("/gp-monitor/summary", dependencies=[Depends(require_admin)])
 def gp_monitor_summary(f: dict = Depends(_monitor_filters), basis: Literal["status", "category"] = "status", db: Session = Depends(get_db)) -> dict:
     """Done / Pending and category-wise (A–E) GPs of all GP-wise task tickets (each GP code once) for the filters.

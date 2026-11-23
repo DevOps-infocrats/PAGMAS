@@ -285,6 +285,7 @@ export const httpTicketApi: TicketApi = {
   feCheck: (id, body) => request(`/tickets/${id}/fe-check`, { method: "POST", body: JSON.stringify(body) }),
   progressFileUrl: (id, inline) => `${API_BASE}/tickets/progress-files/${id}${inline ? "?inline=true" : ""}`,
   getGpMonitorSummary: (f, basis) => request(`/tickets/gp-monitor/summary${qs({ ...f, basis })}`),
+  getTicketReport: (q) => request(`/tickets/report${qs({ week: q.week, circle: q.circle })}`),
   listGpMonitor: (q) =>
     request(`/tickets/gp-monitor${qs({ ...q, desc: q.desc === undefined ? undefined : String(q.desc), page_size: q.pageSize, pageSize: undefined })}`),
   getGpMonitorDetail: (gpCode) => request(`/tickets/gp-monitor/gps/${encodeURIComponent(gpCode)}`),

@@ -103,6 +103,7 @@ export const ticketApi: TicketApi = IS_LIVE
       getReviewContacts: unavailable,
       progressFileUrl: () => "#",
       getGpMonitorSummary: unavailable,
+      getTicketReport: unavailable,
       listGpMonitor: unavailable,
       getGpMonitorDetail: unavailable,
       taskWorkbookUrl: () => "#",
