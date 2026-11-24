@@ -152,19 +152,42 @@ def deleted_ids():
     return select(Ticket.id).where(Ticket.deleted_at.is_not(None))
 
 
+def in_circles(circles: frozenset[str]):
+    """Tickets of these circles (lower-case names): the ticket's circle, or a GP of the ticket in one of them."""
+    cs = sorted(circles)
+    return or_(func.lower(func.trim(Ticket.circle)).in_(cs), Ticket.id.in_(select(TicketTaskGp.ticket_id).where(func.lower(func.trim(TicketTaskGp.circle)).in_(cs))))
+
+
+def ticket_in_circles(db: Session, t: Ticket, circles: frozenset[str] | None) -> bool:
+    """Whether the ticket is in the circles (None = no circle limit)."""
+    if circles is None:
+        return True
+    key = lambda v: " ".join(str(v or "").split()).lower()  # noqa: E731
+    if key(t.circle) in circles or any(key(part) in circles for part in str(t.circle or "").split(",")):
+        return True
+    return any(key(c) in circles for c in db.scalars(select(TicketTaskGp.circle).where(TicketTaskGp.ticket_id == t.id).distinct()))
+
+
+def admin_of(db: Session, t: Ticket, user: CurrentUser) -> bool:
+    """Admin rights on this ticket: an admin, or Admin Tickets of a role in the ticket's circle (user.circles)."""
+    return user.is_admin and ticket_in_circles(db, t, user.circles)
+
+
 def visible(db: Session, ticket_id: int, user: CurrentUser) -> Ticket:
-    """The ticket if this user may open it (admins: every ticket; others: only tickets assigned / sent to them).
-    Anything else answers 404, so ticket IDs of other people cannot be probed."""
+    """The ticket if this user may open it (admins: every ticket – Admin Tickets of a role: those of their circles;
+    others: only tickets assigned / sent to them). Anything else answers 404, so ticket IDs cannot be probed."""
     t = db.get(Ticket, ticket_id)
-    if t is None or t.deleted_at is not None or not (user.is_admin or t.assignee_id == user.id or _recipient(db, t, user.id) is not None):
+    if t is None or t.deleted_at is not None or not (admin_of(db, t, user) or t.assignee_id == user.id or _recipient(db, t, user.id) is not None):
         raise TicketError(404, "Ticket not found")
     return t
 
 
-def kpis(db: Session, assignee_id: int | None = None) -> dict[str, int]:
+def kpis(db: Session, assignee_id: int | None = None, circles: frozenset[str] | None = None) -> dict[str, int]:
     q = select(Ticket.status, func.count()).where(live()).group_by(Ticket.status)
     if assignee_id is not None:
         q = q.where(_mine(assignee_id))
+    if circles is not None:
+        q = q.where(in_circles(circles))
     c = {s: 0 for s in STATUSES} | dict(db.execute(q).all())
     total = sum(c.values())
     return {
@@ -202,10 +225,13 @@ def list_tickets(
     progress_date: dt.date | None = None,
     page: int = 1,
     page_size: int = 20,
+    circles: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     q = select(Ticket).where(live())
     if assignee_id is not None:
         q = q.where(_mine(assignee_id))
+    if circles is not None:  # Admin Tickets of a role: only the tickets of their circles
+        q = q.where(in_circles(circles))
     if circle and circle.strip():
         c = circle.strip().lower()
         q = q.where(or_(func.lower(Ticket.circle) == c, Ticket.id.in_(select(TicketTaskGp.ticket_id).where(func.lower(TicketTaskGp.circle) == c))))
@@ -267,13 +293,23 @@ def my_weeks(db: Session, user_id: int) -> dict[str, Any]:
     return {"weeks": sorted(weeks.values(), key=lambda w: w["start"], reverse=True)}
 
 
-def filter_options(db: Session) -> dict[str, Any]:
-    """Circles, Area Managers and weeks that occur in tickets (admin list filters)."""
+def filter_options(db: Session, limit: frozenset[str] | None = None) -> dict[str, Any]:
+    """Circles, Area Managers and weeks that occur in tickets (admin list filters); `limit`: only those circles' tickets."""
     gone = deleted_ids()
-    circles = {c.strip().title() for c in db.scalars(select(Ticket.circle).where(Ticket.circle.is_not(None), live())) if c and c.strip()}
-    circles |= {c.strip().title() for c in db.scalars(select(TicketTaskGp.circle).where(TicketTaskGp.ticket_id.not_in(gone)).distinct()) if c and c.strip()}
-    ams = sorted({a for a in db.scalars(select(TicketTask.am_name).where(TicketTask.ticket_id.not_in(gone)).distinct()) if a})
-    weeks = sorted({w for w in db.scalars(select(TicketTask.week_code).where(TicketTask.ticket_id.not_in(gone)).distinct()) if w}, key=lambda w: int(w[2:]) if w[2:].isdigit() else 0, reverse=True)
+    if limit is None:
+        circles = {c.strip().title() for c in db.scalars(select(Ticket.circle).where(Ticket.circle.is_not(None), live())) if c and c.strip()}
+        circles |= {c.strip().title() for c in db.scalars(select(TicketTaskGp.circle).where(TicketTaskGp.ticket_id.not_in(gone)).distinct()) if c and c.strip()}
+        own = None
+    else:
+        own = select(Ticket.id).where(live(), in_circles(limit))
+        circles = {c.strip().title() for c in db.scalars(select(TicketTaskGp.circle).where(TicketTaskGp.ticket_id.in_(own)).distinct()) if c and " ".join(c.split()).lower() in limit}
+        circles |= {c.strip().title() for c in db.scalars(select(Ticket.circle).where(Ticket.id.in_(own))) if c and " ".join(c.split()).lower() in limit}
+    ams_q = select(TicketTask.am_name).where(TicketTask.ticket_id.not_in(gone))
+    weeks_q = select(TicketTask.week_code).where(TicketTask.ticket_id.not_in(gone))
+    if own is not None:
+        ams_q, weeks_q = ams_q.where(TicketTask.ticket_id.in_(own)), weeks_q.where(TicketTask.ticket_id.in_(own))
+    ams = sorted({a for a in db.scalars(ams_q.distinct()) if a})
+    weeks = sorted({w for w in db.scalars(weeks_q.distinct()) if w}, key=lambda w: int(w[2:]) if w[2:].isdigit() else 0, reverse=True)
     return {"circles": sorted(circles), "areaManagers": ams, "weeks": weeks}
 
 

@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { EmptyState, ErrorState, PageSkeleton } from "@/components/feedback/states";
 import { MiniKpi } from "@/components/kpi/mini-kpi";
-import { AdminGuard } from "@/components/layout/admin-guard";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
@@ -25,9 +24,9 @@ import { formatCount } from "@/lib/utils/format";
  */
 export function TicketReportView() {
   return (
-    <AdminGuard>
+    <>
       <ReportContent />
-    </AdminGuard>
+    </>
   );
 }
 

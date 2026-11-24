@@ -45,8 +45,8 @@ export const NAV: NavGroup[] = [
     // Admins assign and review work; every user sees the tickets assigned to them (rules enforced by the backend).
     label: "Ticket Management",
     items: [
-      { label: "Admin Tickets", href: "/dashboard/tickets/admin", icon: ClipboardCheck, adminOnly: true },
-      { label: "Ticket Report", href: "/dashboard/tickets/report", icon: CalendarRange, adminOnly: true },
+      { label: "Admin Tickets", href: "/dashboard/tickets/admin", icon: ClipboardCheck, pageKey: "tickets-admin" },
+      { label: "Ticket Report", href: "/dashboard/tickets/report", icon: CalendarRange, pageKey: "tickets-report" },
       { label: "User Tickets", href: "/dashboard/tickets/user", icon: Ticket, pageKey: "tickets-user" },
       { label: "Non-Doable Cases", href: "/dashboard/tickets/non-doable", icon: Ban, pageKey: "tickets-nondoable" },
     ],
@@ -55,7 +55,7 @@ export const NAV: NavGroup[] = [
     label: "Administration",
     items: [
       { label: "Data Operations", href: "/dashboard/operations", icon: ServerCog, adminOnly: true },
-      { label: "User Management", href: "/dashboard/users", icon: Users, adminOnly: true },
+      { label: "User Management", href: "/dashboard/users", icon: Users, pageKey: "users-admin" },
       { label: "Roles & Access", href: "/dashboard/roles", icon: KeyRound, adminOnly: true },
       { label: "Mail Configuration", href: "/dashboard/mail", icon: Mail, adminOnly: true },
       { label: "Settings", href: "/dashboard/settings", icon: Settings, adminOnly: true },

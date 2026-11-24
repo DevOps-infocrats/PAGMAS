@@ -4,7 +4,6 @@ import { Loader2, Plus, Search, Upload, UserPlus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { SearchableSelect, type SearchableOption } from "@/components/filters/searchable-select";
-import { AdminGuard } from "@/components/layout/admin-guard";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, Select } from "@/components/ui/overlays";
@@ -70,16 +69,16 @@ function scopeOptions(loc: UserLocations | undefined): AreaOptions {
 
 export function UsersView() {
   return (
-    <AdminGuard>
+    <>
       <UsersContent />
-    </AdminGuard>
+    </>
   );
 }
 
 type Editing = { mode: "create" } | { mode: "edit"; user: AppUser } | null;
 
 function UsersContent() {
-  const { session } = useSession();
+  const { session, isAdmin } = useSession();
   const [tick, setTick] = useState(0);
   const users = useApiQuery(IS_LIVE ? `users:${tick}` : null, () => adminApi.listUsers());
   const locations = useApiQuery(IS_LIVE ? "user-locations" : null, () => adminApi.getUserLocations());
@@ -145,6 +144,7 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
             users={users.data}
             locations={locations.data}
             selfEmail={session?.email}
+            canEditAdmins={isAdmin}
             onEdit={(u) => setEditing({ mode: "edit", user: u })}
             onToggle={(u) => void toggle(u)}
             onRemove={(u) => void remove(u)}
@@ -162,6 +162,7 @@ The account and its areas are removed. Tickets and history stay. This cannot be 
             options={options}
             hasData={locations.data?.hasData ?? false}
             roles={roles.data?.roles ?? []}
+            canMakeAdmin={isAdmin}
             onDone={(text) => {
               setEditing(null);
               setMsg({ ok: true, text });
@@ -192,6 +193,7 @@ function UserDialog({
   options,
   hasData,
   roles,
+  canMakeAdmin,
   onDone,
 }: {
   editing: NonNullable<Editing>;
@@ -199,6 +201,8 @@ function UserDialog({
   options: AreaOptions;
   hasData: boolean;
   roles: AccessRole[];
+  /** only an admin adds / promotes admin accounts (a User Management role without admin cannot – the server checks too) */
+  canMakeAdmin: boolean;
   onDone: (msg: string) => void;
 }) {
   const user = editing.mode === "edit" ? editing.user : null;
@@ -325,7 +329,7 @@ function UserDialog({
               disabled={self}
               onValueChange={setAccess}
               options={[
-                ...(byCode ? [] : [{ value: "admin", label: "Admin – every page" }]),
+                ...(byCode || !canMakeAdmin ? [] : [{ value: "admin", label: "Admin – every page" }]),
                 { value: "default", label: viewerRole ? `${viewerRole.name} (default)` : "Viewer (default)" },
                 ...roles.filter((r) => r.key !== "viewer").map((r) => ({ value: `role:${r.id}`, label: r.name })),
               ]}

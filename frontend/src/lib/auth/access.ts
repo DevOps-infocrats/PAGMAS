@@ -20,6 +20,10 @@ export const PAGE_HREF: Record<PageKey, string> = {
   reports: "/dashboard/reports",
   "tickets-user": "/dashboard/tickets/user",
   "tickets-nondoable": "/dashboard/tickets/non-doable",
+  // admin pages a role can be given (off unless the admin switches them on)
+  "tickets-admin": "/dashboard/tickets/admin",
+  "tickets-report": "/dashboard/tickets/report",
+  "users-admin": "/dashboard/users",
 };
 
 /** The Circle Overview KPI drill-down list (/dashboard/kpi-list) opens from the overview and the insights pages */

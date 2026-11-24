@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import Role, User
 from ..security.deps import CurrentUser, audit, require_admin
-from ..security.roles import LABEL, PAGE_KEYS, PAGES, ensure_system_roles, parse_pages, users_per_role
+from ..security.roles import LABEL, PAGE_KEYS, PAGES, ensure_system_roles, parse_pages, require_page, users_per_role
 
-router = APIRouter(prefix="/roles", tags=["roles"], dependencies=[Depends(require_admin)])
+# Reading the roles: admins and User Management (its role picker); creating / changing / deleting a role: admins only
+router = APIRouter(prefix="/roles", tags=["roles"], dependencies=[Depends(require_page("users-admin"))])
 RoleId = Annotated[int, Path(ge=1)]
 
 
