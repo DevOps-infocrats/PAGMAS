@@ -209,6 +209,7 @@ def ready() -> JSONResponse:
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
+app.include_router(admin.users_router, prefix="/api/v1")
 app.include_router(escalation.router, prefix="/api/v1")
 app.include_router(mail.router, prefix="/api/v1")
 app.include_router(tickets.router, prefix="/api/v1")

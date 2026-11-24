@@ -147,6 +147,7 @@ export function UsersTable({
   users,
   locations,
   selfEmail,
+  canEditAdmins = true,
   onEdit,
   onToggle,
   onRemove,
@@ -154,6 +155,8 @@ export function UsersTable({
   users: AppUser[];
   locations: UserLocations | undefined;
   selfEmail: string | undefined;
+  /** false: a User Management role without admin – admin accounts are shown, not changed (the server checks too) */
+  canEditAdmins?: boolean;
   onEdit: (u: AppUser) => void;
   onToggle: (u: AppUser) => void;
   onRemove: (u: AppUser) => void;
@@ -476,6 +479,10 @@ export function UsersTable({
                     {u.locked ? <StatusBadge tone="warning">Locked</StatusBadge> : u.isActive ? <StatusBadge tone="good">Active</StatusBadge> : <StatusBadge tone="neutral">Inactive</StatusBadge>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-right">
+                    {!canEditAdmins && u.role === "admin" ? (
+                      <span className="px-2 text-xs text-muted-foreground">Admin only</span>
+                    ) : (
+                      <>
                     <Button size="sm" variant="ghost" onClick={() => onEdit(u)} aria-label={`Edit ${u.name}`}>
                       <Pencil /> Edit
                     </Button>
@@ -496,6 +503,8 @@ export function UsersTable({
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
+                    )}
+                      </>
                     )}
                   </td>
                 </tr>

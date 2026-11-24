@@ -25,6 +25,9 @@ class CurrentUser:
     role: str
     # access role of a viewer (app.security.roles); None = not loaded / the built-in Viewer role
     role_id: int | None = None
+    # Admin Tickets given by a role (app.security.roles.as_ticket_admin): the lower-case circles of the user's areas –
+    # admin rights on tickets only there. None = no circle limit (a real admin, or a user without areas).
+    circles: frozenset[str] | None = None
 
     @property
     def is_admin(self) -> bool:

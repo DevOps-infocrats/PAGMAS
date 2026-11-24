@@ -19,13 +19,45 @@ from sqlalchemy.orm import Session
 
 from ..analytics.store import Store, get_store
 from ..db import get_db
-from ..models import TicketAttachment, TicketProgressFile, TicketRecipient, TicketTask, TicketTaskGp
-from ..security.deps import CurrentUser, audit, get_current_user, require_admin
+from ..models import Ticket, TicketAttachment, TicketProgressFile, TicketRecipient, TicketTask, TicketTaskGp
+from ..security.deps import CurrentUser, audit
+from ..security.deps import get_current_user as _session_user
+from ..security.roles import area_circles, as_ticket_admin, circle_key, require_page
 from ..tickets import directory, files, mailer, monitor, service
 from ..tickets import task as tasks
 from ..tickets.service import PRIORITIES, STATUSES, TicketError, Upload
 
-router = APIRouter(prefix="/tickets", tags=["tickets"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/tickets", tags=["tickets"], dependencies=[Depends(_session_user)])
+
+
+# Roles & Access: a role that shows "Admin Tickets" acts as an admin on the ticket endpoints below, only for the
+# tickets of the circles of the user's areas (user.circles; app.security.roles.as_ticket_admin). On a ticket of
+# another circle the user keeps only their own rights (as a recipient of it, if they are one).
+def get_current_user(request: Request, user: CurrentUser = Depends(_session_user), db: Session = Depends(get_db)) -> CurrentUser:
+    eff = as_ticket_admin(db, user)
+    if eff is not user and eff.circles is not None and "ticket_id" in request.path_params:
+        try:
+            t = db.get(Ticket, int(request.path_params["ticket_id"]))
+        except (TypeError, ValueError):
+            return user
+        if t is None or not service.ticket_in_circles(db, t, eff.circles):
+            return user
+    return eff
+
+
+def _own_circle(user: CurrentUser, circle: str | None) -> None:
+    """Admin Tickets of a role: a ticket / preview / directory only for a circle of the user's areas."""
+    if user.circles is None:
+        return
+    if not circle or circle_key(circle) not in user.circles:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Choose a circle of your own areas")
+
+
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if not user.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin role required")
+    return user
+
 
 Scope = Literal["all", "mine"]
 INLINE_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; object-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
@@ -141,7 +173,7 @@ class ChangesIn(BaseModel):
 
 @router.get("/kpis")
 def kpis(scope: Scope = "mine", user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    return service.kpis(db, _scope_user(scope, user))
+    return service.kpis(db, _scope_user(scope, user), user.circles if scope == "all" else None)
 
 
 @router.get("")
@@ -179,6 +211,7 @@ def list_tickets(
         progress_date=progress_date,
         page=page,
         page_size=page_size,
+        circles=user.circles if scope == "all" else None,
     )
 
 
@@ -207,22 +240,28 @@ def coh_gps_xlsx(kind: Literal["letter", "amc"], user: CurrentUser = Depends(get
     return Response(body, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
-@router.get("/filter-options", dependencies=[Depends(require_admin)])
-def filter_options(db: Session = Depends(get_db)) -> dict:
-    return service.filter_options(db)
+@router.get("/filter-options")
+def filter_options(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    return service.filter_options(db, user.circles)
 
 
-@router.get("/directory", dependencies=[Depends(require_admin)])
+@router.get("/directory")
 def ticket_directory(
     circle: Annotated[str | None, Query(max_length=80)] = None,
     week: Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")] = None,
+    user: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
     store: Store = Depends(get_store),
 ) -> dict:
     """Circles, and for the chosen circle its CBH / SME / Area Managers with e-mails and matching dashboard accounts."""
     wk = week or store.weeks[-1].code
     _week_ok(store, wk)
-    return directory.directory(db, store, circle, wk)
+    if circle:
+        _own_circle(user, circle)
+    out = directory.directory(db, store, circle, wk)
+    if user.circles is not None:  # Admin Tickets of a role: only the circles of their areas
+        out["circles"] = [c for c in out.get("circles", []) if circle_key(c.get("name") if isinstance(c, dict) else c) in user.circles]
+    return out
 
 
 @router.get("/assignees", dependencies=[Depends(require_admin)])
@@ -233,6 +272,7 @@ def assignees(user: CurrentUser = Depends(get_current_user), db: Session = Depen
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create(body: TicketIn, request: Request, background: BackgroundTasks, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    _own_circle(admin, body.circle)  # Admin Tickets of a role: only for a circle of their areas
     if body.circle or body.recipients:
         return _generate(body, request, background, admin, db)
     if body.assigneeId is None:
@@ -277,19 +317,23 @@ def _generate(body: TicketIn, request: Request, background: BackgroundTasks, adm
     return service.summary_json(first) | {"tickets": [service.summary_json(t) for t in made], "emailQueued": len(queued)}
 
 
-@router.get("/task/area-managers", dependencies=[Depends(require_admin)])
-def task_area_managers(week: Annotated[str, Query(pattern=r"^W-\d{1,2}$")], db: Session = Depends(get_db), store: Store = Depends(get_store)) -> dict:
+@router.get("/task/area-managers")
+def task_area_managers(week: Annotated[str, Query(pattern=r"^W-\d{1,2}$")], user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db), store: Store = Depends(get_store)) -> dict:
     """Area Managers (Escalation Matrix) with their GP counts for the week and the dashboard user matching their e-mail."""
     _week_ok(store, week)
-    return tasks.area_managers(db, store, week)
+    out = tasks.area_managers(db, store, week)
+    if user.circles is not None:  # Admin Tickets of a role: the Area Managers with GPs in their circles
+        out["areaManagers"] = [a for a in out["areaManagers"] if any(circle_key(c) in user.circles for c in a.get("circles", []))]
+    return out
 
 
-@router.get("/task/preview", dependencies=[Depends(require_admin)])
+@router.get("/task/preview")
 def task_preview(
     am: Annotated[str, Query(min_length=1, max_length=160)],
     week: Annotated[str, Query(pattern=r"^W-\d{1,2}$")],
     circle: Annotated[str | None, Query(max_length=80)] = None,
     withNoAm: bool = False,
+    user: CurrentUser = Depends(require_admin),
     store: Store = Depends(get_store),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -297,6 +341,7 @@ def task_preview(
     Area Manager": the circle's GPs without an AM (an acting AM's ticket); withNoAm: the AM's GPs plus those.
     summary.frts: FRT-wise target, each with the FRT accounts (User Management → FRT code) that join the ticket."""
     _week_ok(store, week)
+    _own_circle(user, circle)
     try:
         rows = tasks.preview(store, am, week, circle, with_no_am=withNoAm)
         summary = tasks.breakdown(store, am, week, circle, rows, with_no_am=withNoAm)
@@ -363,20 +408,24 @@ ReportWeek = Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")]
 ReportCircle = Annotated[str | None, Query(min_length=1, max_length=80)]
 
 
-@router.get("/report", dependencies=[Depends(require_admin)])
-def ticket_report(week: ReportWeek = None, circle: ReportCircle = None, db: Session = Depends(get_db)) -> dict:
+_report_page = require_page("tickets-report")
+
+
+@router.get("/report")
+def ticket_report(week: ReportWeek = None, circle: ReportCircle = None, user: CurrentUser = Depends(_report_page), db: Session = Depends(get_db)) -> dict:
     """Ticket Report (read only): tickets generated in a ticket week per role (AM / FE / FRT / SME / COH), the daily
     submissions per person and day of that week, and what was completed in it (app.tickets.report)."""
     from ..tickets import report
 
-    return report.build(db, week, circle)
+    # a non-admin sees only the circles of their areas (User Management; no areas = every circle)
+    return report.build(db, week, circle, area_circles(db, user))
 
 
-@router.get("/report.xlsx", dependencies=[Depends(require_admin)])
-def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, db: Session = Depends(get_db)) -> Response:
+@router.get("/report.xlsx")
+def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, user: CurrentUser = Depends(_report_page), db: Session = Depends(get_db)) -> Response:
     from ..tickets import report
 
-    data = report.build(db, week, circle)
+    data = report.build(db, week, circle, area_circles(db, user))
     code = (data.get("week") or {}).get("code", "no-week")
     import re
 
@@ -385,14 +434,14 @@ def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, db:
     return Response(report.xlsx(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
-@router.get("/gp-monitor/summary", dependencies=[Depends(require_admin)])
-def gp_monitor_summary(f: dict = Depends(_monitor_filters), basis: Literal["status", "category"] = "status", db: Session = Depends(get_db)) -> dict:
+@router.get("/gp-monitor/summary")
+def gp_monitor_summary(f: dict = Depends(_monitor_filters), basis: Literal["status", "category"] = "status", user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Done / Pending and category-wise (A–E) GPs of all GP-wise task tickets (each GP code once) for the filters.
     basis "category": the date filter means the day the category was chosen (as in the category tables)."""
-    return monitor.summary(db, f, "category" if basis == "category" else None)
+    return monitor.summary(db, f | {"circles": user.circles}, "category" if basis == "category" else None)
 
 
-@router.get("/gp-monitor", dependencies=[Depends(require_admin)])
+@router.get("/gp-monitor")
 def gp_monitor(
     f: dict = Depends(_monitor_filters),
     gp_status: Annotated[Literal["DONE", "PENDING"] | None, Query(alias="status")] = None,
@@ -401,16 +450,17 @@ def gp_monitor(
     desc: bool = True,
     page: Annotated[int, Query(ge=1, le=100_000)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 25,
+    user: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
     if (gp_status is None) == (category is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Choose either a status (Done / Pending) or a category (A–E)")
-    return monitor.listing(db, f, gp_status, sort, desc, page, page_size, category)
+    return monitor.listing(db, f | {"circles": user.circles}, gp_status, sort, desc, page, page_size, category)
 
 
-@router.get("/gp-monitor/gps/{gp_code}", dependencies=[Depends(require_admin)])
-def gp_monitor_detail(gp_code: Annotated[str, Path(min_length=1, max_length=40)], db: Session = Depends(get_db)) -> dict:
-    d = monitor.gp_detail(db, gp_code)
+@router.get("/gp-monitor/gps/{gp_code}")
+def gp_monitor_detail(gp_code: Annotated[str, Path(min_length=1, max_length=40)], user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    d = monitor.gp_detail(db, gp_code, user.circles)
     if d is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "This GP is not in any GP-wise task ticket")
     return d

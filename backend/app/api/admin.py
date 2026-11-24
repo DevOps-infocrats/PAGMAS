@@ -31,9 +31,21 @@ from ..mail.audience import LEVEL_LABELS, Assignment, assignments_of, check_assi
 from ..models import AuditLog, Dataset, EscalationImport, ImportReport, User, UserScope, ValidationIssue
 from ..security.core import hash_password, password_problems
 from ..security.deps import CurrentUser, audit, require_admin
+from ..security.roles import require_page
 from ..security.frt_login import frt_login_email, is_frt_login
 
 router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin)])
+# User Management: admins, and a role that shows the "User Management" page (Roles & Access – app.security.roles)
+_users_page = require_page("users-admin")
+users_router = APIRouter(tags=["users"], dependencies=[Depends(_users_page)])
+
+
+def _not_admin_account(actor: CurrentUser, target: User | None = None, new_role: str | None = None) -> None:
+    """A user manager who is not an admin never creates, edits, deletes or promotes an admin account."""
+    if actor.is_admin:
+        return
+    if new_role == "admin" or (target is not None and target.role == "admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an admin can add, change or delete an admin account")
 def _run_locked(dataset_id: int) -> None:
     run_ingestion(dataset_id)  # one import at a time (lock inside run_ingestion)
 
@@ -674,19 +686,19 @@ def _set_scopes(db: Session, user: User, items: list[ScopeIn]) -> None:
     db.add_all(UserScope(user_id=user.id, level=a.level, scope_id=a.id) for a in wanted)
 
 
-@router.get("/users")
+@users_router.get("/users")
 def list_users(db: Session = Depends(get_db)) -> list[dict]:
     return _users_json(db, list(db.scalars(select(User).order_by(User.email))))
 
 
-@router.get("/users/locations")
+@users_router.get("/users/locations")
 def user_locations() -> dict:
     """Circles → business areas / districts → blocks of the active data, for assigning user areas."""
     st = _active_store()
     return {"circles": location_tree(st) if st is not None else [], "hasData": st is not None}
 
 
-@router.get("/users/locations/gps")
+@users_router.get("/users/locations/gps")
 def user_location_gps(
     circle: Annotated[list[str] | None, Query(max_length=50)] = None,
     ba: Annotated[list[str] | None, Query(max_length=100)] = None,
@@ -722,8 +734,9 @@ def user_location_gps(
     return {"items": items, "total": int(len(sub))}
 
 
-@router.post("/users", status_code=status.HTTP_201_CREATED)
-def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@users_router.post("/users", status_code=status.HTTP_201_CREATED)
+def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends(_users_page), db: Session = Depends(get_db)) -> dict:
+    _not_admin_account(admin, new_role=body.role)
     if body.email:
         email = body.email.lower()
         if db.scalars(select(User).where(func.lower(User.email) == email)).first():
@@ -756,7 +769,7 @@ def create_user(body: UserCreate, request: Request, admin: CurrentUser = Depends
 USER_IMPORT_MAX_MB = 5
 
 
-@router.get("/users/import/template.xlsx")
+@users_router.get("/users/import/template.xlsx")
 def user_import_template(db: Session = Depends(get_db)) -> Response:
     """The Import users file to fill in: the columns the import reads (Name, Email, Password, Circle, BA, District,
     Block, GP) with example rows (@example.com – never imported) spelt from the active data, and an Instructions sheet."""
@@ -772,12 +785,12 @@ def user_import_template(db: Session = Depends(get_db)) -> Response:
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{TEMPLATE_FILE}"', "Cache-Control": "no-store"})
 
 
-@router.post("/users/import")
+@users_router.post("/users/import")
 def import_users(
     file: UploadFile,
     request: Request,
     dry_run: Annotated[bool, Query(alias="dryRun")] = True,
-    admin: CurrentUser = Depends(require_admin),
+    admin: CurrentUser = Depends(_users_page),
     db: Session = Depends(get_db),
 ) -> dict:
     """Create Viewer accounts from an Excel / CSV file with Name and Email columns. An optional Password column gives
@@ -896,11 +909,14 @@ def import_users(
     }
 
 
-@router.patch("/users/{user_id}")
-def update_user(user_id: int, body: UserUpdate, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@users_router.patch("/users/{user_id}")
+def update_user(user_id: int, body: UserUpdate, request: Request, admin: CurrentUser = Depends(_users_page), db: Session = Depends(get_db)) -> dict:
     u = db.get(User, user_id)
     if not u:
         raise HTTPException(404, "User not found")
+    _not_admin_account(admin, u, body.role)
+    if u.id == admin.id and not admin.is_admin and "role_id" in body.model_fields_set and body.role_id != u.role_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You cannot change the role of your own account – ask an admin")
     if u.id == admin.id and (body.role == "viewer" or body.is_active is False):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot demote or deactivate your own account")
     if u.id == admin.id and body.email and body.email.lower() != u.email:
@@ -961,8 +977,8 @@ def update_user(user_id: int, body: UserUpdate, request: Request, admin: Current
     return _users_json(db, [u])[0]
 
 
-@router.post("/users/{user_id}/delete")
-def delete_user(user_id: int, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+@users_router.post("/users/{user_id}/delete")
+def delete_user(user_id: int, request: Request, admin: CurrentUser = Depends(_users_page), db: Session = Depends(get_db)) -> dict:
     """Permanently remove an account. Its areas, notifications and MGG membership go with it (ON DELETE CASCADE);
     tickets, reviews, uploads and the audit log keep their rows with the user reference cleared (ON DELETE SET NULL),
     so no dashboard or ticket data is lost. Ticket recipient rows keep the e-mail, so a re-created account with the
@@ -970,6 +986,7 @@ def delete_user(user_id: int, request: Request, admin: CurrentUser = Depends(req
     u = db.get(User, user_id)
     if not u:
         raise HTTPException(404, "User not found")
+    _not_admin_account(admin, u)
     if u.id == admin.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot delete your own account")
     email, role = u.email, u.role

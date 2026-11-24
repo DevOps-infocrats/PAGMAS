@@ -54,14 +54,15 @@ def _utc(v: dt.datetime | None) -> dt.datetime | None:
     return (v if v.tzinfo else v.replace(tzinfo=dt.UTC)).astimezone(dt.UTC).replace(microsecond=0)
 
 
-def _weeks(db: Session) -> list[dict[str, Any]]:
-    """Ticket weeks that have live tickets, newest first: code, start, end, number of tickets."""
+def _weeks(db: Session, allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
+    """Ticket weeks that have live tickets (of the allowed circles), newest first: code, start, end, number of tickets."""
     rows = db.execute(
-        select(TicketTask.week_code, TicketTask.week_start, TicketTask.week_end, Ticket.id).join(Ticket, Ticket.id == TicketTask.ticket_id).where(Ticket.deleted_at.is_(None))
+        select(TicketTask.week_code, TicketTask.week_start, TicketTask.week_end, Ticket.id, TicketTask.circle).join(Ticket, Ticket.id == TicketTask.ticket_id).where(Ticket.deleted_at.is_(None))
     ).all()
     by: dict[tuple[str, dt.date, dt.date], int] = defaultdict(int)
-    for code, start, end, _tid in rows:
-        by[(code, start, end)] += 1
+    for code, start, end, _tid, circle in rows:
+        if _circle_ok(circle, allowed):
+            by[(code, start, end)] += 1
     return [{"code": c, "start": s.isoformat(), "end": e.isoformat(), "tickets": n} for (c, s, e), n in sorted(by.items(), key=lambda kv: kv[0][1], reverse=True)]
 
 
@@ -73,8 +74,22 @@ def _pick_week(weeks: list[dict[str, Any]], code: str | None) -> dict[str, Any] 
     return current or (weeks[0] if weeks else None)
 
 
-def build(db: Session, week: str | None = None, circle: str | None = None) -> dict[str, Any]:
-    weeks = _weeks(db)
+def _circle_ok(value: str | None, allowed: frozenset[str] | None) -> bool:
+    """A ticket circle ("Haryana", or "Haryana, Rajasthan") in the allowed circles (None = every circle)."""
+    if allowed is None:
+        return True
+    key = lambda v: " ".join(str(v or "").split()).lower()  # noqa: E731
+    return key(value) in allowed or any(key(p) in allowed for p in str(value or "").split(","))
+
+
+def build(db: Session, week: str | None = None, circle: str | None = None, allowed: frozenset[str] | None = None) -> dict[str, Any]:
+    """The report of a ticket week; `circle`: one circle; `allowed`: only these circles (a non-admin's areas)."""
+
+    def keep(c: str | None) -> bool:
+        return (not circle or (c or "") == circle) and _circle_ok(c, allowed)
+
+    limited = bool(circle) or allowed is not None
+    weeks = _weeks(db, allowed)
     w = _pick_week(weeks, week)
     if w is None:
         return {"week": None, "weeks": weeks, "circles": [], "cards": None, "roles": [], "days": [], "people": [], "completed": [], "trend": [], "returns": {"items": [], "top": []}, "amAchievement": []}
@@ -84,9 +99,9 @@ def build(db: Session, week: str | None = None, circle: str | None = None) -> di
 
     # ---------------------------------------------------------------- the week's tickets (generated)
     week_tasks = [(k, t) for k, t in db.execute(select(TicketTask, Ticket).join(Ticket, Ticket.id == TicketTask.ticket_id).where(Ticket.deleted_at.is_(None), TicketTask.week_code == w["code"]))]
-    circles = sorted({k.circle for k, _t in week_tasks if k.circle})
-    if circle:
-        week_tasks = [(k, t) for k, t in week_tasks if (k.circle or "") == circle]
+    circles = sorted({k.circle for k, _t in week_tasks if k.circle and _circle_ok(k.circle, allowed)})
+    if limited:
+        week_tasks = [(k, t) for k, t in week_tasks if keep(k.circle)]
     tids = [t.id for _k, t in week_tasks]
     task_of = {t.id: k for k, t in week_tasks}
     # the day each ticket was generated – nobody can submit on a ticket before it exists
@@ -144,9 +159,9 @@ def build(db: Session, week: str | None = None, circle: str | None = None) -> di
     ))
     subs = [(s, t) for s, t in subs if start <= (_local_date(s.submitted_at) or start) <= end]
     sub_tids = {t.id for _s, t in subs}
-    if circle and sub_tids:
+    if limited and sub_tids:
         circle_of = {k.ticket_id: k.circle for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(sub_tids)))}
-        subs = [(s, t) for s, t in subs if (circle_of.get(t.id) or "") == circle]
+        subs = [(s, t) for s, t in subs if keep(circle_of.get(t.id))]
         sub_tids = {t.id for _s, t in subs}
     # the steps that WRITE their own progress row (same user and time) are not daily submissions: the review steps
     # (app.tickets.review.STEPS – the same rule app.tickets.task uses) and the Non-Doable steps that change the GP.
@@ -206,9 +221,9 @@ def build(db: Session, week: str | None = None, circle: str | None = None) -> di
         (e.actor_id, e.actor_name, e.role, ND_ACT[e.action], e.at, e.ticket_id)
         for e in db.scalars(select(NdEvent).join(Ticket, Ticket.id == NdEvent.ticket_id).where(Ticket.deleted_at.is_(None), NdEvent.action.in_(tuple(ND_ACT)), NdEvent.at >= lo, NdEvent.at < hi))
     ]
-    if circle and rev_rows:
+    if limited and rev_rows:
         circ_of = {k.ticket_id: k.circle for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_({r[5] for r in rev_rows})))}
-        rev_rows = [r for r in rev_rows if (circ_of.get(r[5]) or "") == circle]
+        rev_rows = [r for r in rev_rows if keep(circ_of.get(r[5]))]
     for uid, uname, role, act, at, _tid in rev_rows:
         if uid is None or role not in ("FE", "AM") or not (start <= (_local_date(at) or start) <= end):
             continue
@@ -232,9 +247,9 @@ def build(db: Session, week: str | None = None, circle: str | None = None) -> di
     ):
         if start <= (_local_date(e.at) or start) <= end:
             completed.append({"gpId": e.task_gp_id, "ticketId": t.id, "ticket": t.code, "what": "ND_APPROVED", "by": e.actor_name, "byRole": "MGG", "at": e.at})
-    if circle and completed:
+    if limited and completed:
         circ = {k.ticket_id: k.circle for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_({c["ticketId"] for c in completed})))}
-        completed = [c for c in completed if (circ.get(c["ticketId"]) or "") == circle]
+        completed = [c for c in completed if keep(circ.get(c["ticketId"]))]
     gp_rows = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_({c["gpId"] for c in completed})))} if completed else {}
     completed.sort(key=lambda c: c["at"], reverse=True)
     completed_out = [
@@ -467,7 +482,7 @@ def build(db: Session, week: str | None = None, circle: str | None = None) -> di
         "returns": {"items": ret_items, "top": [{"role": r, "name": n, "count": c} for (r, n), c in sorted(ret_top.items(), key=lambda kv: (-kv[1], kv[0][1].lower()))]},
         "amAchievement": am_rows,
         "days": [{"date": d.isoformat(), "future": d > today} for d in days], "people": people_out, "completed": completed_out,
-        "completedTotal": len(completed), "trend": _trend(db, weeks, circle),
+        "completedTotal": len(completed), "trend": _trend(db, weeks, circle, allowed),
         "pending": pending,
     }
 
@@ -625,14 +640,14 @@ def _review_steps(db: Session, tids: list[int], actions: tuple[str, ...], lo: dt
     return out
 
 
-def _trend(db: Session, weeks: list[dict[str, Any]], circle: str | None) -> list[dict[str, Any]]:
+def _trend(db: Session, weeks: list[dict[str, Any]], circle: str | None, allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
     """The last ticket weeks (oldest first): tickets generated, their GPs, achieved GPs."""
     out = []
     for w in reversed(weeks[:TREND_WEEKS]):
-        q = select(TicketTask.ticket_id).join(Ticket, Ticket.id == TicketTask.ticket_id).where(Ticket.deleted_at.is_(None), TicketTask.week_code == w["code"])
+        q = select(TicketTask.ticket_id, TicketTask.circle).join(Ticket, Ticket.id == TicketTask.ticket_id).where(Ticket.deleted_at.is_(None), TicketTask.week_code == w["code"])
         if circle:
             q = q.where(TicketTask.circle == circle)
-        tids = list(db.scalars(q))
+        tids = [tid for tid, c in db.execute(q) if _circle_ok(c, allowed)]
         gps = list(db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id.in_(tids)))) if tids else []
         out.append({"week": w["code"], "tickets": len(tids), "gps": len(gps), "done": sum(1 for g in gps if cumulative(g) >= g.target)})
     return out

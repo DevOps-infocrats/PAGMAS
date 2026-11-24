@@ -841,8 +841,11 @@ export type PageKey =
   | "amc-conversion"
   | "field-team"
   | "reports"
+  | "tickets-admin"
+  | "tickets-report"
   | "tickets-user"
-  | "tickets-nondoable";
+  | "tickets-nondoable"
+  | "users-admin";
 
 export interface PageAccess {
   laptop: boolean;

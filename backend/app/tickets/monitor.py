@@ -97,7 +97,8 @@ class Row:
         return next((ln["at"] for ln in reversed(self.lines) if ln.get("category") == self.g.gp_category), None) or dt.datetime.min.replace(tzinfo=dt.UTC)
 
 
-def _rows(db: Session) -> list[Row]:
+def _rows(db: Session, circles: frozenset[str] | None = None) -> list[Row]:
+    """Every GP row of the live task tickets; `circles` (lower-case names): only the GPs of those circles."""
     q = (
         select(TicketTaskGp, Ticket.code, Ticket.status, TicketTask.am_name, TicketTask.week_code, TicketTask.week_start, TicketTask.week_end)
         .join(Ticket, Ticket.id == TicketTaskGp.ticket_id)
@@ -105,6 +106,8 @@ def _rows(db: Session) -> list[Row]:
         .where(Ticket.deleted_at.is_(None))  # a deleted ticket's GPs are not monitored
     )
     rows = {g.id: Row(g, code or f"TKT-{g.ticket_id:06d}", st, am, wk, ws, we) for g, code, st, am, wk, ws, we in db.execute(q)}
+    if circles is not None:
+        rows = {i: r for i, r in rows.items() if _key(r.g.circle) in circles}
     if not rows:
         return []
     files_of_line: dict[int, list[dict[str, Any]]] = {}
@@ -213,7 +216,7 @@ def _matches(r: Row, f: dict[str, Any]) -> bool:
 
 def _records(db: Session, f: dict[str, Any]) -> tuple[list[dict[str, Any]], list[Row]]:
     """GPs matching the ticket-field filters (each GP code once), then the GP / text / date filters."""
-    all_rows = _rows(db)
+    all_rows = _rows(db, f.get("circles"))
     groups: dict[str, list[Row]] = {}
     for r in all_rows:
         groups.setdefault(r.g.gp_code, []).append(r)
@@ -334,9 +337,9 @@ def listing(db: Session, f: dict[str, Any], status: str | None, sort: str, desc:
     }
 
 
-def gp_detail(db: Session, gp_code: str) -> dict[str, Any] | None:
+def gp_detail(db: Session, gp_code: str, circles: frozenset[str] | None = None) -> dict[str, Any] | None:
     """One GP: its overall record, every ticket it was in and the date-wise history of all of them."""
-    rows = [r for r in _rows(db) if r.g.gp_code == gp_code]
+    rows = [r for r in _rows(db, circles) if r.g.gp_code == gp_code]
     if not rows:
         return None
     rec = _gp_record(rows, rows)

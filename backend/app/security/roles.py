@@ -8,13 +8,14 @@ A role lists, per page key, whether it shows on a laptop and on a phone, and the
 Enforced on the server: the data endpoints of a page (analytics / field team) answer 403 to a role without that page
 (require_page) – laptop or phone counts, the server cannot tell the device. The phone / laptop split and the hidden
 menu entries are the dashboard's (frontend). Ticket and Non-Doable endpoints keep their own rules (only the tickets
-a user is on), the role only shows / hides those pages. Admin pages (Admin Tickets, Data Operations, User Management,
-Mail, Roles) stay admin-only and are not part of a role.
+a user is on), the role only shows / hides those pages. Admin Tickets, Ticket Report and User Management can be given
+to a role (ADMIN_PAGES, off by default); Data Operations, Mail, Roles and Settings stay admin-only.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from fastapi import Depends, HTTPException, status
@@ -34,18 +35,28 @@ PAGES: tuple[tuple[str, str, str], ...] = (
     ("amc-conversion", "AMC Conversion", "Field Operations"),
     ("field-team", "Field Team & Escalation", "Field Operations"),
     ("reports", "Management Review", "Reporting"),
+    ("tickets-admin", "Admin Tickets", "Ticket Management"),
+    ("tickets-report", "Ticket Report", "Ticket Management"),
     ("tickets-user", "User Tickets", "Ticket Management"),
     ("tickets-nondoable", "Non-Doable Cases", "Ticket Management"),
+    ("users-admin", "User Management", "Administration"),
 )
 PAGE_KEYS = tuple(k for k, _l, _g in PAGES)
 LABEL = {k: lbl for k, lbl, _g in PAGES}
+# Admin pages a role may be given (off unless the admin switches them on – never part of "every page" of the Viewer):
+#   Admin Tickets   = the user acts as an admin on tickets (every ticket, create / close / delete / review / e-mail)
+#   Ticket Report   = the weekly ticket report (read-only + Excel)
+#   User Management = add / edit / delete / import users – never an admin account, never their own role (no self-promotion)
+# Data Operations, Roles & Access, Mail Configuration and Settings stay admin-only.
+ADMIN_PAGES = ("tickets-admin", "tickets-report", "users-admin")
 
 # The Circle Overview KPI drill-down list (/kpi-list) is opened from the overview and the insights pages
 INSIGHTS = ("overview", "circle-insights", "block-insights", "gp-insights")
 
 
-def _all(on: bool = True) -> dict[str, dict[str, bool]]:
-    return {k: {"laptop": on, "phone": on} for k in PAGE_KEYS}
+def _all(on: bool = True, admin_pages: bool = False) -> dict[str, dict[str, bool]]:
+    """Every dashboard page; the admin pages only with admin_pages=True (an admin account)."""
+    return {k: {"laptop": on and (admin_pages or k not in ADMIN_PAGES), "phone": on and (admin_pages or k not in ADMIN_PAGES)} for k in PAGE_KEYS}
 
 
 def _only(laptop: tuple[str, ...], phone: tuple[str, ...]) -> dict[str, dict[str, bool]]:
@@ -107,7 +118,7 @@ def _role_of(db: Session, user: CurrentUser) -> Role | None:
 def permissions(db: Session, user: CurrentUser) -> dict[str, Any]:
     """What the dashboard shows this user: {"all": True} for admins, else the role's pages and home pages."""
     if user.is_admin:
-        return {"all": True, "roleId": None, "roleName": "Admin", "pages": _all(), "laptopHome": "overview", "phoneHome": "overview"}
+        return {"all": True, "roleId": None, "roleName": "Admin", "pages": _all(admin_pages=True), "laptopHome": "overview", "phoneHome": "overview"}
     r = _role_of(db, user)
     if r is None:
         return {"all": False, "roleId": None, "roleName": "Viewer", "pages": _all(), "laptopHome": "overview", "phoneHome": "overview"}
@@ -141,3 +152,37 @@ def users_per_role(db: Session) -> dict[int | None, int]:
     """Active + inactive viewer accounts per role id (None = no role = Viewer)."""
     rows = db.execute(select(User.role_id, func.count()).where(User.role != "admin").group_by(User.role_id)).all()
     return {rid: int(n) for rid, n in rows}
+
+
+def circle_key(name: str | None) -> str:
+    """A circle name compared case- and space-insensitively."""
+    return " ".join(str(name or "").split()).lower()
+
+
+def area_circles(db: Session, user: CurrentUser) -> frozenset[str] | None:
+    """The circles of the user's areas (User Management; a BA / district / block / GP counts as its circle), as
+    circle_key()s. None = no limit: an admin, or a user without areas (as on the dashboard). Areas no longer in the
+    data give an empty set (nothing) – access is never widened."""
+    if user.is_admin:
+        return None
+    from ..analytics.store import NoDataError, get_store, scoped_store
+    from .access import user_areas
+
+    areas = user_areas(db, user)
+    if not areas:
+        return None
+    try:
+        part = scoped_store(get_store(), areas)
+    except NoDataError:
+        return frozenset()
+    if part is None:
+        return frozenset()
+    return frozenset(circle_key(c) for c in part.gps["circle"].unique())
+
+
+def as_ticket_admin(db: Session, user: CurrentUser) -> CurrentUser:
+    """Tickets: a user whose role shows Admin Tickets acts as an admin on tickets – limited to the circles of their
+    areas (CurrentUser.circles)."""
+    if user.is_admin or not can_open(db, user, ("tickets-admin",)):
+        return user
+    return replace(user, role="admin", circles=area_circles(db, user))

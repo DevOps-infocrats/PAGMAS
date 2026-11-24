@@ -6,7 +6,6 @@ import { useCallback, useEffect, useState } from "react";
 import { ErrorState, PageSkeleton } from "@/components/feedback/states";
 import { SearchableSelect } from "@/components/filters/searchable-select";
 import { MiniKpi } from "@/components/kpi/mini-kpi";
-import { AdminGuard } from "@/components/layout/admin-guard";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, Input } from "@/components/ui/primitives";
@@ -74,9 +73,9 @@ const COLUMNS: TicketColumn[] = [
 
 export function AdminTicketsView() {
   return (
-    <AdminGuard>
+    <>
       <AdminTickets />
-    </AdminGuard>
+    </>
   );
 }
 
