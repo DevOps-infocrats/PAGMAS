@@ -238,6 +238,10 @@ export const httpTicketApi: TicketApi = {
   getGpCategories: (f) => request(`/tickets/gp-categories${qs(ticketFilterQs(f))}`),
   getWorking: (f) => request(`/tickets/working${qs(ticketFilterQs(f))}`),
   getGpTimeline: (ticketId, gpId) => request(`/tickets/${ticketId}/gps/${gpId}/timeline`),
+  getHierarchy: (q) => request(`/tickets/hierarchy${qs({ ...q })}`),
+  getTicketHierarchy: (ticketId) => request(`/tickets/${ticketId}/hierarchy`),
+  getUnit: (ticketId, unitId) => request(`/tickets/${ticketId}/units/${unitId}`),
+  closeUnit: (ticketId, unitId, body) => request(`/tickets/${ticketId}/units/${unitId}/close`, { method: "POST", body: JSON.stringify(body) }),
   list: (q) =>
     request(
       `/tickets${qs({ scope: q.scope, search: q.search, status: q.status, priority: q.priority, date_from: q.dateFrom, date_to: q.dateTo, circle: q.circle, areaManager: q.areaManager, week: q.week, gp: q.gp, progressDate: q.progressDate, page: q.page, page_size: q.pageSize })}`,

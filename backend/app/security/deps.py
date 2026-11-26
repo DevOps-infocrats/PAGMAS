@@ -104,6 +104,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> Current
     if request.method not in SAFE_METHODS and not csrf_matches(request.cookies.get(CSRF_COOKIE), request.headers.get(CSRF_HEADER)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "CSRF token missing or invalid")
 
+    db.info["actor"] = (user.id, user.name)  # who acts in this request – the ticket hierarchy history (app.tickets.units)
     return CurrentUser(id=user.id, email=user.email, name=user.name, role=user.role, role_id=user.role_id)
 
 

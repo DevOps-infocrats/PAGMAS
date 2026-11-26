@@ -37,6 +37,7 @@ import { CohCloseCard, CohKpis } from "./coh-panel";
 import { RecipientsCard } from "./ticket-recipients";
 import { ShareCard } from "./ticket-share";
 import { TaskPanel } from "./ticket-task";
+import { TicketHierarchyPanel } from "./ticket-hierarchy";
 import { WorkSubmission } from "./work-submission";
 
 const day = (iso: string, withMonth: boolean) => new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", ...(withMonth ? { month: "short" } : {}), timeZone: "UTC" });
@@ -314,6 +315,7 @@ function UserTicketDetail({ id, tick, onChanged }: { id: number; tick: number; o
           }}
         />
       )}
+      {t.task && <TicketHierarchyPanel t={t} />}
       {t.task && t.can.share && (
         <ShareCard
           t={t}

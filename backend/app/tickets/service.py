@@ -243,6 +243,12 @@ def list_tickets(
     tasks = {k.ticket_id: k for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(ids)))} if ids else {}
     counts = dict(db.execute(select(TicketRecipient.ticket_id, func.count()).where(TicketRecipient.ticket_id.in_(ids)).group_by(TicketRecipient.ticket_id)).all()) if ids else {}
     work = ticket_work(db, ids) if assignee_id is None else {}  # Admin Tickets: who works on each ticket, GPs filled
+    if assignee_id is not None:  # User Tickets: an FE's / FRT's own ticket ID under the AM ticket (ticket hierarchy)
+        from .units import my_units
+
+        own = my_units(db, assignee_id, ids)
+    else:
+        own = {}
     items = []
     for t in rows:
         k = tasks.get(t.id)
@@ -250,6 +256,7 @@ def list_tickets(
             "areaManager": k.am_name if k else None, "week": k.week_code if k else None, "recipientCount": int(counts.get(t.id, 0)),
             "weekStart": k.week_start.isoformat() if k else None, "weekEnd": k.week_end.isoformat() if k else None,
             **({"work": work[t.id]} if t.id in work else {}),
+            **({"myUnit": own[t.id]} if t.id in own else {}),
         })
     return {"items": items, "total": total, "page": page, "pageSize": page_size}
 
@@ -404,6 +411,13 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
         # review steps – each of their own GPs carries its full review history instead)
         recs = [r for r in recs if r.role not in ("SME", "COH") or r.user_id == user.id]
         events = [e for e in events if e.action not in SME_HIDDEN_EVENTS]
+    # ticket hierarchy (app.tickets.units): the user's own FE / FRT ticket ID, and each GP row's FRT ticket ID
+    hierarchy: dict[str, Any] = {}
+    if task_block is not None:
+        from . import units
+
+        own = units.my_units(db, user.id, [t.id]).get(t.id)
+        hierarchy = {"gpUnits": {str(k): v for k, v in units.gp_units(db, t, user).items()}, **({"myUnit": own} if own else {})}
     return {
         **summary_json(t),
         "description": t.description,
@@ -454,6 +468,7 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
             "cohClose": coh_ok,
             "cohCloseBlock": coh_why,
         },
+        **hierarchy,
     }
 
 

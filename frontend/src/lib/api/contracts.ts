@@ -2006,6 +2006,8 @@ export interface TicketKpis {
   byStatus: Record<TicketStatus, number>;
   /** Admin Tickets: the people of the tickets (one ticket per AM, shared with its FEs and FRT teams) and who worked */
   work?: TicketWorkTotals;
+  /** Admin Tickets: FE tickets and GP-wise FRT tickets under these AM tickets, per status (ticket hierarchy) */
+  units?: Record<"FE" | "FRT", Record<TicketUnitStatus, number> & { total: number }>;
 }
 
 /** Admin Tickets KPIs: AM + FEs + FRT teams of the tickets (each per ticket) – how many there are and how many worked */
@@ -2082,6 +2084,8 @@ export interface TicketSummary {
   recipientCount?: number;
   /** Admin Tickets list: who works on the ticket and its GPs filled (GP-wise task tickets) */
   work?: TicketWork;
+  /** User Tickets / ticket detail: the signed-in FE's / FRT's own ticket ID under this AM ticket (ticket hierarchy) */
+  myUnit?: MyTicketUnit;
 }
 
 /** A week of the signed-in user's GP-wise task tickets (User Tickets week filter) */
@@ -2199,6 +2203,8 @@ export interface TicketSubmissionItem {
 }
 
 export interface TicketDetail extends TicketSummary {
+  /** GP row id → its FRT ticket (ticket hierarchy; only the GPs this user may see) */
+  gpUnits?: Record<string, TicketUnitBrief>;
   description: string;
   startedAt: string | null;
   closedBy: { id: number | null; name: string | null } | null;
@@ -2776,6 +2782,99 @@ export interface TicketNotificationItem {
   href: string;
 }
 
+/** Ticket hierarchy: AM ticket (TKT-000123) → FE ticket (TKT-000123-FE-01) → FRT ticket (TKT-000123-FE-01-FRT-001) */
+export type TicketLevel = "AM" | "FE" | "FRT";
+/** FE / FRT ticket status (the AM ticket keeps its own TicketStatus) */
+export type TicketUnitStatus = "OPEN" | "IN_PROGRESS" | "PENDING_REVIEW" | "CLOSED";
+
+export interface TicketUnitRow {
+  /** AM: the ticket id · FE / FRT: the unit id */
+  id: number;
+  level: TicketLevel;
+  code: string;
+  ticketId: number;
+  amCode: string;
+  parentCode: string | null;
+  parentId: number | null;
+  status: TicketUnitStatus | TicketStatus;
+  statusLabel: string;
+  am: string | null;
+  fe: string | null;
+  frt: string | null;
+  gpId: number | null;
+  gpCode: string | null;
+  gpName: string | null;
+  block: string | null;
+  circle: string | null;
+  week: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  startedAt: string | null;
+  closedAt: string | null;
+  closedBy: string | null;
+  closeRemark: string | null;
+  /** Admin list: tickets under it (AM: FE + FRT; FE: FRT) and how many of them are not closed */
+  children?: { fe: number; frt: number; open: number };
+}
+
+export interface TicketHierarchyQuery {
+  level?: TicketLevel;
+  status?: string;
+  search?: string;
+  am?: string;
+  fe?: string;
+  frt?: string;
+  gp?: string;
+  circle?: string;
+  week?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TicketHierarchyPage {
+  items: TicketUnitRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** per level: tickets per status (each ticket once) */
+  counts: Record<TicketLevel, Record<string, number> & { total: number }>;
+}
+
+export interface TicketHierarchyTree {
+  ticket: TicketUnitRow & { hasTask: boolean };
+  fe: (TicketUnitRow & { frt: TicketUnitRow[]; counts: Record<string, number> & { total: number } })[];
+  /** FRT tickets without an FE ticket above them (GP without an FE – or the FRT's own view) */
+  frtDirect: TicketUnitRow[];
+  /** the signed-in user is the ticket's Area Manager: may close FE tickets */
+  canCloseFe: boolean;
+}
+
+/** A short reference to an FE / FRT ticket (ID and status) */
+export interface TicketUnitBrief {
+  id: number;
+  code: string;
+  level: "FE" | "FRT";
+  status: TicketUnitStatus;
+  statusLabel: string;
+}
+
+/** The signed-in FE's / FRT's own ticket under the AM ticket: FE = their FE ticket; FRT = their GP-wise FRT tickets
+ * (code = the first still open one, codes = all of them) */
+export interface MyTicketUnit extends TicketUnitBrief {
+  count: number;
+  open: number;
+  codes: string[];
+}
+
+export interface TicketUnitDetail extends TicketUnitRow {
+  history: { at: string | null; by: string; action: string; from: string | null; to: string | null; note: string | null }[];
+  frtTickets?: TicketUnitRow[];
+  canClose?: boolean;
+  gpStage?: string;
+}
+
 /** The Admin Tickets list filters (TicketListQuery without scope / page) – its KPIs follow them */
 export type TicketListFilters = Omit<TicketListQuery, "scope" | "page" | "pageSize">;
 
@@ -2785,7 +2884,8 @@ export interface TicketApi {
   /** Admin Tickets: category-wise GPs of the tickets the list shows for these filters (none = every task ticket) */
   getGpCategories(f: TicketListFilters): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;
   /** Admin Tickets – "Tickets in Progress": the tickets (of these filters) someone works on */
-  getWorking(f: TicketListFilters): Promise<{ items: TicketWorkingItem[] }>;
+  /** items: AM tickets someone worked on (who / what); tickets: the AM, FE and FRT tickets the card counts */
+  getWorking(f: TicketListFilters): Promise<{ items: TicketWorkingItem[]; tickets?: TicketUnitRow[] }>;
   list(q: TicketListQuery): Promise<TicketPage>;
   /** the weeks of the signed-in user's GP-wise task tickets, newest first */
   myWeeks(): Promise<{ weeks: TicketWeek[] }>;
@@ -2832,6 +2932,14 @@ export interface TicketApi {
   progressFileUrl(id: number, inline?: boolean): string;
   /** GP Timeline: everything that happened to one GP of the ticket (same access as the GP detail) */
   getGpTimeline(ticketId: number, gpId: number): Promise<GpTimeline>;
+  /** Ticket hierarchy – Admin: every AM, FE and FRT ticket in one list (read only) */
+  getHierarchy(q: TicketHierarchyQuery): Promise<TicketHierarchyPage>;
+  /** Ticket hierarchy of one AM ticket: its FE tickets and their FRT tickets (what the user may see) */
+  getTicketHierarchy(ticketId: number): Promise<TicketHierarchyTree>;
+  /** One FE / FRT ticket with its own history */
+  getUnit(ticketId: number, unitId: number): Promise<TicketUnitDetail>;
+  /** The ticket's Area Manager closes one FE ticket (force = GPs not approved yet; remark = the reason) */
+  closeUnit(ticketId: number, unitId: number, body: { remark?: string; force?: boolean }): Promise<TicketUnitDetail>;
   /** Admin: Done / Pending GPs of the GP-wise tasks (each GP once) */
   /** basis "category": the date filter = the day the category was chosen (as in the category tables) */
   getGpMonitorSummary(f: GpMonitorFilters, basis?: "status" | "category"): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;

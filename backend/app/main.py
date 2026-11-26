@@ -144,6 +144,10 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as db:
         ensure_default_templates(db)  # the 3 built-in templates; never overwrites an edited one
         ensure_system_roles(db)  # the built-in access roles (Viewer, AM, FE, FRT); never overwrites an edited one
+    from .tickets.units import backfill
+
+    with SessionLocal() as db:
+        backfill(db)  # FE / FRT tickets of the existing AM tickets (new rows only; idempotent)
     start_scheduler()  # only with AMC_REPORT_EMAILS_ENABLED=true; first check one minute later – start-up sends nothing
     yield
     stop_scheduler()

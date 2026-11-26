@@ -17,6 +17,7 @@ import { FeSummary, TagCell, TypeTag } from "./fe-task-parts";
 import { FrtCheckBadge, FrtProofChips, FrtSteps, FrtSummary } from "./frt-task-parts";
 import { CohReviewTable } from "./coh-review-table";
 import { GpDetailDialog } from "./gp-detail";
+import { GpTicketId } from "./ticket-hierarchy";
 import { useReviewerNdCases, ndPendingFor } from "./nd-gp-rows";
 import { SmeReviewTable } from "./sme-review-table";
 import { NdFillDialog, TicketNdCases } from "./non-doable-view";
@@ -618,6 +619,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       ) : (
                         <span className="font-semibold">{g.gpCode}</span>
                       )}
+                      <GpTicketId t={t} gpId={g.id} />
                       <span className="mt-0.5 flex items-center gap-1.5">
                         <button type="button" onClick={() => setDetailId(g.id)} className="text-[0.6875rem] font-medium text-primary hover:underline" title="Open the GP details and history">
                           Details
@@ -840,6 +842,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details and history">
                             {g.gpCode}
                           </button>
+                          <GpTicketId t={t} gpId={g.id} />
                           <span className="mt-0.5 block">
                             <TypeTag g={g} />
                           </span>
@@ -975,6 +978,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           ) : (
                             <span className="font-semibold">{g.gpCode}</span>
                           )}
+                          <GpTicketId t={t} gpId={g.id} />
                           <span className="mt-0.5 flex items-center gap-1.5">
                             <button type="button" onClick={() => setDetailId(g.id)} className="text-[0.6875rem] font-medium text-primary hover:underline" title="Open the GP details and history">
                               Details
@@ -1169,6 +1173,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details (FE submission, AM approval, review history)">
                           {g.gpCode}
                         </button>
+                        <GpTicketId t={t} gpId={g.id} />
                         <span className="mt-0.5 block">
                           <TypeTag g={g} />
                         </span>
@@ -1375,6 +1380,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details (FE submission, AM approval, review history)">
                       {g.gpCode}
                     </button>
+                    <GpTicketId t={t} gpId={g.id} />
                   </td>
                   <td className="min-w-[10.625rem] px-3 py-1.5">
                     {fullEdit ? (

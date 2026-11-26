@@ -746,6 +746,61 @@ class TicketProgressFile(Base):
     capture_source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # CAMERA | None (upload)
 
 
+# ---------------------------------------------------------------- Ticket hierarchy (app.tickets.units)
+# The AM ticket (tickets row, TKT-000123) keeps everything it has; under it every Field Engineer of the ticket gets an
+# FE ticket (TKT-000123-FE-01) and every GP with an FRT team an FRT ticket (TKT-000123-FE-01-FRT-001, or
+# TKT-000123-FRT-001 when the GP has no FE ticket). Only new rows – no existing table, GP or target is copied or
+# changed. Each unit has its own status and history; no status is ever copied to a parent or child.
+
+
+class TicketUnit(Base):
+    """An FE ticket or an FRT ticket under an AM ticket. level FE: one Field Engineer of the ticket (recipient_id, the
+    FE key). level FRT: one GP row of the ticket (task_gp_id, unique) with its FRT code; parent_id = its FE ticket (None
+    = directly under the AM ticket). status: OPEN | IN_PROGRESS | PENDING_REVIEW (FRT: waiting for the FE) | CLOSED.
+    `code` is set once and never changes (a GP moved to another FE keeps its code; only parent_id changes)."""
+
+    __tablename__ = "ticket_units"
+    __table_args__ = (UniqueConstraint("ticket_id", "level", "unit_key", name="uq_ticket_unit_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id", ondelete="CASCADE"), index=True)
+    level: Mapped[str] = mapped_column(String(3))  # FE | FRT
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("ticket_units.id", ondelete="SET NULL"), nullable=True, index=True)
+    seq: Mapped[int] = mapped_column(Integer)  # FE: 1, 2 … per AM ticket; FRT: 1, 2 … per parent (FE ticket or AM ticket)
+    code: Mapped[str] = mapped_column(String(40), unique=True)
+    # FE: "fe:<name key>|<e-mail>" · FRT: "gp:<task_gp_id>" – one unit per FE / per GP row of the ticket
+    unit_key: Mapped[str] = mapped_column(String(420))
+    recipient_id: Mapped[int | None] = mapped_column(ForeignKey("ticket_recipients.id", ondelete="SET NULL"), nullable=True, index=True)
+    fe_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    fe_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    task_gp_id: Mapped[int | None] = mapped_column(ForeignKey("ticket_task_gps.id", ondelete="CASCADE"), nullable=True, unique=True)
+    frt_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    closed_by_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    close_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TicketUnitEvent(Base):
+    """History of one FE / FRT ticket (created, started, waiting for the FE, closed, reopened, moved to another FE)."""
+
+    __tablename__ = "ticket_unit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    unit_id: Mapped[int] = mapped_column(ForeignKey("ticket_units.id", ondelete="CASCADE"), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_name: Mapped[str] = mapped_column(String(120))
+    action: Mapped[str] = mapped_column(String(20))  # CREATED | STARTED | SUBMITTED | RETURNED | CLOSED | REOPENED | MOVED
+    from_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------- Non-Doable GP exception workflow (app.tickets.nondoable)
 # FE → AM → SME → COH → Corporate Team – MGG. A case belongs to one GP of a task ticket (never a new ticket / GP);
 # forms, review steps and evidence are separate rows that are never edited (complete history).

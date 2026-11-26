@@ -40,6 +40,7 @@ import { CategoryKpiCards, GpMonitorView, categoryFrom } from "./gp-monitor";
 import { CATEGORY } from "./gp-category";
 import { RecipientsCard } from "./ticket-recipients";
 import { TaskPanel } from "./ticket-task";
+import { HierarchyAdminView, LevelBadge, TicketHierarchyPanel, UnitDialog, UnitStatusBadge } from "./ticket-hierarchy";
 
 /** GP review states that count as reviewed by the Area Manager (backend: review.AM_REVIEWED – not one the SME sent back). */
 const REVIEWED: GpReviewState[] = ["AM_APPROVED", "SME_FORWARDED", "COH_RETURNED", "LETTER_SUBMITTED", "AMC_CONVERTED", "ND_APPROVED"];
@@ -111,6 +112,7 @@ function AdminTickets() {
   const params = useSearchParams();
   const openId = ticketIdFrom(params.get("ticket"));
   const gpView = categoryFrom(params.get("gps")); // ?gps=a … e: GPs of one category
+  const treeView = !openId && !gpView && params.get("view") === "hierarchy"; // ?view=hierarchy: AM → FE → FRT tickets
   const catHref = (c: string) => `${pathname}?gps=${c.toLowerCase()}`;
   const [tick, setTick] = useState(0);
   const [notice, setNotice] = useState<Notice>(null);
@@ -134,13 +136,18 @@ function AdminTickets() {
         breadcrumbs={[
           { label: "Ticket Management" },
           { label: "Admin Tickets", href: pathname },
-          ...(openId ? [{ label: "Ticket review" }] : gpView ? [{ label: `${CATEGORY[gpView].label} GPs` }] : []),
+          ...(openId ? [{ label: "Ticket review" }] : gpView ? [{ label: `${CATEGORY[gpView].label} GPs` }] : treeView ? [{ label: "Ticket hierarchy" }] : []),
         ]}
         title="Admin Tickets"
         description="Assign work to dashboard users, review what they submit, then close the ticket or request changes."
         actions={
           <>
-            {(openId || gpView) && <BackToList onBack={() => open(null)} label="Back to all tickets" />}
+            {(openId || gpView || treeView) && <BackToList onBack={() => open(null)} label="Back to all tickets" />}
+            {!openId && !gpView && !treeView && (
+              <Button variant="outline" onClick={() => router.push(`${pathname}?view=hierarchy`, { scroll: true })} title="Every AM, FE and FRT ticket – search by any ticket ID, drill down AM → FE → FRT">
+                <Layers /> Ticket Hierarchy
+              </Button>
+            )}
             <Button variant="primary" onClick={() => setCreating(true)}>
               <Plus /> Generate Ticket
             </Button>
@@ -152,6 +159,8 @@ function AdminTickets() {
         <AdminTicketDetail id={openId} tick={tick} onChanged={changed} />
       ) : gpView ? (
         <GpMonitorView category={gpView} hrefFor={catHref} />
+      ) : treeView ? (
+        <HierarchyAdminView onOpenTicket={(id) => open(id)} />
       ) : (
         <AdminTicketList tick={tick} onOpen={(id) => open(id)} onChanged={changed} />
       )}
@@ -172,9 +181,28 @@ function AdminTickets() {
 
 function AdminKpis({ k, filtered, onWorking }: { k?: TicketKpis; filtered: boolean; onWorking?: () => void }) {
   const L = !k;
-  // work started = the first Daily Achievement (or Start) moved the ticket on from Open; not yet closed
-  const inProgress = k ? k.byStatus.IN_PROGRESS + k.byStatus.PENDING_REVIEW + k.byStatus.CHANGES_REQUESTED : undefined;
   const w = k?.work;
+  // Every card counts TICKETS of all three levels – AM tickets (TKT-000123), FE tickets (one per FE) and FRT tickets
+  // (one per GP) – and splits them per level in one line. In Progress + Not Started + Closed = Total.
+  // (Who works on them – people – is in "Team on these tickets" below.)
+  const u = k?.units;
+  const am = {
+    total: k?.total ?? 0,
+    progress: k ? k.byStatus.IN_PROGRESS + k.byStatus.PENDING_REVIEW + k.byStatus.CHANGES_REQUESTED : 0,
+    open: k?.byStatus.OPEN ?? 0,
+    closed: k?.byStatus.CLOSED ?? 0,
+  };
+  const lv = (x: "FE" | "FRT") => {
+    const c = u?.[x];
+    return { total: c?.total ?? 0, progress: (c?.IN_PROGRESS ?? 0) + (c?.PENDING_REVIEW ?? 0), open: c?.OPEN ?? 0, closed: c?.CLOSED ?? 0 };
+  };
+  const fe = lv("FE");
+  const frt = lv("FRT");
+  type Key = "total" | "progress" | "open" | "closed";
+  const sum = (key: Key) => am[key] + fe[key] + frt[key];
+  const split = (key: Key) => (u ? `AM ${formatCount(am[key])} · FE ${formatCount(fe[key])} · FRT ${formatCount(frt[key])}` : `${formatCount(am[key])} AM tickets`);
+  const levels = "AM ticket = one per Area Manager · FE ticket = one per Field Engineer under it · FRT ticket = one per GP of an FRT team.";
+  const scope = filtered ? " Only the tickets matching the filters above." : "";
   return (
     <div className="space-y-2">
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -183,10 +211,10 @@ function AdminKpis({ k, filtered, onWorking }: { k?: TicketKpis; filtered: boole
         icon={Layers}
         tone="var(--series-2)"
         label="Total Tickets"
-        info={`One ticket is generated per Area Manager and goes to its FEs and FRT teams too – each of them has this ticket to work on. Total = AM + FE + FRT (each counted per ticket)${filtered ? ", for the tickets matching the filters above" : ""}.`}
-        value={formatCount(w ? w.total : k?.total)}
-        unit={w ? "assigned" : "tickets"}
-        caption={w ? `AM ${formatCount(w.am)} · FE ${formatCount(w.fe)} · FRT ${formatCount(w.frt)} · ${formatCount(k?.total)} tickets generated` : filtered ? "Matching the filters" : "All tickets"}
+        info={`Every ticket of every level, each counted once. ${levels}${scope}`}
+        value={formatCount(sum("total"))}
+        unit="tickets"
+        caption={split("total")}
       />
       <MiniKpi
         loading={L}
@@ -194,40 +222,30 @@ function AdminKpis({ k, filtered, onWorking }: { k?: TicketKpis; filtered: boole
         tone="var(--series-4)"
         label="Tickets in Progress"
         onClick={w ? onWorking : undefined}
-        info="Of the assigned (AM + FE + FRT, per ticket): who has worked on their ticket – a Daily Achievement, a verify / approve / return or a Non-Doable step on it. Click to see which tickets and what is being done."
-        value={formatCount(w ? w.worked : inProgress)}
-        unit={w ? `of ${formatCount(w.total)} working` : "tickets"}
-        caption={
-          w
-            ? `AM ${formatCount(w.amWorked)}/${formatCount(w.am)} · FE ${formatCount(w.feWorked)}/${formatCount(w.fe)} · FRT ${formatCount(w.frtWorked)}/${formatCount(w.frt)}`
-            : k
-              ? `${formatCount(k.byStatus.IN_PROGRESS)} in progress · ${formatCount(k.byStatus.PENDING_REVIEW)} pending review · ${formatCount(k.byStatus.CHANGES_REQUESTED)} changes requested`
-              : undefined
-        }
+        info={`Tickets on which work has started and that are not closed yet (AM: In Progress, Pending Review, Changes Requested · FE: In Progress · FRT: In Progress or waiting for the FE to verify). ${levels}${scope}${w ? " Click to see which AM tickets are being worked on and by whom." : ""}`}
+        value={formatCount(sum("progress"))}
+        unit="tickets"
+        caption={split("progress")}
       />
       <MiniKpi
         loading={L}
         icon={CirclePause}
         tone="var(--warning)"
         label="Tickets Not Started"
-        info="Of the assigned (AM + FE + FRT, per ticket): who has done nothing on their ticket yet. An FRT team without a login cannot work – its GPs are reported by the FE (or the AM)."
-        value={formatCount(w ? w.total - w.worked : k?.byStatus.OPEN)}
-        unit={w ? "not started" : "tickets"}
-        caption={
-          w
-            ? `AM ${formatCount(w.am - w.amWorked)} · FE ${formatCount(w.fe - w.feWorked)} · FRT ${formatCount(w.frt - w.frtWorked)}${w.frtNoLogin ? ` · ${formatCount(w.frtNoLogin)} FRT have no login` : ""}`
-            : "No work submitted yet"
-        }
+        info={`Tickets still Open – nobody has started working on them yet. ${levels}${scope}`}
+        value={formatCount(sum("open"))}
+        unit="tickets"
+        caption={split("open")}
       />
       <MiniKpi
         loading={L}
         icon={CircleCheck}
         tone="var(--good)"
         label="Closed Tickets"
-        info="Tickets an admin approved and closed."
-        value={formatCount(k?.closed)}
+        info={`Closed tickets – each closed on its own (AM ticket: by the Admin · FE ticket: by its Area Manager · FRT ticket: when the FE verified its GP). Closing one never closes another. ${levels}${scope}`}
+        value={formatCount(sum("closed"))}
         unit="tickets"
-        caption={k ? `of ${formatCount(k.total)} tickets in total` : undefined}
+        caption={split("closed")}
       />
     </div>
     {w && <TeamDropdown w={w} />}
@@ -306,10 +324,16 @@ function TeamDropdown({ w }: { w: TicketWorkTotals }) {
   );
 }
 
-/** "Tickets in Progress": the tickets someone works on (the filters above) – who worked, what was done, where it waits. */
+/** "Tickets in Progress": exactly the tickets the card counts – AM, FE and FRT tickets whose work has started and that
+ * are not closed (the filters above). AM tickets also show who worked and what was reported; FE / FRT tickets open
+ * their own detail and history. */
 function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onClose: () => void; f: TicketListFilters; tick: number; onOpen: (id: number) => void }) {
   const q = useApiQuery(open ? `ticket-working:${tick}:${JSON.stringify(f)}` : null, () => ticketApi.getWorking(f));
-  const items = q.data?.items ?? [];
+  const [unit, setUnit] = useState<{ ticketId: number; unitId: number } | null>(null);
+  const rows = q.data?.tickets ?? [];
+  const work = new Map((q.data?.items ?? []).map((x) => [x.id, x]));
+  const per = (lv: string) => rows.filter((r) => r.level === lv).length;
+  const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
   const chips = (m: Record<string, number>, tone: string) =>
     Object.entries(m).map(([lbl, n]) => (
       <span key={lbl} className={`mr-1 inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold ${tone}`}>
@@ -321,10 +345,11 @@ function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onC
       <DialogContent className="top-[5vh] max-h-[90dvh] max-w-6xl p-0">
         <div className="border-b border-border px-5 py-3">
           <DialogTitle className="text-lg font-bold">
-            Tickets in progress <span className="font-normal text-muted-foreground">({items.length})</span>
+            Tickets in progress <span className="font-normal text-muted-foreground">({rows.length})</span>
           </DialogTitle>
           <DialogDescription className="text-[0.8125rem] text-muted-foreground">
-            Tickets someone of the AM, FEs or FRT teams has worked on – who, what was reported and who has to act next. Latest activity first; click a ticket to open it.
+            {q.data ? `AM ${per("AM")} · FE ${per("FE")} · FRT ${per("FRT")} – ` : ""}
+            tickets whose work has started and that are not closed – the same tickets as the card. Click an AM ticket to open it, an FE / FRT ticket to see its history.
           </DialogDescription>
         </div>
         <div className="max-h-[72dvh] overflow-auto">
@@ -336,13 +361,13 @@ function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onC
             <p className="flex items-center gap-2 p-5 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" /> Loading…
             </p>
-          ) : !items.length ? (
-            <p className="p-5 text-center text-sm text-muted-foreground">No ticket is being worked on yet.</p>
+          ) : !rows.length ? (
+            <p className="p-5 text-center text-sm text-muted-foreground">No ticket is in progress.</p>
           ) : (
-            <table className="w-full min-w-[60rem] text-[0.8125rem]">
+            <table className="w-full min-w-[64rem] text-[0.8125rem]">
               <thead className="sticky top-0 z-10 bg-muted text-left text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  {["Ticket", "Area Manager", "GPs filled", "Who worked", "What was reported", "Waiting for", "Last activity"].map((h) => (
+                  {["Level", "Ticket", "Area Manager", "FE / FRT · GP", "Status", "Who worked · what was reported", "Waiting for", "Last activity"].map((h) => (
                     <th key={h} className="px-3 py-2 font-semibold">
                       {h}
                     </th>
@@ -350,33 +375,57 @@ function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onC
                 </tr>
               </thead>
               <tbody>
-                {items.map((t) => (
-                  <tr key={t.id} onClick={() => onOpen(t.id)} className="cursor-pointer border-b border-border align-top last:border-0 hover:bg-accent/40">
-                    <td className="whitespace-nowrap px-3 py-2">
-                      <span className="font-semibold text-primary">{t.code}</span>
-                      <span className="block text-[0.6875rem] text-muted-foreground">
-                        {t.circle ?? "—"} · {t.week?.replace("W-", "Wk ")}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2">{t.areaManager ?? "—"}</td>
-                    <td className="whitespace-nowrap px-3 py-2">
-                      <b>
-                        {t.work.filled}/{t.work.gps}
-                      </b>
-                      <span className="block text-[0.6875rem] text-muted-foreground">
-                        AM {t.work.amWorked ? "✓" : "✗"} · FE {t.work.feWorked}/{t.work.fe} · FRT {t.work.frtWorked}/{t.work.frt}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-[0.75rem]">{(t.work.workers ?? []).join(", ") || "—"}</td>
-                    <td className="px-3 py-2">{chips(t.categories, "bg-good-soft text-good-text") }</td>
-                    <td className="px-3 py-2">{Object.keys(t.waiting).length ? chips(t.waiting, "bg-warning-soft text-warning-text") : <span className="text-muted-foreground">—</span>}</td>
-                    <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{t.work.lastAt ? new Date(t.work.lastAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-                  </tr>
-                ))}
+                {rows.map((r) => {
+                  const w = r.level === "AM" ? work.get(r.ticketId) : undefined;
+                  return (
+                    <tr
+                      key={`${r.level}:${r.id}`}
+                      onClick={() => (r.level === "AM" ? onOpen(r.ticketId) : setUnit({ ticketId: r.ticketId, unitId: r.id }))}
+                      className="cursor-pointer border-b border-border align-top last:border-0 hover:bg-accent/40"
+                    >
+                      <td className="px-3 py-2">
+                        <LevelBadge level={r.level} />
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2">
+                        <span className="font-mono text-[0.75rem] font-semibold text-primary">{r.code}</span>
+                        <span className="block text-[0.6875rem] text-muted-foreground">
+                          {r.level === "AM" ? `${r.circle ?? "—"} · ${r.week?.replace("W-", "Wk ") ?? ""}` : `under ${r.parentCode}`}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2">{r.am ?? "—"}</td>
+                      <td className="px-3 py-2">
+                        {r.level === "FE" ? r.fe : r.level === "FRT" ? `FRT ${r.frt} · GP ${r.gpCode} ${r.gpName ?? ""}` : <span className="text-muted-foreground">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <UnitStatusBadge status={r.status} label={r.statusLabel} />
+                      </td>
+                      <td className="px-3 py-2 text-[0.75rem]">
+                        {w ? (
+                          <>
+                            {(w.work.workers ?? []).join(", ") || "—"}
+                            <span className="mt-0.5 block">
+                              {chips(w.categories, "bg-good-soft text-good-text")}
+                              <span className="text-[0.6875rem] text-muted-foreground">
+                                {w.work.filled}/{w.work.gps} GPs filled
+                              </span>
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {w && Object.keys(w.waiting).length ? chips(w.waiting, "bg-warning-soft text-warning-text") : r.level === "FRT" && r.status === "PENDING_REVIEW" ? chips({ "FE to verify": 1 }, "bg-warning-soft text-warning-text") : <span className="text-muted-foreground">—</span>}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{when(w?.work.lastAt ?? r.updatedAt)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
         </div>
+        <UnitDialog unit={unit} onClose={() => setUnit(null)} />
       </DialogContent>
     </Dialog>
   );
@@ -631,6 +680,7 @@ function AdminTicketDetail({ id, tick, onChanged }: { id: number; tick: number; 
       )}
 
       {t.task && <TaskPanel t={t} admin onChanged={(next, n) => (setLocal(next), onChanged(n))} />}
+      {t.task && <TicketHierarchyPanel t={t} />}
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <SubmissionHistory t={t} emptyText="The user has not submitted any work yet." />
