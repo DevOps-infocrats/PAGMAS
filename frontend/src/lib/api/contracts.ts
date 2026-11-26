@@ -702,6 +702,13 @@ export interface TicketReport {
     nonDoableApproved: number;
     submissions: number;
     submittedToday: number;
+    /** every GP once (a GP on two tickets of the week counts once) */
+    gpsUnique?: number;
+    doneUnique?: number;
+    gpsOnTwoTickets?: number;
+    /** the week is over: daily submissions AFTER it on this week's tickets (until afterWeekUntil) */
+    submissionsAfterWeek?: number;
+    afterWeekUntil?: string | null;
   } | null;
   /** per role: tickets generated in the week with that role, its people and GPs; daily work on the week's days */
   roles: {
@@ -735,6 +742,9 @@ export interface TicketReport {
     returns?: number;
     neverSignedIn?: number;
     reviews?: number;
+    /** AM / FE / FRT: GPs the role has to fill (one person per GP – the GP's reporter) */
+    toFill?: number;
+    submissionsAfterWeek?: number;
   }[];
   days: { date: string; future: boolean }[];
   /** AM / FE / FRT: their part of the week's tickets and their daily submissions per day (local date → counts) */
@@ -768,6 +778,11 @@ export interface TicketReport {
     /** review steps this week (FE verify / return, AM approve / return, Non-Doable steps) and the last activity of any kind */
     reviews?: number;
     lastActive?: string | null;
+    /** GPs this person has to fill / work on again – only those they report (FRT with a login, else FE, else AM), each GP once */
+    toFill?: number;
+    toRework?: number;
+    /** the week is over: their work after it on this week's tickets */
+    afterWeek?: { subs: number; gps: number; days: number };
   }[];
   completed: {
     gpCode: string | null;
@@ -784,7 +799,8 @@ export interface TicketReport {
   trend: { week: string; tickets: number; gps: number; done: number }[];
   /** where each GP of the week waits now (stage as on the ticket page), with whom and since when */
   pending?: {
-    buckets: { key: TicketPendingBucket; label: string; count: number; overdue: number }[];
+    /** count / overdue: rows (a GP on two tickets twice); gps / gpsOverdue: each GP once */
+    buckets: { key: TicketPendingBucket; label: string; count: number; overdue: number; gps?: number; gpsOverdue?: number }[];
     items: {
       gpCode: string | null;
       gpName: string | null;
@@ -797,6 +813,14 @@ export interface TicketReport {
       whoRole: string;
       since: string | null;
       days: number;
+      /** why it waits with this person (plain words) */
+      why?: string;
+      /** the GP row on its ticket (opens its timeline) */
+      gpId?: number;
+      /** false: the GP's row on its older ticket (the GP is listed once – on its newest ticket) */
+      primary?: boolean;
+      /** every ticket of the week with this GP */
+      tickets?: (string | null)[];
     }[];
     overdueDays: number;
   };
@@ -1980,6 +2004,61 @@ export interface TicketKpis {
   /** IN_PROGRESS */
   working: number;
   byStatus: Record<TicketStatus, number>;
+  /** Admin Tickets: the people of the tickets (one ticket per AM, shared with its FEs and FRT teams) and who worked */
+  work?: TicketWorkTotals;
+  /** Admin Tickets: FE tickets and GP-wise FRT tickets under these AM tickets, per status (ticket hierarchy) */
+  units?: Record<"FE" | "FRT", Record<TicketUnitStatus, number> & { total: number }>;
+}
+
+/** Admin Tickets KPIs: AM + FEs + FRT teams of the tickets (each per ticket) – how many there are and how many worked */
+export interface TicketWorkTotals {
+  tickets: number;
+  total: number;
+  worked: number;
+  am: number;
+  amWorked: number;
+  fe: number;
+  feWorked: number;
+  frt: number;
+  frtWorked: number;
+  frtNoLogin: number;
+  /** Team table: people with an active login on their ticket (AM / FE / FRT, per ticket) */
+  amLogin?: number;
+  feLogin?: number;
+  frtLogin?: number;
+  gps: number;
+  filled: number;
+}
+
+/** Admin Tickets – "Tickets in Progress": a ticket someone works on – who, what was done, where its GPs wait */
+export interface TicketWorkingItem {
+  id: number;
+  code: string;
+  status: TicketStatus;
+  circle: string | null;
+  areaManager: string | null;
+  week: string | null;
+  work: TicketWork;
+  /** category label → GPs */
+  categories: Record<string, number>;
+  /** who has to act next → GPs */
+  waiting: Record<string, number>;
+}
+
+/** One ticket (Admin Tickets list): its GPs filled, and who of its AM / FEs / FRT teams worked on it */
+export interface TicketWork {
+  /** who worked on it: "Name (ROLE)" */
+  workers?: string[];
+  /** the last activity on it (any step) */
+  lastAt?: string | null;
+  gps: number;
+  filled: number;
+  amWorked: boolean;
+  fe: number;
+  feWorked: number;
+  frt: number;
+  frtWorked: number;
+  frtLogin: number;
 }
 
 export interface TicketSummary {
@@ -2003,6 +2082,10 @@ export interface TicketSummary {
   weekStart?: string | null;
   weekEnd?: string | null;
   recipientCount?: number;
+  /** Admin Tickets list: who works on the ticket and its GPs filled (GP-wise task tickets) */
+  work?: TicketWork;
+  /** User Tickets / ticket detail: the signed-in FE's / FRT's own ticket ID under this AM ticket (ticket hierarchy) */
+  myUnit?: MyTicketUnit;
 }
 
 /** A week of the signed-in user's GP-wise task tickets (User Tickets week filter) */
@@ -2120,6 +2203,8 @@ export interface TicketSubmissionItem {
 }
 
 export interface TicketDetail extends TicketSummary {
+  /** GP row id → its FRT ticket (ticket hierarchy; only the GPs this user may see) */
+  gpUnits?: Record<string, TicketUnitBrief>;
   description: string;
   startedAt: string | null;
   closedBy: { id: number | null; name: string | null } | null;
@@ -2351,6 +2436,29 @@ export type GpStatus = "DONE" | "PENDING";
  * D Non-Doable – Proposed · E Letter Submission Done (the only one counted as achieved) */
 export type GpCategory = "A" | "B" | "C" | "D" | "E";
 
+/** GP Timeline: one thing that happened to the GP – who, when, what, remark, proof */
+export interface GpTimelineEvent {
+  at: string | null;
+  kind: "generated" | "filled" | "review" | "return" | "nd";
+  label: string;
+  by: string | null;
+  role: string;
+  remark: string | null;
+  detail: string | null;
+  files: TicketProofFile[];
+}
+
+export interface GpTimeline {
+  gpId: number;
+  gpCode: string;
+  gpName: string;
+  ticket: string;
+  /** oldest first */
+  events: GpTimelineEvent[];
+  /** where the GP waits now */
+  now: { label: string; waiting: string; done: boolean };
+}
+
 export interface TicketProofFile {
   id: number;
   fileName: string;
@@ -2408,6 +2516,12 @@ export interface GpMonitorKpis {
   /** GPs whose AMC conversion the COH recorded (each GP once) – absent in older responses */
   amcConverted?: number;
   amcConvertedWithDocument?: number;
+  /** no Daily Achievement yet (no category, not achieved) – each GP once */
+  notFilled?: number;
+  /** Admin Tickets: who has to fill the not-filled GPs (FRT with a login, else FE with one, else AM) */
+  notFilledOwners?: { FRT: number; FE: number; AM: number };
+  /** per category: where its GPs wait now (who has to act) → GPs, most first */
+  categoryWaiting?: Partial<Record<GpCategory, Record<string, number>>>;
 }
 
 export interface GpMonitorOptions {
@@ -2481,7 +2595,7 @@ export interface GpMonitorPage {
 }
 
 export interface GpMonitorDetail extends GpMonitorRow {
-  ticketRows: { ticketId: number; ticket: string; ticketStatus: TicketStatus; week: string; weekStart: string; weekEnd: string; areaManager: string; kind: "WEEK" | "PENDING"; target: number; achieved: number; gap: number; status: GpStatus; gpCategory: GpCategory | null }[];
+  ticketRows: { ticketId: number; gpId?: number; ticket: string; ticketStatus: TicketStatus; week: string; weekStart: string; weekEnd: string; areaManager: string; kind: "WEEK" | "PENDING"; target: number; achieved: number; gap: number; status: GpStatus; gpCategory: GpCategory | null }[];
   history: { at: string | null; ticket: string; week: string; by: string; achievedToday: number; status: GpStatus; gpCategory?: GpCategory | null; remark: string | null; files: TicketProofFile[]; source: "progress" | "master" }[];
 }
 
@@ -2668,8 +2782,110 @@ export interface TicketNotificationItem {
   href: string;
 }
 
+/** Ticket hierarchy: AM ticket (TKT-000123) → FE ticket (TKT-000123-FE-01) → FRT ticket (TKT-000123-FE-01-FRT-001) */
+export type TicketLevel = "AM" | "FE" | "FRT";
+/** FE / FRT ticket status (the AM ticket keeps its own TicketStatus) */
+export type TicketUnitStatus = "OPEN" | "IN_PROGRESS" | "PENDING_REVIEW" | "CLOSED";
+
+export interface TicketUnitRow {
+  /** AM: the ticket id · FE / FRT: the unit id */
+  id: number;
+  level: TicketLevel;
+  code: string;
+  ticketId: number;
+  amCode: string;
+  parentCode: string | null;
+  parentId: number | null;
+  status: TicketUnitStatus | TicketStatus;
+  statusLabel: string;
+  am: string | null;
+  fe: string | null;
+  frt: string | null;
+  gpId: number | null;
+  gpCode: string | null;
+  gpName: string | null;
+  block: string | null;
+  circle: string | null;
+  week: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  startedAt: string | null;
+  closedAt: string | null;
+  closedBy: string | null;
+  closeRemark: string | null;
+  /** Admin list: tickets under it (AM: FE + FRT; FE: FRT) and how many of them are not closed */
+  children?: { fe: number; frt: number; open: number };
+}
+
+export interface TicketHierarchyQuery {
+  level?: TicketLevel;
+  status?: string;
+  search?: string;
+  am?: string;
+  fe?: string;
+  frt?: string;
+  gp?: string;
+  circle?: string;
+  week?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TicketHierarchyPage {
+  items: TicketUnitRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** per level: tickets per status (each ticket once) */
+  counts: Record<TicketLevel, Record<string, number> & { total: number }>;
+}
+
+export interface TicketHierarchyTree {
+  ticket: TicketUnitRow & { hasTask: boolean };
+  fe: (TicketUnitRow & { frt: TicketUnitRow[]; counts: Record<string, number> & { total: number } })[];
+  /** FRT tickets without an FE ticket above them (GP without an FE – or the FRT's own view) */
+  frtDirect: TicketUnitRow[];
+  /** the signed-in user is the ticket's Area Manager: may close FE tickets */
+  canCloseFe: boolean;
+}
+
+/** A short reference to an FE / FRT ticket (ID and status) */
+export interface TicketUnitBrief {
+  id: number;
+  code: string;
+  level: "FE" | "FRT";
+  status: TicketUnitStatus;
+  statusLabel: string;
+}
+
+/** The signed-in FE's / FRT's own ticket under the AM ticket: FE = their FE ticket; FRT = their GP-wise FRT tickets
+ * (code = the first still open one, codes = all of them) */
+export interface MyTicketUnit extends TicketUnitBrief {
+  count: number;
+  open: number;
+  codes: string[];
+}
+
+export interface TicketUnitDetail extends TicketUnitRow {
+  history: { at: string | null; by: string; action: string; from: string | null; to: string | null; note: string | null }[];
+  frtTickets?: TicketUnitRow[];
+  canClose?: boolean;
+  gpStage?: string;
+}
+
+/** The Admin Tickets list filters (TicketListQuery without scope / page) – its KPIs follow them */
+export type TicketListFilters = Omit<TicketListQuery, "scope" | "page" | "pageSize">;
+
 export interface TicketApi {
-  getKpis(scope: TicketScope): Promise<TicketKpis>;
+  /** with filters (Admin Tickets): only the tickets the list shows */
+  getKpis(scope: TicketScope, f?: TicketListFilters): Promise<TicketKpis>;
+  /** Admin Tickets: category-wise GPs of the tickets the list shows for these filters (none = every task ticket) */
+  getGpCategories(f: TicketListFilters): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;
+  /** Admin Tickets – "Tickets in Progress": the tickets (of these filters) someone works on */
+  /** items: AM tickets someone worked on (who / what); tickets: the AM, FE and FRT tickets the card counts */
+  getWorking(f: TicketListFilters): Promise<{ items: TicketWorkingItem[]; tickets?: TicketUnitRow[] }>;
   list(q: TicketListQuery): Promise<TicketPage>;
   /** the weeks of the signed-in user's GP-wise task tickets, newest first */
   myWeeks(): Promise<{ weeks: TicketWeek[] }>;
@@ -2714,6 +2930,16 @@ export interface TicketApi {
   getReviewContacts(id: number, role: "SME" | "COH"): Promise<ReviewContacts>;
   /** Same-origin URL of a GP proof document (download, or inline preview for PDF / images) */
   progressFileUrl(id: number, inline?: boolean): string;
+  /** GP Timeline: everything that happened to one GP of the ticket (same access as the GP detail) */
+  getGpTimeline(ticketId: number, gpId: number): Promise<GpTimeline>;
+  /** Ticket hierarchy – Admin: every AM, FE and FRT ticket in one list (read only) */
+  getHierarchy(q: TicketHierarchyQuery): Promise<TicketHierarchyPage>;
+  /** Ticket hierarchy of one AM ticket: its FE tickets and their FRT tickets (what the user may see) */
+  getTicketHierarchy(ticketId: number): Promise<TicketHierarchyTree>;
+  /** One FE / FRT ticket with its own history */
+  getUnit(ticketId: number, unitId: number): Promise<TicketUnitDetail>;
+  /** The ticket's Area Manager closes one FE ticket (force = GPs not approved yet; remark = the reason) */
+  closeUnit(ticketId: number, unitId: number, body: { remark?: string; force?: boolean }): Promise<TicketUnitDetail>;
   /** Admin: Done / Pending GPs of the GP-wise tasks (each GP once) */
   /** basis "category": the date filter = the day the category was chosen (as in the category tables) */
   getGpMonitorSummary(f: GpMonitorFilters, basis?: "status" | "category"): Promise<GpMonitorKpis & { options: GpMonitorOptions; byFe?: GpMonitorFeRow[] }>;

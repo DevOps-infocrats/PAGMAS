@@ -17,6 +17,7 @@ import { FeSummary, TagCell, TypeTag } from "./fe-task-parts";
 import { FrtCheckBadge, FrtProofChips, FrtSteps, FrtSummary } from "./frt-task-parts";
 import { CohReviewTable } from "./coh-review-table";
 import { GpDetailDialog } from "./gp-detail";
+import { GpTicketId } from "./ticket-hierarchy";
 import { useReviewerNdCases, ndPendingFor } from "./nd-gp-rows";
 import { SmeReviewTable } from "./sme-review-table";
 import { NdFillDialog, TicketNdCases } from "./non-doable-view";
@@ -618,6 +619,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       ) : (
                         <span className="font-semibold">{g.gpCode}</span>
                       )}
+                      <GpTicketId t={t} gpId={g.id} />
                       <span className="mt-0.5 flex items-center gap-1.5">
                         <button type="button" onClick={() => setDetailId(g.id)} className="text-[0.6875rem] font-medium text-primary hover:underline" title="Open the GP details and history">
                           Details
@@ -798,7 +800,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       />
                     </th>
                     {["GP Code", "GP Name", "Block", "FRT", "T · A · G", "Status", "Remark", "Proof", "Action"].map((h) => (
-                      <th key={h} scope="col" className="px-2 py-2" title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
+                      <th key={h} scope="col" className={cn("px-2 py-2", h === "GP Code" && "sticky left-0 z-20 bg-muted")} title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
                         {h}
                       </th>
                     ))}
@@ -836,10 +838,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                             className="size-4 accent-[var(--primary)] disabled:opacity-30"
                           />
                         </td>
-                        <td className="px-2 py-2.5">
+                        <td className="sticky left-0 z-[5] bg-card px-2 py-2.5">
                           <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details and history">
                             {g.gpCode}
                           </button>
+                          <GpTicketId t={t} gpId={g.id} />
                           <span className="mt-0.5 block">
                             <TypeTag g={g} />
                           </span>
@@ -869,7 +872,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           ) : (
                             <>
                               {x.cat || !x.done ? <GpCategoryBadge code={x.cat} /> : <GpStatusBadge status={g.status} />}
-                              <ReviewCell g={g} />
+                              <ReviewCell g={g} onTimeline={smeView ? undefined : () => setDetailId(g.id)} />
                             </>
                           )}
                         </td>
@@ -941,7 +944,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b border-border bg-muted text-left text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">
                     {["GP Code", "GP Name", "Block", "T · A · G", "Daily Achievement", "Remark", "Proof", "AM Review"].map((h) => (
-                      <th key={h} scope="col" className="px-2 py-2" title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
+                      <th key={h} scope="col" className={cn("px-2 py-2", h === "GP Code" && "sticky left-0 z-20 bg-muted")} title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
                         {h}
                       </th>
                     ))}
@@ -961,7 +964,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     const stripe = x.d ? (x.needsEvidence ? "border-l-warning" : "border-l-good") : g.review === "RETURNED" ? "border-l-critical" : "border-l-transparent";
                     return (
                       <tr key={g.id} className={cn("border-b border-border/70 align-top transition-colors last:border-0 hover:bg-muted/40", x.d && "bg-primary-soft/20", g.review === "RETURNED" && !x.d && "bg-critical-soft/20")}>
-                        <td className={cn("w-[9.5rem] border-l-4 px-2 py-2", stripe)}>
+                        <td className={cn("sticky left-0 z-[5] bg-card w-[9.5rem] border-l-4 px-2 py-2", stripe)}>
                           {x.fullEdit ? (
                             <Input
                               value={x.d?.gpCode ?? g.gpCode}
@@ -975,6 +978,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           ) : (
                             <span className="font-semibold">{g.gpCode}</span>
                           )}
+                          <GpTicketId t={t} gpId={g.id} />
                           <span className="mt-0.5 flex items-center gap-1.5">
                             <button type="button" onClick={() => setDetailId(g.id)} className="text-[0.6875rem] font-medium text-primary hover:underline" title="Open the GP details and history">
                               Details
@@ -1067,7 +1071,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           {x.needsEvidence && <span className="mt-1 block text-[0.6875rem] font-medium text-warning-text">{camOnly ? CAMERA_HINT : EVIDENCE_HINT}</span>}
                         </td>
                         <td className="w-[9rem] px-2 py-2.5">
-                          <ReviewCell g={g} />
+                          <ReviewCell g={g} onTimeline={smeView ? undefined : () => setDetailId(g.id)} />
                         </td>
                       </tr>
                     );
@@ -1122,7 +1126,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                     )}
                   </th>
                   {["GP Code", "GP Name · Block", "FE / FRT", "T · A · G", "Daily Achievement", "Remark", "Proof", "Action", "Stage"].map((h) => (
-                    <th key={h} scope="col" className="px-2 py-2" title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
+                    <th key={h} scope="col" className={cn("px-2 py-2", h === "GP Code" && "sticky left-0 z-20 bg-muted")} title={h === "T · A · G" ? "Target · Achieved · Gap" : undefined}>
                       {h}
                     </th>
                   ))}
@@ -1165,10 +1169,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                           />
                         )}
                       </td>
-                      <td className="px-2 py-2.5">
+                      <td className="sticky left-0 z-[5] bg-card px-2 py-2.5">
                         <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details (FE submission, AM approval, review history)">
                           {g.gpCode}
                         </button>
+                        <GpTicketId t={t} gpId={g.id} />
                         <span className="mt-0.5 block">
                           <TypeTag g={g} />
                         </span>
@@ -1298,7 +1303,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                         )}
                       </td>
                       <td className="px-2 py-2">
-                        <ReviewCell g={g} />
+                        <ReviewCell g={g} onTimeline={smeView ? undefined : () => setDetailId(g.id)} />
                       </td>
                     </tr>
                   );
@@ -1340,7 +1345,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                 </th>
               )}
               {["GP Code", "GP Name", "Block", ...(showFeCol ? ["FE"] : []), ...(showFrtCol ? ["FRT"] : []), "Type", "Weekly Target", "Achieved", "Remaining Gap", "Daily Achievement", "Remarks", "Proof", "Review", "Action"].map((h) => (
-                <th key={h} scope="col" className={cn("px-3 py-2", ["Weekly Target", "Achieved", "Remaining Gap"].includes(h) && "text-right", ["Daily Achievement", "Action"].includes(h) && "text-center")}>
+                <th key={h} scope="col" className={cn("px-3 py-2", ["Weekly Target", "Achieved", "Remaining Gap"].includes(h) && "text-right", ["Daily Achievement", "Action"].includes(h) && "text-center", h === "GP Code" && "sticky left-0 z-20 bg-muted")}>
                   {h}
                 </th>
               ))}
@@ -1371,10 +1376,11 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                       />
                     </td>
                   )}
-                  <td className="px-3 py-2">
+                  <td className="sticky left-0 z-[5] bg-card px-3 py-2">
                     <button type="button" onClick={() => setDetailId(g.id)} className="font-semibold text-primary hover:underline" title="Open the GP details (FE submission, AM approval, review history)">
                       {g.gpCode}
                     </button>
+                    <GpTicketId t={t} gpId={g.id} />
                   </td>
                   <td className="min-w-[10.625rem] px-3 py-1.5">
                     {fullEdit ? (
@@ -1451,7 +1457,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                   </td>
                   <td className="min-w-[11.875rem] max-w-[15rem] px-3 py-1.5">{proofCell(g, x)}</td>
                   <td className="px-3 py-1.5">
-                    <ReviewCell g={g} />
+                    <ReviewCell g={g} onTimeline={smeView ? undefined : () => setDetailId(g.id)} />
                   </td>
                   <td className="px-3 py-2 text-center">
                     {checkButtons(g, x) && <span className="mb-1 flex justify-center">{checkButtons(g, x)}</span>}
@@ -1549,7 +1555,7 @@ export function TaskPanel({ t, admin, onChanged }: { t: TicketDetail; admin: boo
                 )}
                 <div>{proofCell(g, x)}</div>
                 <div className="flex flex-wrap items-start justify-between gap-2">
-                  <ReviewCell g={g} />
+                  <ReviewCell g={g} onTimeline={smeView ? undefined : () => setDetailId(g.id)} />
                   <div className="flex flex-wrap items-center gap-1">
                     {checkButtons(g, x)}
                     {x.rowEdit && x.d && (

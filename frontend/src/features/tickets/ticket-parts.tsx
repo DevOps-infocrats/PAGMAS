@@ -325,7 +325,23 @@ export function TicketTable({
   );
 }
 
-export const CODE_COL: TicketColumn = { key: "code", header: "Ticket ID", render: (t) => <span className="whitespace-nowrap font-semibold text-primary">{t.code}</span> };
+/** An FE's / FRT's own ticket ID under the AM ticket (ticket hierarchy) with the AM ticket's ID below it; AM, admin
+ * and everyone else: the AM ticket's ID, as before. */
+export function OwnTicketId({ t, className }: { t: { code: string; myUnit?: TicketSummary["myUnit"] }; className?: string }) {
+  const u = t.myUnit;
+  if (!u) return <span className={className}>{t.code}</span>;
+  return (
+    <span className={cn("inline-flex flex-col", className)} title={u.count > 1 ? `Your ${u.count} FRT tickets (one per GP): ${u.codes.join(", ")}` : `Your ${u.level} ticket under AM ticket ${t.code}`}>
+      <span className="whitespace-nowrap">
+        {u.code}
+        {u.count > 1 && <span className="ml-1 text-[0.6875rem] font-medium text-muted-foreground">+{u.count - 1} more</span>}
+      </span>
+      <span className="whitespace-nowrap text-[0.6875rem] font-normal text-muted-foreground">AM ticket {t.code}</span>
+    </span>
+  );
+}
+
+export const CODE_COL: TicketColumn = { key: "code", header: "Ticket ID", render: (t) => <OwnTicketId t={t} className="whitespace-nowrap font-semibold text-primary" /> };
 export const SUBJECT_COL: TicketColumn = { key: "subject", header: "Subject", render: (t) => <span className="line-clamp-2 max-w-[22.5rem] font-medium">{t.subject}</span> };
 export const PRIORITY_COL: TicketColumn = { key: "priority", header: "Priority", render: (t) => <PriorityBadge priority={t.priority} /> };
 export const CREATED_COL: TicketColumn = { key: "created", header: "Created Date", render: (t) => <span className="whitespace-nowrap text-muted-foreground">{ticketDay(t.createdAt)}</span> };
@@ -369,16 +385,23 @@ export function TicketInfo({ t, showAssignee }: { t: TicketDetail; showAssignee:
     <Card className="overflow-hidden p-0">
       <div className="flex flex-col gap-2 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-primary">{t.code}</p>
+          <p className="text-xs font-semibold text-primary">{t.myUnit ? `${t.myUnit.code}${t.myUnit.count > 1 ? ` (+${t.myUnit.count - 1} more)` : ""} · AM ticket ${t.code}` : t.code}</p>
           <h2 className="mt-0.5 text-lg font-bold text-subheading">{t.subject}</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <PriorityBadge priority={t.priority} />
+          {t.myUnit && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[0.75rem] font-semibold" title={`Your ${t.myUnit.level} ticket – its own status (the AM ticket's status is next to it)`}>
+              Your {t.myUnit.level} ticket{t.myUnit.count > 1 ? `s: ${t.myUnit.open} of ${t.myUnit.count} open` : `: ${t.myUnit.statusLabel}`}
+            </span>
+          )}
           <TicketStatusBadge status={t.status} />
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 md:grid-cols-3 xl:grid-cols-6">
-        <Field label="Ticket ID">{t.code}</Field>
+        <Field label={t.myUnit ? `Your ticket ID (${t.myUnit.level})` : "Ticket ID"}>
+          <OwnTicketId t={t} />
+        </Field>
         <Field label="Created by (admin)">{t.createdBy.name}</Field>
         {t.circle && <Field label="Circle / State">{t.circle}</Field>}
         {showAssignee && (

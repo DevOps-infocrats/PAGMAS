@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileCheck2, Loader2, Paperclip, Plus, Send, Undo2, Workflow, X } from "lucide-react";
+import { CheckCircle2, FileCheck2, History, Loader2, Paperclip, Plus, Send, Undo2, Workflow, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -86,7 +86,7 @@ const ROLE_NAME: Record<string, string> = { FRT: "FRT", FE: "FE", AM: "AM", SME:
 export const reviewable = (g: TicketTaskGp, roles: GpReviewRole[]) => (Object.values(STEPS) as (typeof STEPS)[GpReviewAction][]).some((s) => roles.includes(s.role) && s.ok(g));
 
 /** Stage badge, the latest review remark and the GP's full history (edits, additions, review steps). */
-export function ReviewCell({ g }: { g: TicketTaskGp }) {
+export function ReviewCell({ g, onTimeline }: { g: TicketTaskGp; onTimeline?: () => void }) {
   const stage = REVIEW_STAGE[stageOf(g)];
   const trail = g.trail ?? [];
   const last = [...trail].reverse().find((x) => x.action !== "EDIT" && x.action !== "ADD");
@@ -118,6 +118,16 @@ export function ReviewCell({ g }: { g: TicketTaskGp }) {
           <b className="font-semibold text-foreground">{role}</b>
           {lastText.slice(role.length)}
         </p>
+      )}
+      {onTimeline && (
+        <button
+          type="button"
+          onClick={onTimeline}
+          className="inline-flex items-center gap-1 text-[0.71875rem] font-semibold text-primary hover:underline"
+          title="Open the GP timeline – who did what, when (remarks and proof)"
+        >
+          <History className="size-3.5" aria-hidden /> Timeline
+        </button>
       )}
       {trail.length > 0 && (
         <details className="text-[0.71875rem]">

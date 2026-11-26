@@ -14,6 +14,7 @@ import { IS_LIVE, ticketApi, type TicketReport } from "@/lib/api";
 import { API_BASE } from "@/lib/api/http-client";
 import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
+import { GpTimelineDialog } from "./gp-detail";
 
 /**
  * Ticket Report (admin, read only – backend app.tickets.report). Tickets are generated once a week (BSNL week,
@@ -148,7 +149,7 @@ function ReportContent() {
   const inWeek = !!r?.days.some((d) => d.date === r.today);
   const sections: { key: Section; label: string; count?: number }[] = [
     { key: "team", label: "Team tracker" },
-    { key: "pending", label: "Pending with", count: r?.pending?.buckets.reduce((n, b) => n + (b.key === "closed" ? 0 : b.count), 0) },
+    { key: "pending", label: "Pending with", count: r?.pending?.buckets.reduce((n, b) => n + (b.key === "closed" ? 0 : (b.gps ?? b.count)), 0) },
     { key: "achievement", label: "Achievement" },
     { key: "returns", label: "Returns", count: r?.returns?.items.length },
     { key: "completed", label: "Completed & reviews", count: r ? (r.completedTotal ?? r.completed.length) : undefined },
@@ -200,8 +201,16 @@ function ReportContent() {
 
           {/* 1. the week at a glance */}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-            <MiniKpi icon={Target} tone="var(--series-7)" label="Total GP Target for the Week" info="GPs in this week's tickets" value={formatCount(r.cards.gps)} unit="GPs" />
-            <MiniKpi icon={CheckCircle2} tone="var(--good)" label="Ready for Letter Submission" info="GPs of this week's tickets that are achieved – ready for the letter submission" value={formatCount(r.cards.done)} unit="GPs" />
+            <MiniKpi
+              icon={Target}
+              tone="var(--series-7)"
+              label="Total GP Target for the Week"
+              info="GPs in this week's tickets – each GP once (a GP on two tickets of the week is counted once)"
+              value={formatCount(r.cards.gpsUnique ?? r.cards.gps)}
+              unit="GPs"
+              caption={r.cards.gpsOnTwoTickets ? `${formatCount(r.cards.gpsOnTwoTickets)} GPs are on two tickets – counted once` : undefined}
+            />
+            <MiniKpi icon={CheckCircle2} tone="var(--good)" label="Ready for Letter Submission" info="GPs of this week's tickets that are achieved – ready for the letter submission (each GP once)" value={formatCount(r.cards.doneUnique ?? r.cards.done)} unit="GPs" />
             <MiniKpi icon={CalendarCheck} tone="var(--series-3)" label="AMC converted" info="GPs of this week's tickets recorded as AMC converted by the COH" value={formatCount(r.cards.amcConverted)} unit="GPs" />
             <MiniKpi icon={Ban} tone="var(--warning)" label="Non-Doable" info="Non-Doable cases on this week's tickets" value={formatCount(r.cards.nonDoable)} unit="cases" caption={r.cards.nonDoableApproved ? `${r.cards.nonDoableApproved} approved` : undefined} />
             <MiniKpi
@@ -211,7 +220,13 @@ function ReportContent() {
               info="Daily Achievement submissions by AM / FE / FRT (review steps not counted)"
               value={formatCount(inWeek ? r.cards.submittedToday : r.cards.submissions)}
               unit={inWeek ? "people" : "submissions"}
-              caption={inWeek ? `${formatCount(r.cards.submissions)} submissions this week` : undefined}
+              caption={
+                inWeek
+                  ? `${formatCount(r.cards.submissions)} submissions this week`
+                  : r.cards.submissionsAfterWeek
+                    ? `in the week · + ${formatCount(r.cards.submissionsAfterWeek)} after the week${r.cards.afterWeekUntil ? ` (till ${fmtDate(r.cards.afterWeekUntil)})` : ""}`
+                    : undefined
+              }
             />
           </div>
 
@@ -306,6 +321,33 @@ function RoleTickets({ r, active, onPick }: { r: TicketReport; active: Tab; onPi
   );
 }
 
+/** GPs this person has to fill themselves (one person per GP); older reports without the field: every not-filled GP. */
+const toFill = (p: Person) => p.toFill ?? p.status?.none ?? 0;
+const TO_FILL_INFO =
+  "GPs with no Daily Achievement yet that THIS person has to fill – each GP waits with one person only: its FRT team (with a login), else its FE, else its AM. The other not-filled GPs on their tickets are with someone else (see Pending with).";
+/** The week is over and the report counts the work after it (one total column, not more day dots). */
+const weekOver = (r: TicketReport) => r.cards?.submissionsAfterWeek !== undefined;
+
+function ToFill({ p }: { p: Person }) {
+  const mine = toFill(p);
+  const others = (p.status?.none ?? 0) - mine;
+  return (
+    <span title={TO_FILL_INFO}>
+      <b className={mine ? "" : "font-normal text-muted-foreground"}>{mine}</b>
+      {p.toFill !== undefined && others > 0 && <span className="ml-1 text-[0.65625rem] text-muted-foreground">+{others} with others</span>}
+    </span>
+  );
+}
+
+function AfterWeek({ p }: { p: Person }) {
+  const a = p.afterWeek;
+  return (
+    <td className="whitespace-nowrap px-2 py-2 text-right" title="Daily Achievement after the week ended – on this week's tickets">
+      {a?.subs ? <span className="font-semibold text-good-text">{a.gps} GP{a.gps === 1 ? "" : "s"}</span> : <span className="text-muted-foreground">—</span>}
+    </td>
+  );
+}
+
 /** Why a person needs attention (empty = fine): login but nothing on a work day, work returned, never signed in. */
 function attention(p: Person, days: Day[], today = ""): string[] {
   if (!p.account || p.gps === 0) return [];
@@ -335,7 +377,7 @@ function TeamTracker({ r, tab, setTab }: { r: TicketReport; tab: Tab; setTab: (t
   const submittedToday = people.filter((p) => p.days[today]).length;
   const list = useMemo(() => {
     const pick = box === "attention" ? needs : box === "login" ? people.filter((p) => p.account) : box === "today" ? people.filter((p) => p.days[today]) : people;
-    return [...pick].sort((a, b) => attention(b, r.days, r.today ?? "").length - attention(a, r.days, r.today ?? "").length || (b.status?.none ?? 0) - (a.status?.none ?? 0) || a.name.localeCompare(b.name));
+    return [...pick].sort((a, b) => attention(b, r.days, r.today ?? "").length - attention(a, r.days, r.today ?? "").length || toFill(b) - toFill(a) || a.name.localeCompare(b.name));
   }, [box, needs, people, today, r.days, r.today]);
   const frt = tab === "FRT";
   const boxes: { key: Box; label: string; value: number; tone: string }[] = [
@@ -399,6 +441,11 @@ function TeamTracker({ r, tab, setTab }: { r: TicketReport; tab: Tab; setTab: (t
         <span className="text-muted-foreground">
           · {formatCount(role?.gps ?? 0)} GPs on {formatCount(role?.tickets ?? 0)} tickets{frt ? ` · ${formatCount(role?.withoutAccount ?? 0)} without login` : ""}
         </span>
+        {role?.toFill !== undefined && (
+          <span className="font-semibold" title={`GPs the ${ROLE_LABEL[tab]} have to fill themselves – each GP waits with one person only: its FRT team (with a login), else its FE, else its AM`}>
+            · {ROLE_LABEL[tab]} have to fill {formatCount(role.toFill)}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-2 px-5 pb-1 pt-3">
@@ -451,6 +498,7 @@ function TeamTracker({ r, tab, setTab }: { r: TicketReport; tab: Tab; setTab: (t
 /** One line per person: name (+ FRT code), FE (FRT), GPs, not filled, week dots, days submitted. */
 function CompactTable({ rows, r, today, frt, onOpen, showReasons = false }: { rows: Person[]; r: TicketReport; today: string; frt: boolean; onOpen: (p: Person) => void; showReasons?: boolean }) {
   if (!rows.length) return null;
+  const after = weekOver(r);
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[44rem] text-[0.8125rem]">
@@ -459,8 +507,15 @@ function CompactTable({ rows, r, today, frt, onOpen, showReasons = false }: { ro
             <th className="px-5 py-1.5 font-semibold">{frt ? "FRT team" : "Name"}</th>
             {frt && <th className="px-2 py-1.5 font-semibold">FE</th>}
             <th className="px-2 py-1.5 text-right font-semibold">GPs</th>
-            <th className="px-2 py-1.5 text-right font-semibold">Not filled</th>
+            <th className="px-2 py-1.5 text-right font-semibold" title={TO_FILL_INFO}>
+              To fill
+            </th>
             <th className="px-3 py-1.5 font-semibold">Week</th>
+            {after && (
+              <th className="px-2 py-1.5 text-right font-semibold" title="Daily Achievement after the week ended – on this week's tickets">
+                After week
+              </th>
+            )}
             <th className="px-5 py-1.5 text-right font-semibold" title="Days with a Daily Achievement or a review – of the days they were expected to work (today counts once something is done)">Active days</th>
           </tr>
         </thead>
@@ -483,13 +538,14 @@ function CompactTable({ rows, r, today, frt, onOpen, showReasons = false }: { ro
                 {frt && <td className="max-w-[12rem] truncate px-2 py-2 text-muted-foreground">{(p.fes ?? []).join(", ") || "—"}</td>}
                 <td className="px-2 py-2 text-right font-semibold">{p.gps}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right">
-                  {p.status?.none ?? 0}
+                  <ToFill p={p} />
                   {!!p.status?.C && <span className="ml-1 rounded bg-warning-soft px-1 text-[0.65625rem] font-semibold text-warning-text">{p.status.C} revisit</span>}
                   {!!p.status?.D && <span className="ml-1 rounded bg-critical-soft px-1 text-[0.65625rem] font-semibold text-critical-text">{p.status.D} ND</span>}
                 </td>
                 <td className="px-3 py-2">
                   <WeekDots p={p} days={r.days} today={today} />
                 </td>
+                {after && <AfterWeek p={p} />}
                 <td className="whitespace-nowrap px-5 py-2 text-right">
                   {p.account && p.gps > 0 ? (
                     <span className={cn("font-semibold", can.length && !p.activeDays ? "text-critical-text" : p.activeDays === can.length && can.length ? "text-good-text" : "")}>
@@ -529,7 +585,7 @@ function FullList({ open, onClose, people, r, today, tab, onOpen }: { open: bool
       sort === "attention"
         ? attention(b, r.days, r.today ?? "").length - attention(a, r.days, r.today ?? "").length || a.name.localeCompare(b.name)
         : sort === "notfilled"
-          ? (b.status?.none ?? 0) - (a.status?.none ?? 0) || a.name.localeCompare(b.name)
+          ? toFill(b) - toFill(a) || a.name.localeCompare(b.name)
           : sort === "gps"
             ? b.gps - a.gps || a.name.localeCompare(b.name)
             : (frt ? ((a.fes ?? [])[0] ?? "~").localeCompare((b.fes ?? [])[0] ?? "~") : 0) || a.name.localeCompare(b.name),
@@ -638,6 +694,23 @@ function PersonDetail({ p, r, today, onClose }: { p: Person | null; r: TicketRep
               </dd>
               <dt className="text-muted-foreground">Returned</dt>
               <dd>{p.returns ?? 0}×</dd>
+              {p.toFill !== undefined && (
+                <>
+                  <dt className="text-muted-foreground" title={TO_FILL_INFO}>
+                    Has to fill
+                  </dt>
+                  <dd>
+                    {p.toFill} GP{p.toFill === 1 ? "" : "s"}
+                    {(p.status?.none ?? 0) > p.toFill && <span className="text-muted-foreground"> · {(p.status?.none ?? 0) - p.toFill} more not filled are with others</span>}
+                  </dd>
+                </>
+              )}
+              {p.afterWeek && weekOver(r) && (
+                <>
+                  <dt className="text-muted-foreground">After the week</dt>
+                  <dd>{p.afterWeek.subs ? `${p.afterWeek.subs} submission${p.afterWeek.subs === 1 ? "" : "s"} · ${p.afterWeek.gps} GPs` : "nothing"}</dd>
+                </>
+              )}
             </dl>
             <div className="space-y-1.5">
               <StatusBar s={p.status} wide />
@@ -759,9 +832,10 @@ function PendingWith({ r }: { r: TicketReport }) {
   const firstOpen = pd.buckets.find((b) => b.key !== "closed" && b.key !== "not_filled" && b.count)?.key ?? "not_filled";
   const [pick, setPick] = useState<string>(firstOpen);
   const [full, setFull] = useState(false);
-  const rows = useMemo(() => pd.items.filter((it) => it.bucket === pick), [pd.items, pick]);
+  // each GP once: a GP on two tickets of the week is listed on its newest ticket (both tickets named)
+  const rows = useMemo(() => pd.items.filter((it) => it.bucket === pick && it.primary !== false), [pd.items, pick]);
   const bucket = pd.buckets.find((b) => b.key === pick);
-  const late = pd.buckets.reduce((n, b) => n + (b.key === "closed" ? 0 : b.overdue), 0);
+  const late = pd.buckets.reduce((n, b) => n + (b.key === "closed" ? 0 : (b.gpsOverdue ?? b.overdue)), 0);
   return (
     <Card className="overflow-hidden p-0">
       <div className="flex flex-wrap items-end gap-2 border-b border-border px-5 py-3">
@@ -784,8 +858,8 @@ function PendingWith({ r }: { r: TicketReport }) {
             style={{ borderTop: `3px solid ${BUCKET_TONE[b.key]}` }}
           >
             <span className="block truncate text-[0.6875rem] font-semibold text-muted-foreground">{b.label}</span>
-            <span className="text-lg font-bold">{formatCount(b.count)}</span>
-            {b.key !== "closed" && b.overdue > 0 && <span className="ml-1 text-[0.6875rem] font-semibold text-critical-text">⏳ {b.overdue}</span>}
+            <span className="text-lg font-bold">{formatCount(b.gps ?? b.count)}</span>
+            {b.key !== "closed" && (b.gpsOverdue ?? b.overdue) > 0 && <span className="ml-1 text-[0.6875rem] font-semibold text-critical-text">⏳ {b.gpsOverdue ?? b.overdue}</span>}
           </button>
         ))}
       </div>
@@ -817,9 +891,11 @@ function PendingWith({ r }: { r: TicketReport }) {
 }
 
 function PendingTable({ rows, overdueDays }: { rows: PendingItem[]; overdueDays: number }) {
+  const [tl, setTl] = useState<{ ticketId: number; gpId: number; label: string } | null>(null);
   if (!rows.length) return null;
   return (
     <div className="overflow-x-auto">
+      <GpTimelineDialog gp={tl} onClose={() => setTl(null)} />
       <table className="w-full min-w-[44rem] text-[0.8125rem]">
         <thead className="text-left text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
           <tr className="border-b border-border">
@@ -827,6 +903,7 @@ function PendingTable({ rows, overdueDays }: { rows: PendingItem[]; overdueDays:
             <th className="px-2 py-1.5 font-semibold">Ticket</th>
             <th className="px-2 py-1.5 font-semibold">Stage</th>
             <th className="px-2 py-1.5 font-semibold">With</th>
+            <th className="px-2 py-1.5 font-semibold">Why with them</th>
             <th className="px-5 py-1.5 text-right font-semibold">Waiting</th>
           </tr>
         </thead>
@@ -834,16 +911,36 @@ function PendingTable({ rows, overdueDays }: { rows: PendingItem[]; overdueDays:
           {rows.map((it, i) => (
             <tr key={`${it.ticketId}:${it.gpCode}:${i}`} className="border-b border-border last:border-0">
               <td className="max-w-[16rem] truncate px-5 py-2">
-                <b>{it.gpCode ?? "—"}</b> <span className="text-muted-foreground">{it.gpName ?? ""}{it.block ? ` · ${it.block}` : ""}</span>
+                {it.gpId ? (
+                  <button
+                    type="button"
+                    onClick={() => setTl({ ticketId: it.ticketId, gpId: it.gpId!, label: `GP ${it.gpCode ?? ""} – ${it.gpName ?? ""}` })}
+                    className="font-bold text-primary hover:underline"
+                    title="Open the GP timeline – who did what, when"
+                  >
+                    {it.gpCode ?? "—"}
+                  </button>
+                ) : (
+                  <b>{it.gpCode ?? "—"}</b>
+                )}{" "}
+                <span className="text-muted-foreground">{it.gpName ?? ""}{it.block ? ` · ${it.block}` : ""}</span>
               </td>
               <td className="px-2 py-2">
                 <Link href={`/dashboard/tickets/admin?ticket=${it.ticketId}`} className="font-medium text-primary hover:underline">
                   {it.ticket ?? `#${it.ticketId}`}
                 </Link>
+                {(it.tickets?.length ?? 0) > 1 && (
+                  <span className="ml-1 text-[0.6875rem] text-muted-foreground" title={`This GP is on ${it.tickets?.length} tickets of the week: ${it.tickets?.join(", ")}`}>
+                    +{(it.tickets?.length ?? 1) - 1}
+                  </span>
+                )}
               </td>
               <td className="max-w-[14rem] truncate px-2 py-2 text-muted-foreground">{it.stage}</td>
               <td className="max-w-[14rem] truncate px-2 py-2">
                 {it.who} {it.whoRole !== "—" && <span className="rounded bg-muted px-1 py-0.5 text-[0.65625rem] font-semibold text-muted-foreground">{it.whoRole}</span>}
+              </td>
+              <td className="max-w-[18rem] truncate px-2 py-2 text-[0.75rem] text-muted-foreground" title={it.why ?? ""}>
+                {it.why ?? ""}
               </td>
               <td className={cn("whitespace-nowrap px-5 py-2 text-right font-semibold", it.bucket !== "closed" && it.days > overdueDays ? "text-critical-text" : "")}>
                 {it.bucket === "closed" ? "—" : it.days === 0 ? "today" : `${it.days} day${it.days === 1 ? "" : "s"}`}

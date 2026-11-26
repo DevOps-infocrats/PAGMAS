@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, BadgeCheck, ChevronLeft, ChevronRight, Eye, FileCheck2, ListX, MailCheck, RotateCcw, Search, Wrench, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, BadgeCheck, ChevronLeft, ChevronRight, CirclePause, Eye, FileCheck2, ListX, MailCheck, RotateCcw, Search, Wrench, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { EmptyState, ErrorState, TableSkeleton } from "@/components/feedback/states";
 import { SearchableSelect } from "@/components/filters/searchable-select";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils/cn";
 import { formatCount } from "@/lib/utils/format";
 import { CATEGORY, GP_CATEGORIES, GpCategoryBadge } from "./gp-category";
 import { TicketStatusBadge, ticketDay, ticketTime } from "./ticket-parts";
+import { GpTimeline } from "./gp-detail";
 import { GpStatusBadge, ProofList } from "./ticket-proof";
 
 const pct = (n: number, of: number) => (of ? `${((n / of) * 100).toFixed(1)}%` : "NA");
@@ -33,39 +34,66 @@ export const categoryFrom = (v: string | null): GpCategory | null => {
  */
 export function CategoryKpiCards({ k, loading, hrefFor, active }: { k?: GpMonitorKpis; loading: boolean; hrefFor: (c: GpCategory) => string | undefined; active?: GpCategory }) {
   const total = k?.total ?? 0;
+  const cat = (code: GpCategory) => GP_CATEGORIES.find((c) => c.code === code)!;
+  /** who the category's GPs wait with now (older responses: the documents, as before) */
+  const waits = (code: GpCategory, n: number) => {
+    const w = k?.categoryWaiting?.[code];
+    if (!w) return `${formatCount(k?.categoryWithDocument?.[code] ?? 0)} with document`;
+    const parts = Object.entries(w).filter(([, v]) => v > 0);
+    return parts.length ? parts.map(([lbl, v]) => `${formatCount(v)} ${lbl}`).join(" · ") : n ? "" : "none";
+  };
+  const card = (code: GpCategory) => {
+    const c = cat(code);
+    const n = k?.categories?.[c.code] ?? 0;
+    return (
+      <MiniKpi
+        key={c.code}
+        loading={loading}
+        icon={ICON[c.code]}
+        tone={c.color}
+        label={c.label}
+        info={`${c.info} GPs of the GP-wise task tickets whose current status is "${c.label}" – each GP once (a changed status moves it to the new category). Below: who they wait with now. Click to see the GPs with Area Manager, FE, Block and documents.`}
+        value={formatCount(n)}
+        unit="GPs"
+        caption={k ? `${pct(n, total)} · ${waits(c.code, n)}` : undefined}
+        href={hrefFor(c.code)}
+        active={active === c.code}
+      />
+    );
+  };
+  const owners = k?.notFilledOwners;
+  // the order of the work: not filled → field work → approval → letter → AMC; Non-Doable last
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        {GP_CATEGORIES.map((c) => {
-          const n = k?.categories?.[c.code] ?? 0;
-          const docs = k?.categoryWithDocument?.[c.code] ?? 0;
-          return (
-            <MiniKpi
-              key={c.code}
-              loading={loading}
-              icon={ICON[c.code]}
-              tone={c.color}
-              label={c.label}
-              info={`${c.info} GPs of the GP-wise task tickets whose current status is "${c.label}" – each GP once (a changed status moves it to the new category). Click to see the GPs with Area Manager, FE, Block and documents.`}
-              value={formatCount(n)}
-              unit="GPs"
-              caption={k ? `${pct(n, total)} of ${formatCount(total)} · ${formatCount(docs)} with document` : undefined}
-              href={hrefFor(c.code)}
-              active={active === c.code}
-            />
-          );
-        })}
-        {/* AMC conversion recorded by the COH after the letter submission (each GP once) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+        {k?.notFilled !== undefined && (
+          <MiniKpi
+            loading={loading}
+            icon={CirclePause}
+            tone="var(--critical)"
+            label="Not Filled"
+            info="Not filled GPs / total GP target: GPs with no Daily Achievement yet, of all the GPs of the tickets – each GP once. Below: who has to fill them (the FRT team if it has a login, else the FE if the FE has one, else the AM – the same rule as the Ticket Report)."
+            value={`${formatCount(k.notFilled)}/${formatCount(total)}`}
+            unit="GPs"
+            caption={owners ? `${pct(k.notFilled, total)} · FE ${formatCount(owners.FE)} · AM ${formatCount(owners.AM)} · FRT ${formatCount(owners.FRT)} to fill` : `${pct(k.notFilled, total)} of ${formatCount(total)}`}
+          />
+        )}
+        {card("A")}
+        {card("C")}
+        {card("B")}
+        {card("E")}
+        {/* AMC conversion recorded by the COH after the letter submission (each GP once) – the last step */}
         <MiniKpi
           loading={loading}
           icon={BadgeCheck}
           tone="var(--good)"
           label="AMC Converted"
-          info="GPs of the GP-wise task tickets whose AMC conversion the COH has recorded (after the letter submission) – each GP once."
+          info="GPs of the GP-wise task tickets whose AMC conversion the COH has recorded (after the letter submission) – each GP once. The last step."
           value={formatCount(k?.amcConverted ?? 0)}
           unit="GPs"
-          caption={k ? `${pct(k.amcConverted ?? 0, total)} of ${formatCount(total)} · ${formatCount(k.amcConvertedWithDocument ?? 0)} with document` : undefined}
+          caption={k ? `${pct(k.amcConverted ?? 0, total)} · done` : undefined}
         />
+        {card("D")}
       </div>
       {k && (
         <p className="text-[0.71875rem] text-muted-foreground">
@@ -438,6 +466,18 @@ function GpDetailDialog({ gpCode, onClose }: { gpCode: string | null; onClose: (
                   </dd>
                 </div>
               </dl>
+
+              {[...d.ticketRows]
+                .filter((r) => r.gpId)
+                .sort((a, b) => b.ticketId - a.ticketId)
+                .map((r) => (
+                  <GpTimeline
+                    key={`${r.ticketId}:${r.gpId}`}
+                    ticketId={r.ticketId}
+                    gpId={r.gpId!}
+                    title={d.ticketRows.length > 1 ? `GP Timeline – ${r.ticket} (${wk(r.week)})` : undefined}
+                  />
+                ))}
 
               {d.ticketRows.length > 1 && (
                 <div>

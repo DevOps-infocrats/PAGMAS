@@ -182,12 +182,15 @@ def visible(db: Session, ticket_id: int, user: CurrentUser) -> Ticket:
     return t
 
 
-def kpis(db: Session, assignee_id: int | None = None, circles: frozenset[str] | None = None) -> dict[str, int]:
+def kpis(db: Session, assignee_id: int | None = None, circles: frozenset[str] | None = None, filters: dict[str, Any] | None = None) -> dict[str, int]:
+    """Tickets per status; `filters` (the Admin Tickets list filters): only the tickets the list shows."""
     q = select(Ticket.status, func.count()).where(live()).group_by(Ticket.status)
     if assignee_id is not None:
         q = q.where(_mine(assignee_id))
     if circles is not None:
         q = q.where(in_circles(circles))
+    if filters:
+        q = _filtered(q, assignee_id=assignee_id, **filters)
     c = {s: 0 for s in STATUSES} | dict(db.execute(q).all())
     total = sum(c.values())
     return {
@@ -232,6 +235,48 @@ def list_tickets(
         q = q.where(_mine(assignee_id))
     if circles is not None:  # Admin Tickets of a role: only the tickets of their circles
         q = q.where(in_circles(circles))
+    q = _filtered(q, assignee_id=assignee_id, search=search, status=status, priority=priority, date_from=date_from, date_to=date_to,
+                  circle=circle, area_manager=area_manager, week=week, gp=gp, progress_date=progress_date)
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    rows = db.scalars(q.order_by(Ticket.created_at.desc(), Ticket.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    ids = [t.id for t in rows]
+    tasks = {k.ticket_id: k for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(ids)))} if ids else {}
+    counts = dict(db.execute(select(TicketRecipient.ticket_id, func.count()).where(TicketRecipient.ticket_id.in_(ids)).group_by(TicketRecipient.ticket_id)).all()) if ids else {}
+    work = ticket_work(db, ids) if assignee_id is None else {}  # Admin Tickets: who works on each ticket, GPs filled
+    if assignee_id is not None:  # User Tickets: an FE's / FRT's own ticket ID under the AM ticket (ticket hierarchy)
+        from .units import my_units
+
+        own = my_units(db, assignee_id, ids)
+    else:
+        own = {}
+    items = []
+    for t in rows:
+        k = tasks.get(t.id)
+        items.append(summary_json(t) | {
+            "areaManager": k.am_name if k else None, "week": k.week_code if k else None, "recipientCount": int(counts.get(t.id, 0)),
+            "weekStart": k.week_start.isoformat() if k else None, "weekEnd": k.week_end.isoformat() if k else None,
+            **({"work": work[t.id]} if t.id in work else {}),
+            **({"myUnit": own[t.id]} if t.id in own else {}),
+        })
+    return {"items": items, "total": total, "page": page, "pageSize": page_size}
+
+
+def _filtered(
+    q,
+    *,
+    assignee_id: int | None = None,
+    search: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    circle: str | None = None,
+    area_manager: str | None = None,
+    week: str | None = None,
+    gp: str | None = None,
+    progress_date: dt.date | None = None,
+):
+    """The ticket list filters on a query of Ticket (the list, its KPIs and its GP categories use the same rules)."""
     if circle and circle.strip():
         c = circle.strip().lower()
         q = q.where(or_(func.lower(Ticket.circle) == c, Ticket.id.in_(select(TicketTaskGp.ticket_id).where(func.lower(TicketTaskGp.circle) == c))))
@@ -262,19 +307,15 @@ def list_tickets(
         if assignee_id is None:  # admin list: also the user's name and e-mail
             cols += [func.lower(Ticket.assignee_name), func.lower(Ticket.assignee_email)]
         q = q.where(or_(*(c.like(term) for c in cols)))
-    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
-    rows = db.scalars(q.order_by(Ticket.created_at.desc(), Ticket.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-    ids = [t.id for t in rows]
-    tasks = {k.ticket_id: k for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(ids)))} if ids else {}
-    counts = dict(db.execute(select(TicketRecipient.ticket_id, func.count()).where(TicketRecipient.ticket_id.in_(ids)).group_by(TicketRecipient.ticket_id)).all()) if ids else {}
-    items = []
-    for t in rows:
-        k = tasks.get(t.id)
-        items.append(summary_json(t) | {
-            "areaManager": k.am_name if k else None, "week": k.week_code if k else None, "recipientCount": int(counts.get(t.id, 0)),
-            "weekStart": k.week_start.isoformat() if k else None, "weekEnd": k.week_end.isoformat() if k else None,
-        })
-    return {"items": items, "total": total, "page": page, "pageSize": page_size}
+    return q
+
+
+def filtered_ids(db: Session, circles: frozenset[str] | None, filters: dict[str, Any]) -> frozenset[int]:
+    """Ids of the live tickets the Admin Tickets list shows for these filters (all tickets: every filter empty)."""
+    q = select(Ticket.id).where(live())
+    if circles is not None:
+        q = q.where(in_circles(circles))
+    return frozenset(db.scalars(_filtered(q, **filters)))
 
 
 def my_weeks(db: Session, user_id: int) -> dict[str, Any]:
@@ -370,6 +411,13 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
         # review steps – each of their own GPs carries its full review history instead)
         recs = [r for r in recs if r.role not in ("SME", "COH") or r.user_id == user.id]
         events = [e for e in events if e.action not in SME_HIDDEN_EVENTS]
+    # ticket hierarchy (app.tickets.units): the user's own FE / FRT ticket ID, and each GP row's FRT ticket ID
+    hierarchy: dict[str, Any] = {}
+    if task_block is not None:
+        from . import units
+
+        own = units.my_units(db, user.id, [t.id]).get(t.id)
+        hierarchy = {"gpUnits": {str(k): v for k, v in units.gp_units(db, t, user).items()}, **({"myUnit": own} if own else {})}
     return {
         **summary_json(t),
         "description": t.description,
@@ -420,6 +468,7 @@ def detail_json(db: Session, t: Ticket, user: CurrentUser) -> dict[str, Any]:
             "cohClose": coh_ok,
             "cohCloseBlock": coh_why,
         },
+        **hierarchy,
     }
 
 
@@ -1017,3 +1066,134 @@ def mark_read(db: Session, user: CurrentUser) -> int:
     res = db.execute(update(TicketNotification).where(TicketNotification.user_id == user.id, TicketNotification.read_at.is_(None)).values(read_at=now()))
     db.commit()
     return res.rowcount or 0
+
+
+# ---------------------------------------------------------------- who works on each ticket (Admin Tickets)
+def ticket_work(db: Session, ticket_ids) -> dict[int, dict[str, Any]]:
+    """Per GP-wise task ticket: its people – the Area Manager, the FEs and the FRT teams of its GPs (one ticket per AM,
+    shared with its FEs and FRT teams) – and who of them has WORKED on it (a Daily Achievement, a review step or a
+    Non-Doable step on this ticket by their login); its GPs and how many are filled (a category chosen, or achieved).
+    Read only. Tickets without a GP-wise task are not in the result."""
+    from collections import defaultdict
+
+    from ..models import NdEvent, TicketGpReview, User
+    from .task import cumulative, fe_key, frt_norm
+
+    ids = list(ticket_ids)
+    if not ids:
+        return {}
+    task_ids = list(db.scalars(select(TicketTask.ticket_id).where(TicketTask.ticket_id.in_(ids))))
+    if not task_ids:
+        return {}
+    out: dict[int, dict[str, Any]] = {tid: {"gps": set(), "filled": set(), "fe": set(), "frt": set(), "feWorked": set(), "frtWorked": set(), "amWorked": False} for tid in task_ids}
+    for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id.in_(task_ids))):
+        o = out[g.ticket_id]
+        code = g.gp_code or f"#{g.id}"
+        o["gps"].add(code)
+        if g.gp_category is not None or cumulative(g) >= g.target:
+            o["filled"].add(code)
+        if g.fe_name:
+            o["fe"].add(fe_key(g.fe_name, g.fe_email))
+        if frt_norm(g.frt_code):
+            o["frt"].add(frt_norm(g.frt_code))
+    actors: dict[int, set[int]] = defaultdict(set)
+    last_at: dict[int, dt.datetime] = {}
+    for q in (
+        select(TicketProgress.ticket_id, TicketProgress.submitted_by_id, TicketProgress.submitted_at).where(TicketProgress.ticket_id.in_(task_ids)),
+        select(TicketGpReview.ticket_id, TicketGpReview.actor_id, TicketGpReview.at).where(TicketGpReview.ticket_id.in_(task_ids)),
+        select(NdEvent.ticket_id, NdEvent.actor_id, NdEvent.at).where(NdEvent.ticket_id.in_(task_ids)),
+    ):
+        for tid, uid, at in db.execute(q):
+            if uid is not None:
+                actors[tid].add(uid)
+            if at is not None:
+                at = at if at.tzinfo else at.replace(tzinfo=dt.UTC)
+                last_at[tid] = max(last_at.get(tid, at), at)
+    active = set(db.scalars(select(User.id).where(User.is_active.is_(True))))
+    for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id.in_(task_ids), TicketRecipient.user_id.is_not(None), TicketRecipient.role.in_(("AM", "FE", "FRT")))):
+        if r.user_id in active:  # a login on the ticket (Team table: "No login")
+            if r.role == "AM":
+                out[r.ticket_id]["amLogin"] = True
+            elif r.role == "FE":
+                out[r.ticket_id].setdefault("feLogins", set()).add(fe_key(r.name, r.fe_mail))
+        if r.user_id not in actors.get(r.ticket_id, set()):
+            continue
+        o = out[r.ticket_id]
+        o.setdefault("workers", {})[(r.role, r.name)] = None  # who worked (name, role) – the "in progress" list
+        if r.role == "AM":
+            o["amWorked"] = True
+        elif r.role == "FE":
+            o["feWorked"].add(fe_key(r.name, r.fe_mail))
+        elif frt_norm(r.frt_code):
+            o["frtWorked"].add(frt_norm(r.frt_code))
+    for t in db.scalars(select(Ticket).where(Ticket.id.in_(task_ids))):
+        if t.assignee_id is not None and t.assignee_id in actors.get(t.id, set()):
+            out[t.id]["amWorked"] = True  # the ticket's Area Manager (assignee) worked on it
+        if t.assignee_id is not None and t.assignee_id in active:
+            out[t.id]["amLogin"] = True
+    logins = {frt_norm(c) for c in db.scalars(select(User.frt_code).where(User.frt_code.is_not(None), User.is_active.is_(True)))} - {None}
+    return {
+        tid: {
+            "workers": [f"{n} ({rl})" for rl, n in sorted(o.get("workers", {}), key=lambda k: ("AM", "FE", "FRT").index(k[0]))],
+            "lastAt": iso(last_at.get(tid)),
+            "gps": len(o["gps"]), "filled": len(o["filled"]), "amWorked": o["amWorked"],
+            "amLogin": bool(o.get("amLogin")), "feLogin": len(o.get("feLogins", set()) & o["fe"]),
+            "fe": len(o["fe"]), "feWorked": len(o["feWorked"] & o["fe"]) if o["fe"] else len(o["feWorked"]),
+            "frt": len(o["frt"]), "frtWorked": len(o["frtWorked"] & o["frt"]), "frtLogin": len(o["frt"] & logins),
+        }
+        for tid, o in out.items()
+    }
+
+
+def work_totals(db: Session, ticket_ids) -> dict[str, int]:
+    """Admin Tickets KPIs: the people of the tickets (AM + FEs + FRT teams, each per ticket) and how many of them worked."""
+    w = ticket_work(db, ticket_ids).values()
+    t = {
+        "tickets": len(w),
+        "am": len(w), "amWorked": sum(1 for x in w if x["amWorked"]),
+        "fe": sum(x["fe"] for x in w), "feWorked": sum(x["feWorked"] for x in w),
+        "frt": sum(x["frt"] for x in w), "frtWorked": sum(x["frtWorked"] for x in w),
+        "frtNoLogin": sum(x["frt"] - x["frtLogin"] for x in w),
+        # the Team table: people with an active login on their ticket (AM / FE / FRT, per ticket)
+        "amLogin": sum(1 for x in w if x["amLogin"]), "feLogin": sum(x["feLogin"] for x in w), "frtLogin": sum(x["frtLogin"] for x in w),
+        "gps": sum(x["gps"] for x in w), "filled": sum(x["filled"] for x in w),
+    }
+    t["total"] = t["am"] + t["fe"] + t["frt"]
+    t["worked"] = t["amWorked"] + t["feWorked"] + t["frtWorked"]
+    return t
+
+
+def working_tickets(db: Session, ticket_ids) -> list[dict[str, Any]]:
+    """Admin Tickets – "Tickets in Progress": the tickets someone of the AM / FEs / FRT teams has worked on, what was done
+    on them (the categories reported, where their GPs wait) and who worked; latest activity first."""
+    from collections import Counter
+
+    from .review import stage_of
+    from .task import CATEGORIES
+
+    work = {tid: w for tid, w in ticket_work(db, ticket_ids).items() if w["amWorked"] or w["feWorked"] or w["frtWorked"]}
+    if not work:
+        return []
+    tickets = {t.id: t for t in db.scalars(select(Ticket).where(Ticket.id.in_(list(work))))}
+    tasks = {k.ticket_id: k for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(list(work))))}
+    cats: dict[int, Counter] = {tid: Counter() for tid in work}
+    waits: dict[int, Counter] = {tid: Counter() for tid in work}
+    from .monitor import WAIT_LABEL
+
+    for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id.in_(list(work)))):
+        if g.gp_category:
+            cats[g.ticket_id][CATEGORIES.get(g.gp_category, g.gp_category)] += 1
+            lbl = WAIT_LABEL.get(stage_of(g), "")
+            if lbl and lbl != "done":
+                waits[g.ticket_id][lbl] += 1
+    out = []
+    for tid, w in work.items():
+        t, k = tickets.get(tid), tasks.get(tid)
+        if t is None:
+            continue
+        out.append({
+            "id": tid, "code": t.code, "status": t.status, "circle": t.circle, "areaManager": k.am_name if k else None, "week": k.week_code if k else None,
+            "work": w, "categories": dict(cats[tid].most_common()), "waiting": dict(waits[tid].most_common()),
+        })
+    out.sort(key=lambda x: x["work"].get("lastAt") or "", reverse=True)
+    return out

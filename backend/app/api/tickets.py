@@ -23,7 +23,7 @@ from ..models import Ticket, TicketAttachment, TicketProgressFile, TicketRecipie
 from ..security.deps import CurrentUser, audit
 from ..security.deps import get_current_user as _session_user
 from ..security.roles import area_circles, as_ticket_admin, circle_key, require_page
-from ..tickets import directory, files, mailer, monitor, service
+from ..tickets import directory, files, mailer, monitor, service, units  # units: also registers the hierarchy Session hook
 from ..tickets import task as tasks
 from ..tickets.service import PRIORITIES, STATUSES, TicketError, Upload
 
@@ -171,9 +171,123 @@ class ChangesIn(BaseModel):
     comment: str = Field(min_length=5, max_length=5_000)
 
 
+def _list_filters(
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    status_: Annotated[Literal[STATUSES] | None, Query(alias="status")] = None,  # type: ignore[valid-type]
+    priority: Annotated[Literal[PRIORITIES] | None, Query()] = None,  # type: ignore[valid-type]
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    circle: Annotated[str | None, Query(max_length=80)] = None,
+    area_manager: Annotated[str | None, Query(alias="areaManager", max_length=160)] = None,
+    week: Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")] = None,
+    gp: Annotated[str | None, Query(max_length=100)] = None,
+    progress_date: Annotated[dt.date | None, Query(alias="progressDate")] = None,
+) -> dict:
+    """The Admin Tickets list filters (same names as GET /tickets) – for its KPIs and GP categories; only those given."""
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The 'from' date is after the 'to' date")
+    f = {"search": search, "status": status_, "priority": priority, "date_from": date_from, "date_to": date_to, "circle": circle,
+         "area_manager": area_manager, "week": week, "gp": gp, "progress_date": progress_date}
+    return {k: v for k, v in f.items() if v not in (None, "")}
+
+
 @router.get("/kpis")
-def kpis(scope: Scope = "mine", user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    return service.kpis(db, _scope_user(scope, user), user.circles if scope == "all" else None)
+def kpis(scope: Scope = "mine", f: dict = Depends(_list_filters), user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Tickets per status; with the list filters (Admin Tickets): only the tickets the list shows. Admin Tickets
+    (scope=all) also: the people of those tickets – AM, FEs, FRT teams – and how many of them worked (work)."""
+    out = service.kpis(db, _scope_user(scope, user), user.circles if scope == "all" else None, f or None)
+    if scope == "all":
+        ids = service.filtered_ids(db, user.circles, f)
+        out["work"] = service.work_totals(db, ids)
+        # ticket hierarchy: the FE / FRT tickets under these AM tickets, per status (a new field – nothing above changes)
+        out["units"] = units.level_counts(db, ids)
+    return out
+
+
+@router.get("/gp-categories")
+def gp_categories(f: dict = Depends(_list_filters), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Admin Tickets: category-wise (A–E) GPs of the tickets the list shows for these filters (each GP code once);
+    no filter = every GP-wise task ticket (the same as /gp-monitor/summary?basis=category)."""
+    mf: dict = {"circles": user.circles, "withOwners": True}
+    if f:
+        mf["ticketIds"] = service.filtered_ids(db, user.circles, f)
+    return monitor.summary(db, mf, "category")
+
+
+@router.get("/working")
+def working(f: dict = Depends(_list_filters), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Admin Tickets – "Tickets in Progress": the tickets (of the list filters) someone works on – who, what was done."""
+    ids = service.filtered_ids(db, user.circles, f)
+    # items: the AM tickets someone has worked on, with who / what (as before); tickets: exactly the tickets the
+    # "Tickets in Progress" card counts – AM, FE and FRT (ticket hierarchy, app.tickets.units)
+    return {"items": service.working_tickets(db, ids), "tickets": units.in_progress(db, ids)}
+
+
+# ---------------------------------------------------------------- ticket hierarchy: AM -> FE -> FRT (app.tickets.units)
+@router.get("/hierarchy")
+def hierarchy(
+    level: Annotated[Literal["AM", "FE", "FRT"] | None, Query()] = None,
+    status_: Annotated[Literal["OPEN", "IN_PROGRESS", "PENDING_REVIEW", "CHANGES_REQUESTED", "CLOSED"] | None, Query(alias="status")] = None,
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    am: Annotated[str | None, Query(max_length=160)] = None,
+    fe: Annotated[str | None, Query(max_length=160)] = None,
+    frt: Annotated[str | None, Query(max_length=60)] = None,
+    gp: Annotated[str | None, Query(max_length=100)] = None,
+    circle: Annotated[str | None, Query(max_length=80)] = None,
+    week: Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")] = None,
+    date_from: Annotated[dt.date | None, Query(alias="dateFrom")] = None,
+    date_to: Annotated[dt.date | None, Query(alias="dateTo")] = None,
+    page: Annotated[int, Query(ge=1, le=100_000)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize", ge=1, le=200)] = 50,
+    user: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Admin: every AM, FE and FRT ticket in one list (read only) – search by any ticket ID, filters, counts per level."""
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The 'from' date is after the 'to' date")
+    f = {"level": level, "status": status_, "search": search, "am": am, "fe": fe, "frt": frt, "gp": gp, "circle": circle, "week": week, "date_from": date_from, "date_to": date_to}
+    return units.listing(db, user.circles, f, page, page_size)
+
+
+@router.get("/{ticket_id}/hierarchy")
+def ticket_hierarchy(ticket_id: int, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """One AM ticket with its FE tickets and their FRT tickets – what this user may see of it."""
+    try:
+        t = service.visible(db, ticket_id, user)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    return units.tree(db, t, user)
+
+
+@router.get("/{ticket_id}/units/{unit_id}")
+def unit_detail(ticket_id: int, unit_id: int, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """One FE / FRT ticket: its details, its parent, its FRT tickets (FE) and its own history."""
+    try:
+        t = service.visible(db, ticket_id, user)
+        return units.detail(db, t, unit_id, user)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except units.UnitError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+
+
+class UnitCloseIn(BaseModel):
+    remark: str | None = Field(default=None, max_length=1000)
+    force: bool = False  # close although GPs of the FE are not approved yet – the remark (reason) is then required
+
+
+@router.post("/{ticket_id}/units/{unit_id}/close")
+def close_unit(ticket_id: int, unit_id: int, body: UnitCloseIn, request: Request, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """The ticket's Area Manager closes one FE ticket. Nothing else changes (not the AM ticket, not the FRT tickets)."""
+    try:
+        t = service.visible(db, ticket_id, user)
+        u = units.close_fe(db, t, unit_id, user, body.remark, body.force)
+    except TicketError as exc:
+        raise _fail(exc) from None
+    except units.UnitError as exc:
+        raise HTTPException(exc.status, exc.message) from None
+    audit(db, "ticket.unit.close", request, user.id, f"{u.code}" + (" (forced)" if body.force else ""))
+    return units.detail(db, t, u.id, user)
 
 
 @router.get("")
@@ -425,13 +539,14 @@ def ticket_report(week: ReportWeek = None, circle: ReportCircle = None, user: Cu
 def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, user: CurrentUser = Depends(_report_page), db: Session = Depends(get_db)) -> Response:
     from ..tickets import report
 
-    data = report.build(db, week, circle, area_circles(db, user))
+    # the Excel: the days from the ticket's generation to today (work after the week counts), every GP once, who acts
+    data = report.build(db, week, circle, area_circles(db, user), extend=True)
     code = (data.get("week") or {}).get("code", "no-week")
     import re
 
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", circle).strip("_") if circle else ""
     name = f"Ticket_Report_{code}" + (f"_{safe}" if safe else "") + ".xlsx"
-    return Response(report.xlsx(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+    return Response(report.xlsx(data, report.excel_details(db, data)), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
 @router.get("/gp-monitor/summary")
@@ -638,6 +753,28 @@ def coh_close(ticket_id: int, body: CohCloseIn, request: Request, user: CurrentU
 class ReassignIn(BaseModel):
     recipientId: int = Field(ge=1)  # the FE recipient of this ticket who takes the GP
     remark: str | None = Field(default=None, max_length=tasks.MAX_REMARK)
+
+
+@router.get("/{ticket_id}/gps/{gp_id}/timeline")
+def gp_timeline(ticket_id: int, gp_id: int, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """GP Timeline: everything that happened to one GP of the ticket – who, when, what, remark, proof (read only).
+    The same rule as the GP detail: the ticket's people; an FE only their GPs, an SME / COH the GPs sent to them."""
+    from ..security.roles import can_open
+    from ..tickets import timeline
+
+    try:
+        t = service.visible(db, ticket_id, user)
+        scope = tasks.view_of(db, t, user)
+    except TicketError as exc:
+        # the Ticket Report (a role with that page): the GPs of the report's tickets – only of the user's circles
+        t = db.get(Ticket, ticket_id)
+        if t is None or t.deleted_at is not None or not can_open(db, user, ("tickets-report",)) or not service.ticket_in_circles(db, t, area_circles(db, user)):
+            raise _fail(exc) from None
+        scope = None
+    g = db.get(TicketTaskGp, gp_id)
+    if g is None or g.ticket_id != t.id or (scope is not None and not scope.owns(g)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "GP not found on this ticket")
+    return timeline.build(db, t, g)
 
 
 @router.post("/{ticket_id}/gps/{gp_id}/reassign")
