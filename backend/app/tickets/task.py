@@ -1546,14 +1546,25 @@ def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: Fe
         else f"FRT {scope.code} – {scope.name} ({task.am_name})" if isinstance(scope, FrtScope)
         else f"{scope.kind} – GPs forwarded to you ({task.am_name})" if isinstance(scope, ReviewerView) else task.am_name
     )
-    ws.write_string(0, 0, f"{t.code} · {who} · Week {task.week_code[2:]} ({task.week_start:%d %b} – {task.week_end:%d %b %Y}) · {kind}", title)
+    from ..models import TicketUnit
+    from .units import HIER_COLS, HIER_NOTE, gp_tickets, hier_values, sync
+
+    if db.scalar(select(TicketUnit.id).where(TicketUnit.ticket_id == t.id).limit(1)) is None:
+        # the assignment workbook is written while the ticket is generated – its FE / FRT tickets first (same
+        # transaction, the same rows the commit would create), so the workbook carries their IDs
+        db.flush()
+        sync(db, t.id)
+    hier = gp_tickets(db, [g.id for g in gps])  # the AM / FE / FRT ticket IDs and target GPs of each GP row
+    own = next((hier[g.id]["feCode"] for g in gps if g.id in hier and hier[g.id]["feCode"]), None) if fe is not None else None
+    ws.write_string(0, 0, f"{t.code}{f' → FE ticket {own}' if own else ''} · {who} · Week {task.week_code[2:]} ({task.week_start:%d %b} – {task.week_end:%d %b %Y}) · {kind}", title)
     fe_part = f" · Field Engineer: {fe.name}{f' ({fe.mail})' if fe.mail else ''}" if fe is not None else ""
     ws.write_string(1, 0, f"Circle: {task.circle or '—'} · CBH: {task.cbh_name or '—'} · Area Manager: {task.am_name}{fe_part} · {len(gps)} GPs · total weekly target {target_total} · remaining gap {gap_total}", note)
     ws.write_string(
         2, 0,
         f"Weekly target = 1 GP each (Planned Date in the week). Existing achievement = AMC Date in the master data at assignment (data as of {task.data_as_of:%d %b %Y}, {task.source_file}). "
         + ("Daily Achievement and Remarks can be filled in; " if original else "Daily Achievement = GPs reported in the daily progress of the ticket; ")
-        + "the dashboard is the system of record – submit daily progress in the ticket.",
+        + "the dashboard is the system of record – submit daily progress in the ticket. "
+        + f"Last columns – ticket IDs: {HIER_NOTE}.",
         note,
     )
     headers = [
@@ -1561,6 +1572,8 @@ def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: Fe
         ("Weekly Target", 10), ("Existing Achievement", 12), ("Remaining Gap", 11), ("Daily Achievement", 12), ("Remarks", 40), ("Proof Document", 36),
         ("Type", 9), ("Planned Date", 12), ("Ach Date (Ready)", 13), ("AMC Date", 12),
     ]
+    hier_at = len(headers)  # ticket hierarchy columns after every existing column
+    headers += HIER_COLS
     hr = 4
     for c, (h, wdt) in enumerate(headers):
         ws.set_column(c, c, wdt)
@@ -1583,6 +1596,8 @@ def workbook(db: Session, t: Ticket, task: TicketTask, original: bool, scope: Fe
         ws.write_string(r, 15, {"WEEK": "This week", "ADDED": "Added by FE"}.get(g.kind, "Pending"), cell)
         for c, v in ((16, g.planned_date), (17, g.ready_date), (18, g.amc_date)):
             ws.write_string(r, c, f"{v:%d-%m-%Y}" if v else "", cell)
+        for c, v in enumerate(hier_values(hier.get(g.id)), start=hier_at):
+            (ws.write_number(r, c, v, num) if isinstance(v, int) else ws.write_string(r, c, str(v), cell))
     tr = hr + len(gps) + 1
     ws.write_string(tr, 8, "Total", total_f)
     for c, v in ((9, target_total), (10, sum(g.base_achieved for g in gps)), (11, gap_total)):

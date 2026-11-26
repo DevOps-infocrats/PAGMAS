@@ -417,8 +417,10 @@ def tree(db: Session, t: Ticket, user: Any) -> dict[str, Any]:
         out_fe.append(unit_json(u, t, task, None, None) | {"frt": kids, "counts": _counts(kids)})
     direct = [unit_json(c, t, task, by_id.get(c.parent_id) if c.parent_id else None, gps.get(c.task_gp_id))
               for c in seen if c.level == "FRT" and (c.parent_id is None or c.parent_id not in {f.id for f in seen if f.level == "FE"})]
+    top = am_json(t, task) | {"hasTask": task is not None}
+    add_targets(db, [top, *out_fe, *direct])
     return {
-        "ticket": am_json(t, task) | {"hasTask": task is not None},
+        "ticket": top,
         "fe": out_fe,
         "frtDirect": direct,
         "canCloseFe": task is not None and is_area_manager(db, t, user),
@@ -453,6 +455,7 @@ def detail(db: Session, t: Ticket, unit_id: int, user: Any) -> dict[str, Any]:
         from .review import stage_label, stage_of
 
         out["gpStage"] = stage_label(stage_of(g))
+    add_targets(db, [out, *out.get("frtTickets", [])])
     return out
 
 
@@ -489,7 +492,12 @@ def my_units(db: Session, user_id: int, ticket_ids) -> dict[int, dict[str, Any]]
                 mine.setdefault(u.ticket_id, []).append(u)
         for tid, us in mine.items():
             first = next((u for u in us if u.status != "CLOSED"), us[0])
-            out[tid] = _brief(first) | {"count": len(us), "open": sum(1 for u in us if u.status != "CLOSED"), "codes": [u.code for u in us]}
+            out[tid] = _brief(first) | {"count": len(us), "open": sum(1 for u in us if u.status != "CLOSED"), "codes": [u.code for u in us], "gpIds": [u.task_gp_id for u in us]}
+    if out:  # target GPs: an FE ticket = the FE's GPs; FRT tickets = their GPs (one each)
+        _am_t, fe_t, _fe_of, gps_of = _targets(db, list(out))
+        gp_t = {g.id: g.target for gs in gps_of.values() for g in gs}
+        for x in out.values():
+            x["targetGps"] = fe_t.get(x["id"]) if x["level"] == "FE" else sum(gp_t.get(i, 0) for i in x.pop("gpIds", []))
     return out
 
 
@@ -499,6 +507,86 @@ def gp_units(db: Session, t: Ticket, user: Any) -> dict[int, dict[str, Any]]:
     if not us:
         return {}
     return {u.task_gp_id: _brief(u) for u in _visible_units(db, t, user, us) if u.task_gp_id}
+
+
+# ---------------------------------------------------------------- ticket IDs and target GPs of each level
+
+# Excel columns added at the END of every GP-wise sheet (existing columns keep their place)
+HIER_COLS: list[tuple[str, int]] = [("AM Ticket ID", 14), ("AM target (GPs)", 10), ("FE Ticket ID", 19), ("FE target (GPs)", 10), ("FRT Ticket ID", 26), ("FRT target (GPs)", 10)]
+HIER_NOTE = "AM ticket = one per Area Manager (target = all its GPs) · FE ticket = one per Field Engineer under it (target = that FE's GPs) · FRT ticket = one per GP of an FRT team (target = that GP)"
+
+
+def _targets(db: Session, ticket_ids) -> tuple[dict[int, int], dict[int, int], dict[int, list[TicketUnit]], dict[int, list[TicketTaskGp]]]:
+    """(AM ticket id -> target GPs, FE unit id -> target GPs, AM ticket id -> its FE units, AM ticket id -> its GP rows).
+    Target GPs = the sum of the GP rows' weekly targets (1 per GP), never counted twice."""
+    from .task import FeScope
+
+    ids = list(ticket_ids)
+    if not ids:
+        return {}, {}, {}, {}
+    gps_of: dict[int, list[TicketTaskGp]] = {}
+    for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.ticket_id.in_(ids))):
+        gps_of.setdefault(g.ticket_id, []).append(g)
+    fe_of: dict[int, list[TicketUnit]] = {}
+    for u in db.scalars(select(TicketUnit).where(TicketUnit.ticket_id.in_(ids), TicketUnit.level == "FE").order_by(TicketUnit.seq)):
+        fe_of.setdefault(u.ticket_id, []).append(u)
+    am_t = {tid: sum(g.target for g in gs) for tid, gs in gps_of.items()}
+    fe_t: dict[int, int] = {}
+    for tid, us in fe_of.items():
+        for u in us:
+            sc = FeScope(u.fe_name or "", u.fe_email)
+            fe_t[u.id] = sum(g.target for g in gps_of.get(tid, []) if sc.owns(g))
+    return am_t, fe_t, fe_of, gps_of
+
+
+def add_targets(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Adds `targetGps` to AM / FE / FRT rows (unit_json / am_json, nested lists included): AM = all GPs of the
+    ticket, FE = the FE's GPs, FRT = its one GP's target."""
+    flat: list[dict[str, Any]] = []
+
+    def walk(xs):
+        for x in xs:
+            flat.append(x)
+            if isinstance(x.get("frt"), list):
+                walk(x["frt"])
+
+    walk(rows)
+    am_t, fe_t, _fe_of, gps_of = _targets(db, {x["ticketId"] for x in flat})
+    gp_t = {g.id: g.target for gs in gps_of.values() for g in gs}
+    for x in flat:
+        x["targetGps"] = am_t.get(x["ticketId"]) if x["level"] == "AM" else fe_t.get(x["id"]) if x["level"] == "FE" else gp_t.get(x.get("gpId"))
+    return rows
+
+
+def gp_tickets(db: Session, gp_ids) -> dict[int, dict[str, Any]]:
+    """GP row id -> its AM / FE / FRT ticket IDs and target GPs (the Excel sheets). Read only."""
+    from .task import FeScope
+
+    ids = [i for i in set(gp_ids) if i]
+    if not ids:
+        return {}
+    gps = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_(ids)))}
+    tids = {g.ticket_id for g in gps.values()}
+    am_t, fe_t, fe_of, _gps_of = _targets(db, tids)
+    codes = dict(db.execute(select(Ticket.id, Ticket.code).where(Ticket.id.in_(tids))).all())
+    frt = {u.task_gp_id: u for u in db.scalars(select(TicketUnit).where(TicketUnit.task_gp_id.in_(ids)))}
+    out = {}
+    for gid, g in gps.items():
+        fe = next((u for u in fe_of.get(g.ticket_id, []) if FeScope(u.fe_name or "", u.fe_email).owns(g)), None)
+        fu = frt.get(gid)
+        out[gid] = {
+            "amCode": codes.get(g.ticket_id), "amTarget": am_t.get(g.ticket_id),
+            "feCode": fe.code if fe is not None else None, "feTarget": fe_t.get(fe.id) if fe is not None else None,
+            "frtCode": fu.code if fu is not None else None, "frtTarget": g.target if fu is not None else None,
+        }
+    return out
+
+
+def hier_values(info: dict[str, Any] | None) -> list[Any]:
+    """The six Excel cells of HIER_COLS for one GP ("—" = no such ticket: no FE / no FRT team on the GP)."""
+    i = info or {}
+    return [i.get("amCode") or "—", i.get("amTarget") if i.get("amTarget") is not None else "", i.get("feCode") or "—",
+            i.get("feTarget") if i.get("feTarget") is not None else "", i.get("frtCode") or "—", i.get("frtTarget") if i.get("frtTarget") is not None else ""]
 
 
 AM_ACTIVE = ("IN_PROGRESS", "PENDING_REVIEW", "CHANGES_REQUESTED")  # AM ticket: work started, not closed
@@ -520,7 +608,7 @@ def in_progress(db: Session, ticket_ids) -> list[dict[str, Any]]:
     order = {lv: i for i, lv in enumerate(LEVELS)}
     rows.sort(key=lambda r: r["updatedAt"] or "", reverse=True)
     rows.sort(key=lambda r: order[r["level"]])  # stable: latest first within each level
-    return rows
+    return add_targets(db, rows)
 
 
 def level_counts(db: Session, ticket_ids) -> dict[str, dict[str, int]]:
@@ -604,4 +692,4 @@ def listing(db: Session, circles: frozenset[str] | None, f: dict[str, Any], page
     rows.sort(key=lambda r: (-r["ticketId"], r["code"]))  # newest AM ticket first; its ID prefix keeps FE -> FRT under it
     total = len(rows)
     start = (page - 1) * page_size
-    return {"items": rows[start:start + page_size], "total": total, "page": page, "pageSize": page_size, "counts": counts}
+    return {"items": add_targets(db, rows[start:start + page_size]), "total": total, "page": page, "pageSize": page_size, "counts": counts}

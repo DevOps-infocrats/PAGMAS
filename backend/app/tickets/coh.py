@@ -117,7 +117,7 @@ def gp_lists(db: Session, user: CurrentUser) -> dict[str, Any]:
             if g.letter_date is None and g.amc_on is None:
                 continue
             row = {
-                "ticketId": t.id, "ticket": t.code or f"TKT-{t.id:06d}", "ticketStatus": t.status, "week": task.week_code,
+                "ticketId": t.id, "gpId": g.id, "ticket": t.code or f"TKT-{t.id:06d}", "ticketStatus": t.status, "week": task.week_code,
                 "gpCode": g.gp_code, "gpName": g.gp_name, "circle": g.circle, "district": g.district, "block": g.block,
                 "areaManager": task.am_name, "fieldEngineer": g.fe_name,
                 "targetDate": (g.planned_date or task.week_end).isoformat(), "targetFromWeek": g.planned_date is None,
@@ -128,6 +128,11 @@ def gp_lists(db: Session, user: CurrentUser) -> dict[str, Any]:
                 letter.append(row)
             if g.amc_on is not None:
                 amc.append(row)
+    from .units import gp_tickets
+
+    hier = gp_tickets(db, [r["gpId"] for r in letter + amc])  # the AM / FE / FRT ticket IDs and target GPs (Excel)
+    for r in letter + amc:
+        r["hier"] = hier.get(r["gpId"])
     letter.sort(key=lambda r: (r["letterDate"] or "", r["ticket"], r["gpCode"]), reverse=True)
     amc.sort(key=lambda r: (r["amcDate"] or "", r["ticket"], r["gpCode"]), reverse=True)
     return {"isCoh": bool(tickets), "tickets": len(tickets), "letterSubmitted": len(letter), "amcConverted": len(amc), "letter": letter, "amc": amc}
@@ -151,7 +156,11 @@ def workbook(rows: list[dict[str, Any]], kind: str, user_name: str) -> bytes:
     cols = ["S.No.", "Ticket", "Week", "GP Code", "GP Name", "Circle", "District", "Block", "Area Manager", "FE Name", "Target Date", date_col]
     if kind == "amc":
         cols.insert(11, "Letter Submitted Date")
-    widths = [6, 14, 9, 12, 24, 14, 16, 18, 22, 22, 13, 16, 16]
+    from .units import HIER_COLS, hier_values
+
+    base = len(cols)  # ticket hierarchy columns after every existing column
+    cols += [h for h, _w in HIER_COLS]
+    widths = [6, 14, 9, 12, 24, 14, 16, 18, 22, 22, 13, 16, 16][:base] + [14] * (base - 13 if base > 13 else 0) + [w for _h, w in HIER_COLS]
     for j, h in enumerate(cols):
         ws.write(3, j, h, head)
         ws.set_column(j, j, widths[j] if j < len(widths) else 14)
@@ -166,6 +175,8 @@ def workbook(rows: list[dict[str, Any]], kind: str, user_name: str) -> bytes:
                 ws.write_datetime(i, j, dt.datetime.fromisoformat(v), day)
             else:
                 ws.write(i, j, v if v is not None else "", cell)
+        for j, v in enumerate(hier_values(r.get("hier")), start=base):
+            ws.write(i, j, v, cell)
     ws.freeze_panes(4, 0)
     ws.autofilter(3, 0, max(3, 3 + len(rows)), len(cols) - 1)
     wb.close()

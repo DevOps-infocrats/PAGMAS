@@ -85,7 +85,7 @@ def _circle_ok(value: str | None, allowed: frozenset[str] | None) -> bool:
 EXTEND_MAX_DAYS = 28  # the Excel: the days after the week end it covers at most
 
 
-def build(db: Session, week: str | None = None, circle: str | None = None, allowed: frozenset[str] | None = None, extend: bool = False) -> dict[str, Any]:
+def build(db: Session, week: str | None = None, circle: str | None = None, allowed: frozenset[str] | None = None, extend: bool = False, with_ids: bool = False) -> dict[str, Any]:
     """The report of a ticket week; `circle`: one circle; `allowed`: only these circles (a non-admin's areas).
     `extend` (the Excel): the days run from the first ticket's generation (or the week start) to today (at most
     EXTEND_MAX_DAYS after the week end) – work done after the week on its tickets counts too. The page: the 7 week days."""
@@ -271,7 +271,7 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
     gp_rows = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_({c["gpId"] for c in completed})))} if completed else {}
     completed.sort(key=lambda c: c["at"], reverse=True)
     completed_out = [
-        {"gpCode": gp_rows[c["gpId"]].gp_code if c["gpId"] in gp_rows else None, "gpName": gp_rows[c["gpId"]].gp_name if c["gpId"] in gp_rows else None,
+        {"gpId": c["gpId"], "gpCode": gp_rows[c["gpId"]].gp_code if c["gpId"] in gp_rows else None, "gpName": gp_rows[c["gpId"]].gp_name if c["gpId"] in gp_rows else None,
          "block": gp_rows[c["gpId"]].block if c["gpId"] in gp_rows else None, "ticketId": c["ticketId"], "ticket": c["ticket"], "what": c["what"], "by": c["by"], "byRole": c["byRole"],
          "at": _utc(c["at"]).isoformat() if c["at"] else None}
         for c in completed[:MAX_COMPLETED]
@@ -419,6 +419,7 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
             "submissions": sum(c["subs"] for c in act.values()),
             "reviews": sum(c.get("reviews", 0) for c in act.values()),
             "lastActive": iso_max([last_sub.get(p["userId"]), last_rev.get(p["userId"])]) if p.get("userId") else None,
+            **({"ticketIds": sorted(p["tickets"]), "gpIds": list(p["gps"])} if with_ids else {}),
         })
     for code, tm in teams.items():
         users = logins.get(code, [])
@@ -436,6 +437,7 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
             "submissions": sum(c["subs"] for c in act.values()),
             "reviews": 0,
             "lastActive": iso_max([last_sub.get(u.id) for u in users]),
+            **({"ticketIds": sorted(tm["tickets"]), "gpIds": list(tm["gps"])} if with_ids else {}),
         })
     people_out.sort(key=lambda x: (WORKERS.index(x["role"]), x["name"].lower()))
     for row in role_rows:
@@ -470,7 +472,7 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
         else:  # SME / COH → AM, or an AM return on a GP without a Field Engineer
             to, to_role = (k.am_name if k is not None else None) or "AM", "AM"
         ret_items.append({
-            "at": _utc(x.at).isoformat(), "gpCode": g.gp_code, "gpName": g.gp_name, "block": g.block, "ticketId": t.id, "ticket": t.code,
+            "at": _utc(x.at).isoformat(), "gpId": g.id, "gpCode": g.gp_code, "gpName": g.gp_name, "block": g.block, "ticketId": t.id, "ticket": t.code,
             "by": x.actor_name, "byRole": x.role, "to": to, "toRole": to_role, "frtCode": g.frt_code if to_role == "FRT" else None, "remark": x.remark,
         })
     ret_items.sort(key=lambda r: r["at"], reverse=True)
@@ -958,7 +960,22 @@ def excel_details(db: Session, data: dict[str, Any]) -> dict[str, Any]:
     empty = (data.get("cards") or {}).get("tickets", 0) - len(tids)
     if empty > 0:
         warnings.append(f"{empty} ticket(s) of this week have no GPs.")
-    return {"rows": rows, "act": act, "warnings": warnings, "made": made, "tickets": len(tids)}
+    from .units import gp_tickets
+
+    people_gps = [gid for p in data.get("people", []) for gid in p.get("gpIds", [])]
+    every = people_gps + [it["gpId"] for it in items] + [x.get("gpId") for x in (data.get("returns") or {}).get("items", [])] + [c.get("gpId") for c in data.get("completed", [])]
+    hier = gp_tickets(db, every)
+    all_t = {tid for p in data.get("people", []) for tid in p.get("ticketIds", [])}
+    code_t = dict(db.execute(select(Ticket.id, Ticket.code).where(Ticket.id.in_(all_t))).all()) if all_t else {}
+    own: list[list[str]] = []
+    for p in data.get("people", []):
+        if p["role"] == "AM":
+            ids = sorted(code_t[t] for t in p.get("ticketIds", []) if code_t.get(t))
+        else:
+            key = "feCode" if p["role"] == "FE" else "frtCode"
+            ids = sorted({hier[g][key] for g in p.get("gpIds", []) if g in hier and hier[g][key]})
+        own.append(ids)
+    return {"rows": rows, "act": act, "warnings": warnings, "made": made, "tickets": len(tids), "hier": hier, "own": own}
 
 
 def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
@@ -967,7 +984,11 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
     every day from the ticket's generation to today), AM Achievement, Returns, Completed."""
     import xlsxwriter
 
+    from .units import HIER_COLS, HIER_NOTE, hier_values
+
     det = details or {"rows": [], "act": [], "warnings": [], "made": {}, "tickets": 0}
+    hier = det.get("hier") or {}
+    hier_heads, hier_widths = [h for h, _w in HIER_COLS], [w for _h, w in HIER_COLS]
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#0F766E"})
@@ -1050,6 +1071,7 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
         r += 2
     ws.write(r, 0, "What the words mean", sub)
     for t in (
+        f"Ticket IDs (last columns of GP Status, Returns and Completed): {HIER_NOTE}. Example: TKT-000123 → TKT-000123-FE-01 → TKT-000123-FE-01-FRT-001. '—' = the GP has no FE / no FRT team.",
         "Daily Achievement = the daily entry for a GP (category + remark + photo). Who fills it: the FRT team if it has a login, else the FE (if the FE has a login), else the AM.",
         "GP Status sheet: one row per GP – its team with their logins, 'Status now' (what happened to the GP) and 'Pending with' (whose hand the work is in, and why). Filter 'Status now' = NOT FILLED to see who has not filled.",
         "Dates on GP Status: the day of each step. A step done twice shows both days (e.g. FE filled on 24-Nov, 26-Nov) and 'Returned' tells why: 25-Nov: AM → FE (photo not clear). Empty = not done yet.",
@@ -1073,11 +1095,13 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
     gs.write(0, 11, "Where the GP stands now", head)
     gs.merge_range(0, 12, 0, 16, "Work is pending with", head)
     gs.merge_range(0, 17, 0, 17 + len(steps_d) + 1, "Who did what, when (every date – a step done twice shows both dates)", head)
-    gs.write(0, 18 + len(steps_d) + 1, "", head)
     cols = ["GP code", "GP name", "Circle", "BA", "Block", "AM", "AM login", "FE", "FE login", "FRT team", "FRT login", "Status now",
             "Pending with (name)", "Role", "Why with them", "Pending (days)", "Pending since",
-            "Ticket generated on", *[lbl for _k, lbl in steps_d], "Returned (when: who → whom, why)", "Ticket(s)"]
-    table(gs, 1, cols, [10, 20, 12, 16, 14, 20, 9, 20, 9, 14, 9, 52, 24, 7, 52, 9, 12, 12, *[13] * len(steps_d), 46, 22])
+            "Ticket generated on", *[lbl for _k, lbl in steps_d], "Returned (when: who → whom, why)"]
+    gs_old = len(cols)
+    cols += hier_heads  # ticket hierarchy: the AM / FE / FRT ticket IDs and target GPs (after every existing column)
+    gs.merge_range(0, gs_old, 0, len(cols) - 1, "Ticket IDs and target GPs: AM → FE → FRT", head)
+    table(gs, 1, cols, [10, 20, 12, 16, 14, 20, 9, 20, 9, 14, 9, 52, 24, 7, 52, 9, 12, 12, *[13] * len(steps_d), 46, *hier_widths])
     yes = wb.add_format({"font_color": "#15803D", "align": "center"})
     no = wb.add_format({"font_color": "#B91C1C", "bold": True, "align": "center"})
     nf = wb.add_format({"bold": True, "font_color": "#B91C1C"})
@@ -1091,7 +1115,8 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
         done = x["bucket"] == "closed"
         gs.write_row(i, 12, ["—" if done else (x["who"] or ""), "" if done else (x["whoRole"] or ""), x["why"]])
         gs.write(i, 15, "" if done else x["days"], hot if not done and x["days"] > OVERDUE_DAYS else num)
-        gs.write_row(i, 16, [_d(x["since"]), x["generated"], *[x["dates"][k] for k, _l in steps_d], x["returned"], x["tickets"]])
+        gs.write_row(i, 16, [_d(x["since"]), x["generated"], *[x["dates"][k] for k, _l in steps_d], x["returned"]])
+        gs.write_row(i, gs_old, hier_values(hier.get(x["gpId"])))
     gs.freeze_panes(2, 2)
     if rows:
         gs.autofilter(1, 0, len(rows) + 1, len(cols) - 1)
@@ -1100,9 +1125,10 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
     ta = wb.add_worksheet("Team Activity")
     owner = {(o["role"], o["who"]): o for o in det["act"]}
     st_keys = [("A", "Rectification Done"), ("B", "Ready for Letter"), ("C", "Revisit Required"), ("D", "Non-Doable"), ("E", "Letter Submitted")]
-    cols = ["Role", "Name / FRT team", "E-mail", "FE of the FRT team", "Login", "Last sign-in", "Last daily submission", "Tickets", "GPs on their tickets",
+    cols = ["Role", "Name / FRT team", "E-mail", "FE of the FRT team", "Login", "Last sign-in", "Last daily submission", "Tickets", "Ticket ID(s)", "GPs on their tickets",
             "Has to act on (GPs)", *[lbl for _k, lbl in st_keys], "Returned to them", *[_d(d)[:6] for d in days], "Days with work"]
-    table(ta, 0, cols, [6, 26, 26, 20, 7, 17, 17, 8, 10, 10, *[11] * len(st_keys), 9, *[7] * len(days), 9])
+    table(ta, 0, cols, [6, 26, 26, 20, 7, 17, 17, 8, 44, 10, 10, *[11] * len(st_keys), 9, *[7] * len(days), 9])
+    own_ids = det.get("own") or []
     for i, p in enumerate(data.get("people", []), start=1):
         st = p.get("status") or {}
         who = p["name"]
@@ -1114,7 +1140,7 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
             cells.append((f"{c['gps']} GP" if c.get("gps") else f"{c.get('reviews', 0)} rev") if c else "")
         ta.write_row(i, 0, [p["role"], name, p.get("email") or "", ", ".join(p.get("fes") or []), "Yes" if p["account"] else "No",
                             _d(p.get("lastLogin"), True) or "Never signed in", _d(p.get("lastSubmission"), True) or "None yet",
-                            p["tickets"], p["gps"], (o or {}).get("total", 0), *[st.get(k, 0) for k, _l in st_keys], p.get("returns", 0), *cells, p["activeDays"]])
+                            p["tickets"], ", ".join(own_ids[i - 1]) if i - 1 < len(own_ids) and own_ids[i - 1] else "—", p["gps"], (o or {}).get("total", 0), *[st.get(k, 0) for k, _l in st_keys], p.get("returns", 0), *cells, p["activeDays"]])
     ta.freeze_panes(1, 2)
     if data.get("people"):
         ta.autofilter(0, 0, len(data["people"]), len(cols) - 1)
@@ -1131,20 +1157,20 @@ def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
 
     # ---------------------------------------------------------------- Returns
     rt = wb.add_worksheet("Returns")
-    table(rt, 0, ["When", "GP code", "GP name", "Block", "Ticket", "Returned by", "By role", "Returned to", "To role", "Reason (remark)"], [17, 10, 20, 14, 12, 20, 8, 20, 8, 50])
+    table(rt, 0, ["When", "GP code", "GP name", "Block", "Returned by", "By role", "Returned to", "To role", "Reason (remark)", *hier_heads], [17, 10, 20, 14, 20, 8, 20, 8, 50, *hier_widths])
     ret = (data.get("returns") or {}).get("items", [])
     for i, x in enumerate(ret, start=1):
-        rt.write_row(i, 0, [_d(x["at"], True), x["gpCode"] or "", x["gpName"] or "", x["block"] or "", x["ticket"] or "", x["by"] or "", x["byRole"] or "",
-                            x["to"] or "", x["toRole"] or "", x["remark"] or ""])
+        rt.write_row(i, 0, [_d(x["at"], True), x["gpCode"] or "", x["gpName"] or "", x["block"] or "", x["by"] or "", x["byRole"] or "",
+                            x["to"] or "", x["toRole"] or "", x["remark"] or "", *hier_values(hier.get(x.get("gpId")))])
     if not ret:
         rt.write(1, 0, "No GP of this week was returned.", note)
 
     # ---------------------------------------------------------------- Completed
     cp = wb.add_worksheet("Completed")
-    table(cp, 0, ["When", "What", "GP code", "GP name", "Block", "Ticket", "By", "Role"], [17, 24, 10, 20, 14, 12, 20, 8])
+    table(cp, 0, ["When", "What", "GP code", "GP name", "Block", "By", "Role", *hier_heads], [17, 24, 10, 20, 14, 20, 8, *hier_widths])
     done = data.get("completed", [])
     for i, c in enumerate(done, start=1):
-        cp.write_row(i, 0, [_d(c["at"], True), LABEL.get(c["what"], c["what"]), c["gpCode"] or "", c["gpName"] or "", c["block"] or "", c["ticket"] or "", c["by"] or "", c["byRole"] or ""])
+        cp.write_row(i, 0, [_d(c["at"], True), LABEL.get(c["what"], c["what"]), c["gpCode"] or "", c["gpName"] or "", c["block"] or "", c["by"] or "", c["byRole"] or "", *hier_values(hier.get(c.get("gpId")))])
     if not done:
         cp.write(1, 0, f"No GP was completed between {_d(first_day)} and {_d(last_day)}.", note)
     wb.close()

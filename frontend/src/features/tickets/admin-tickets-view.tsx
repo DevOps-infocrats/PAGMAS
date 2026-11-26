@@ -367,7 +367,7 @@ function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onC
             <table className="w-full min-w-[64rem] text-[0.8125rem]">
               <thead className="sticky top-0 z-10 bg-muted text-left text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  {["Level", "Ticket", "Area Manager", "FE / FRT · GP", "Status", "Who worked · what was reported", "Waiting for", "Last activity"].map((h) => (
+                  {["Level", "Ticket", "Area Manager", "FE / FRT · GP", "Target GPs", "Status", "Who worked · what was reported", "Waiting for", "Last activity"].map((h) => (
                     <th key={h} className="px-3 py-2 font-semibold">
                       {h}
                     </th>
@@ -396,6 +396,7 @@ function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onC
                       <td className="px-3 py-2">
                         {r.level === "FE" ? r.fe : r.level === "FRT" ? `FRT ${r.frt} · GP ${r.gpCode} ${r.gpName ?? ""}` : <span className="text-muted-foreground">—</span>}
                       </td>
+                      <td className="px-3 py-2 text-right font-semibold tabular">{r.targetGps ?? "—"}</td>
                       <td className="px-3 py-2">
                         <UnitStatusBadge status={r.status} label={r.statusLabel} />
                       </td>

@@ -336,7 +336,10 @@ export function OwnTicketId({ t, className }: { t: { code: string; myUnit?: Tick
         {u.code}
         {u.count > 1 && <span className="ml-1 text-[0.6875rem] font-medium text-muted-foreground">+{u.count - 1} more</span>}
       </span>
-      <span className="whitespace-nowrap text-[0.6875rem] font-normal text-muted-foreground">AM ticket {t.code}</span>
+      <span className="whitespace-nowrap text-[0.6875rem] font-normal text-muted-foreground">
+        AM ticket {t.code}
+        {u.targetGps != null ? ` · target ${u.targetGps} GP${u.targetGps === 1 ? "" : "s"}` : ""}
+      </span>
     </span>
   );
 }
@@ -393,6 +396,7 @@ export function TicketInfo({ t, showAssignee }: { t: TicketDetail; showAssignee:
           {t.myUnit && (
             <span className="rounded-full border border-border px-2 py-0.5 text-[0.75rem] font-semibold" title={`Your ${t.myUnit.level} ticket – its own status (the AM ticket's status is next to it)`}>
               Your {t.myUnit.level} ticket{t.myUnit.count > 1 ? `s: ${t.myUnit.open} of ${t.myUnit.count} open` : `: ${t.myUnit.statusLabel}`}
+              {t.myUnit.targetGps != null ? ` · target ${t.myUnit.targetGps} GP${t.myUnit.targetGps === 1 ? "" : "s"}` : ""}
             </span>
           )}
           <TicketStatusBadge status={t.status} />

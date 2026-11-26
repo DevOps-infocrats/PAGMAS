@@ -1001,6 +1001,10 @@ def export_xlsx(db: Session, user: CurrentUser, status: str | None, q: str | Non
         ("Area Manager", 18), ("Status", 34), ("Pending with", 12), ("Proposed by", 18), ("Proposed on", 12), ("E1 complete", 11), ("E2 complete", 11), ("Sent to AM on", 13),
         ("AM forwarded on", 14), ("SME recommended on", 16), ("COH forwarded on", 15), ("MGG decision", 13), ("Decided by", 18), ("Decided on", 12), ("Decision remark", 30), ("Updated", 12),
     ]
+    from .units import HIER_COLS, gp_tickets, hier_values
+
+    cols += HIER_COLS  # the AM / FE / FRT ticket IDs and target GPs of the case's GP (after every existing column)
+    hier = gp_tickets(db, [c.task_gp_id for c, _ in rows])
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False})
     ws = wb.add_worksheet("Non-Doable cases")
@@ -1026,7 +1030,7 @@ def export_xlsx(db: Session, user: CurrentUser, status: str | None, q: str | Non
             c.fe_name or "", (g.frt_code or "") if g else "", (task.am_name or "") if task else "", STATUS_LABEL.get(c.status, c.status), _pending_with(c) or "", c.created_by_name or "",
             day(c.created_at), "Yes" if chk["e1"]["complete"] else "No", "Yes" if chk["e2"]["complete"] else "No", day(sent_am), day(last_at.get((c.id, "AM_FORWARD"))),
             day(last_at.get((c.id, "SME_RECOMMEND"))), day(last_at.get((c.id, "COH_FORWARD"))), (c.decision or "").title(), c.decided_by_name or "", day(c.decided_at), c.decision_remark or "",
-            day(c.updated_at),
+            day(c.updated_at), *hier_values(hier.get(c.task_gp_id)),
         ]
         for i, v in enumerate(values):
             ws.write_string(r, i, str(v), cell)

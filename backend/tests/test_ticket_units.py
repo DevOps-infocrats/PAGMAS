@@ -276,3 +276,67 @@ def test_existing_tickets_get_their_children_without_changes(client, unit_org, m
         assert (t.status, t.code, t.subject, t.updated_at) == before
         n = db.scalar(select(func.count()).select_from(TicketUnit).where(TicketUnit.ticket_id == tid))
         assert n == 2 + len(unit_org["one"]) + 1
+
+
+def test_targets_and_ticket_ids_in_the_excel_sheets(client, unit_org, mail):  # noqa: F811
+    """Target GPs of every level (AM = all GPs, FE = the FE's GPs, FRT = its GP) on the screens, and the AM / FE / FRT
+    ticket IDs with their targets as the LAST columns of the Excel sheets (the existing columns keep their place)."""
+    import io
+
+    from python_calamine import CalamineWorkbook
+
+    from app.tickets.units import HIER_COLS
+
+    heads = [h for h, _w in HIER_COLS]
+    tid = _ticket(client, unit_org)
+    login(client)
+    d = client.get(f"/api/v1/tickets/{tid}").json()
+    am_code, gps = d["code"], d["task"]["gps"]
+    total = sum(g["target"] for g in gps)
+    one_target = sum(g["target"] for g in gps if g["gpCode"] in unit_org["one"])
+    tree = _tree(client, tid)
+    assert tree["ticket"]["targetGps"] == total
+    fe1 = next(f for f in tree["fe"] if f["fe"] == "Test FE One")
+    assert fe1["targetGps"] == one_target and all(x["targetGps"] == 1 for x in fe1["frt"])
+    login(client, FE1)
+    assert client.get(f"/api/v1/tickets/{tid}").json()["myUnit"]["targetGps"] == one_target
+    login(client, FRT)
+    assert client.get(f"/api/v1/tickets/{tid}").json()["myUnit"]["targetGps"] == len(unit_org["one"])
+
+    # the GP assignment workbook: existing columns as before, the six new ones at the end
+    login(client)
+    rows = CalamineWorkbook.from_filelike(io.BytesIO(client.get(f"/api/v1/tickets/{tid}/task/assignment.xlsx").content)).get_sheet_by_name("GP Task").to_python()
+    head = rows[4]
+    assert head[7] == "GP Code" and head[-6:] == heads
+    g = next(x for x in gps if x["gpCode"] in unit_org["one"])
+    row = next(r for r in rows[5:] if str(r[7]) == str(g["gpCode"]))
+    assert row[-6] == am_code and row[-5] == total and row[-4] == f"{am_code}-FE-01" and row[-3] == one_target
+    assert str(row[-2]).startswith(f"{am_code}-FE-01-FRT-") and row[-1] == 1
+    two = next(x for x in gps if x["gpCode"] in unit_org["two"])  # FE Two's GP: no FRT team
+    row2 = next(r for r in rows[5:] if str(r[7]) == str(two["gpCode"]))
+    assert row2[-4] == f"{am_code}-FE-02" and row2[-2] == "—"
+
+    # the Ticket Report Excel: GP Status ends with the same six columns
+    wb = CalamineWorkbook.from_filelike(io.BytesIO(client.get("/api/v1/tickets/report.xlsx", params={"week": unit_org["week"]}).content))
+    gs = wb.get_sheet_by_name("GP Status").to_python()
+    assert gs[1][0] == "GP code" and gs[1][-6:] == heads
+    # each GP is listed once (on its newest ticket of the week – other test files may add tickets with the same GPs):
+    # its three IDs belong together – the FRT ID starts with its FE ID, the FE ID with its AM ID
+    for r in gs[2:]:
+        am_id, fe_id, frt_id = str(r[-6]), str(r[-4]), str(r[-2])
+        assert am_id.startswith("TKT-")
+        assert fe_id == "—" or fe_id.startswith(f"{am_id}-FE-")  # "—" = the GP's ticket has no FE ticket for it
+        assert frt_id == "—" or frt_id.startswith(f"{fe_id if fe_id != '—' else am_id}-FRT-")
+
+    # Team Activity: each person's OWN ticket IDs – AM: AM tickets, FE: FE tickets, FRT: FRT tickets
+    ta = wb.get_sheet_by_name("Team Activity").to_python()
+    h = [str(x) for x in ta[0]]
+    assert h[h.index("Tickets") + 1] == "Ticket ID(s)"
+    col = h.index("Ticket ID(s)")
+    by = {(str(r[0]), str(r[1])): str(r[col]) for r in ta[1:] if r and r[0]}
+    am_cell = next(v for (rl, _n), v in by.items() if rl == "AM" and am_code in v)
+    assert all(x.startswith("TKT-") and "-FE-" not in x for x in am_cell.split(", "))
+    fe_cell = next(v for (rl, _n), v in by.items() if rl == "FE" and f"{am_code}-FE-01" in v.split(", "))
+    assert all("-FE-" in x and "-FRT-" not in x for x in fe_cell.split(", "))
+    frt_cell = next(v for (rl, _n), v in by.items() if rl == "FRT" and f"{am_code}-FE-01-FRT-" in v)
+    assert all("-FRT-" in x for x in frt_cell.split(", "))
