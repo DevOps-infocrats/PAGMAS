@@ -72,6 +72,9 @@ export const ticketApi: TicketApi = IS_LIVE
   ? httpTicketApi
   : {
       getKpis: unavailable,
+      getGpCategories: unavailable,
+      getWorking: unavailable,
+      getGpTimeline: unavailable,
       list: unavailable,
       get: unavailable,
       myWeeks: unavailable,

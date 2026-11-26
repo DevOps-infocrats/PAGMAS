@@ -171,9 +171,50 @@ class ChangesIn(BaseModel):
     comment: str = Field(min_length=5, max_length=5_000)
 
 
+def _list_filters(
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    status_: Annotated[Literal[STATUSES] | None, Query(alias="status")] = None,  # type: ignore[valid-type]
+    priority: Annotated[Literal[PRIORITIES] | None, Query()] = None,  # type: ignore[valid-type]
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    circle: Annotated[str | None, Query(max_length=80)] = None,
+    area_manager: Annotated[str | None, Query(alias="areaManager", max_length=160)] = None,
+    week: Annotated[str | None, Query(pattern=r"^W-\d{1,2}$")] = None,
+    gp: Annotated[str | None, Query(max_length=100)] = None,
+    progress_date: Annotated[dt.date | None, Query(alias="progressDate")] = None,
+) -> dict:
+    """The Admin Tickets list filters (same names as GET /tickets) – for its KPIs and GP categories; only those given."""
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The 'from' date is after the 'to' date")
+    f = {"search": search, "status": status_, "priority": priority, "date_from": date_from, "date_to": date_to, "circle": circle,
+         "area_manager": area_manager, "week": week, "gp": gp, "progress_date": progress_date}
+    return {k: v for k, v in f.items() if v not in (None, "")}
+
+
 @router.get("/kpis")
-def kpis(scope: Scope = "mine", user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    return service.kpis(db, _scope_user(scope, user), user.circles if scope == "all" else None)
+def kpis(scope: Scope = "mine", f: dict = Depends(_list_filters), user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """Tickets per status; with the list filters (Admin Tickets): only the tickets the list shows. Admin Tickets
+    (scope=all) also: the people of those tickets – AM, FEs, FRT teams – and how many of them worked (work)."""
+    out = service.kpis(db, _scope_user(scope, user), user.circles if scope == "all" else None, f or None)
+    if scope == "all":
+        out["work"] = service.work_totals(db, service.filtered_ids(db, user.circles, f))
+    return out
+
+
+@router.get("/gp-categories")
+def gp_categories(f: dict = Depends(_list_filters), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Admin Tickets: category-wise (A–E) GPs of the tickets the list shows for these filters (each GP code once);
+    no filter = every GP-wise task ticket (the same as /gp-monitor/summary?basis=category)."""
+    mf: dict = {"circles": user.circles, "withOwners": True}
+    if f:
+        mf["ticketIds"] = service.filtered_ids(db, user.circles, f)
+    return monitor.summary(db, mf, "category")
+
+
+@router.get("/working")
+def working(f: dict = Depends(_list_filters), user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Admin Tickets – "Tickets in Progress": the tickets (of the list filters) someone works on – who, what was done."""
+    return {"items": service.working_tickets(db, service.filtered_ids(db, user.circles, f))}
 
 
 @router.get("")
@@ -425,13 +466,14 @@ def ticket_report(week: ReportWeek = None, circle: ReportCircle = None, user: Cu
 def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, user: CurrentUser = Depends(_report_page), db: Session = Depends(get_db)) -> Response:
     from ..tickets import report
 
-    data = report.build(db, week, circle, area_circles(db, user))
+    # the Excel: the days from the ticket's generation to today (work after the week counts), every GP once, who acts
+    data = report.build(db, week, circle, area_circles(db, user), extend=True)
     code = (data.get("week") or {}).get("code", "no-week")
     import re
 
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", circle).strip("_") if circle else ""
     name = f"Ticket_Report_{code}" + (f"_{safe}" if safe else "") + ".xlsx"
-    return Response(report.xlsx(data), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+    return Response(report.xlsx(data, report.excel_details(db, data)), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
 @router.get("/gp-monitor/summary")
@@ -638,6 +680,28 @@ def coh_close(ticket_id: int, body: CohCloseIn, request: Request, user: CurrentU
 class ReassignIn(BaseModel):
     recipientId: int = Field(ge=1)  # the FE recipient of this ticket who takes the GP
     remark: str | None = Field(default=None, max_length=tasks.MAX_REMARK)
+
+
+@router.get("/{ticket_id}/gps/{gp_id}/timeline")
+def gp_timeline(ticket_id: int, gp_id: int, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    """GP Timeline: everything that happened to one GP of the ticket – who, when, what, remark, proof (read only).
+    The same rule as the GP detail: the ticket's people; an FE only their GPs, an SME / COH the GPs sent to them."""
+    from ..security.roles import can_open
+    from ..tickets import timeline
+
+    try:
+        t = service.visible(db, ticket_id, user)
+        scope = tasks.view_of(db, t, user)
+    except TicketError as exc:
+        # the Ticket Report (a role with that page): the GPs of the report's tickets – only of the user's circles
+        t = db.get(Ticket, ticket_id)
+        if t is None or t.deleted_at is not None or not can_open(db, user, ("tickets-report",)) or not service.ticket_in_circles(db, t, area_circles(db, user)):
+            raise _fail(exc) from None
+        scope = None
+    g = db.get(TicketTaskGp, gp_id)
+    if g is None or g.ticket_id != t.id or (scope is not None and not scope.owns(g)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "GP not found on this ticket")
+    return timeline.build(db, t, g)
 
 
 @router.post("/{ticket_id}/gps/{gp_id}/reassign")

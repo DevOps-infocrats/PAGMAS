@@ -82,8 +82,13 @@ def _circle_ok(value: str | None, allowed: frozenset[str] | None) -> bool:
     return key(value) in allowed or any(key(p) in allowed for p in str(value or "").split(","))
 
 
-def build(db: Session, week: str | None = None, circle: str | None = None, allowed: frozenset[str] | None = None) -> dict[str, Any]:
-    """The report of a ticket week; `circle`: one circle; `allowed`: only these circles (a non-admin's areas)."""
+EXTEND_MAX_DAYS = 28  # the Excel: the days after the week end it covers at most
+
+
+def build(db: Session, week: str | None = None, circle: str | None = None, allowed: frozenset[str] | None = None, extend: bool = False) -> dict[str, Any]:
+    """The report of a ticket week; `circle`: one circle; `allowed`: only these circles (a non-admin's areas).
+    `extend` (the Excel): the days run from the first ticket's generation (or the week start) to today (at most
+    EXTEND_MAX_DAYS after the week end) – work done after the week on its tickets counts too. The page: the 7 week days."""
 
     def keep(c: str | None) -> bool:
         return (not circle or (c or "") == circle) and _circle_ok(c, allowed)
@@ -106,6 +111,12 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
     task_of = {t.id: k for k, t in week_tasks}
     # the day each ticket was generated – nobody can submit on a ticket before it exists
     made_on = {t.id: _local_date(t.created_at) for _k, t in week_tasks}
+    week_end = end  # the extended days (after it) count only the work on THIS week's tickets
+    if extend:
+        first = min((d for d in made_on.values() if d), default=start)
+        start = min(start, first)
+        end = max(end, min(today, end + dt.timedelta(days=EXTEND_MAX_DAYS)))
+        days = [start + dt.timedelta(days=i) for i in range((end - start).days + 1)]
 
     def since(ticket_ids) -> str | None:
         d = min((made_on[i] for i in ticket_ids if made_on.get(i)), default=None)
@@ -158,6 +169,9 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
         select(TicketProgress, Ticket).join(Ticket, Ticket.id == TicketProgress.ticket_id).where(Ticket.deleted_at.is_(None), TicketProgress.submitted_at >= lo, TicketProgress.submitted_at < hi)
     ))
     subs = [(s, t) for s, t in subs if start <= (_local_date(s.submitted_at) or start) <= end]
+    own = set(tids)
+    if extend:  # after the week: only this week's tickets (other weeks' tickets have their own report)
+        subs = [(s, t) for s, t in subs if (_local_date(s.submitted_at) or start) <= week_end or t.id in own]
     sub_tids = {t.id for _s, t in subs}
     if limited and sub_tids:
         circle_of = {k.ticket_id: k.circle for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(sub_tids)))}
@@ -227,6 +241,8 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
     for uid, uname, role, act, at, _tid in rev_rows:
         if uid is None or role not in ("FE", "AM") or not (start <= (_local_date(at) or start) <= end):
             continue
+        if extend and (_local_date(at) or start) > week_end and _tid not in own:
+            continue
         key = (role, f"u{uid}")
         if not any(k[0] == role and login_of(k[1]) == key[1] for k in people):
             people[(role, f"{key[1]}|{norm(uname)}")] = {"role": role, "name": uname, "email": None, "userId": uid, "account": True, "tickets": set(), "gps": {}, "circles": set(), "codes": set()}
@@ -247,6 +263,8 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
     ):
         if start <= (_local_date(e.at) or start) <= end:
             completed.append({"gpId": e.task_gp_id, "ticketId": t.id, "ticket": t.code, "what": "ND_APPROVED", "by": e.actor_name, "byRole": "MGG", "at": e.at})
+    if extend:
+        completed = [c for c in completed if c["ticketId"] in own or (_local_date(c["at"]) or start) <= week_end]
     if limited and completed:
         circ = {k.ticket_id: k.circle for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_({c["ticketId"] for c in completed})))}
         completed = [c for c in completed if keep(circ.get(c["ticketId"]))]
@@ -461,6 +479,26 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
         ret_top[(r["toRole"], r["to"])] += 1
     pending = _pending(db, week_tasks, gps, today)
     bucket_of = {it["gpId"]: it["bucket"] for it in pending["items"]}
+    # one person per GP: the GPs this person has to fill (not filled) / work on again (revisit, returned) – the GP's
+    # reporter only (FRT team with a login, else the FE, else the AM), each GP code once. "status.none" stays every
+    # not-filled GP on their tickets.
+    item_of = {it["gpId"]: it for it in pending["items"]}
+    code_of_gp = {g.id: g.gp_code for g in gps}
+
+    def owned(role: str, gids, bucket: str) -> int:
+        return len({code_of_gp.get(gid) for gid in gids if (it := item_of.get(gid)) and it.get("primary") and it["bucket"] == bucket and it["whoRole"] == role})
+
+    by_key = {}
+    for (role, key), p in people.items():
+        if role in WORKERS and role != "FRT":
+            by_key[(role, p["name"], p["email"])] = list(p["gps"])
+    for x in people_out:
+        gids = by_key.get((x["role"], x["name"], x["email"]), []) if x["role"] != "FRT" else list(teams.get((x["frtCodes"] or [x["name"]])[0], {}).get("gps", {}))
+        x["toFill"] = owned(x["role"], gids, "not_filled")
+        x["toRework"] = owned(x["role"], gids, "field")
+    for row in role_rows:
+        if row["role"] in WORKERS:
+            row["toFill"] = sum(x.get("toFill", 0) for x in people_out if x["role"] == row["role"])
     am_rows = []
     for (role, _key), pp in people.items():
         if role != "AM" or not pp["tickets"]:
@@ -477,6 +515,16 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
             "pct": round(done_n * 100 / len(mine), 1) if mine else 0.0, "waiting": dict(waiting),
         })
     am_rows.sort(key=lambda a: (a["gps"] == 0, -a["pct"], -a["done"], -a["gps"], a["name"].lower()))  # top achiever first; no GPs last
+    # every GP once (a GP on two tickets of the week counts once): GPs, achieved, how many are on two tickets
+    by_code: dict[str, list[TicketTaskGp]] = defaultdict(list)
+    for g in gps:
+        by_code[g.gp_code or f"#{g.id}"].append(g)
+    cards["gpsUnique"] = len(by_code)
+    cards["doneUnique"] = sum(1 for rows_ in by_code.values() if any(cumulative(g) >= g.target for g in rows_))
+    cards["gpsOnTwoTickets"] = sum(1 for rows_ in by_code.values() if len({g.ticket_id for g in rows_}) > 1)
+    # after the week (the page shows the 7 week days): the daily work done AFTER the week on this week's tickets
+    if not extend and tids and today > week_end:
+        _after_week(db, week, circle, allowed, week_end, people_out, role_rows, cards)
     return {
         "week": w, "weeks": weeks, "circles": circles, "circle": circle, "today": today.isoformat(), "cards": cards, "roles": role_rows,
         "returns": {"items": ret_items, "top": [{"role": r, "name": n, "count": c} for (r, n), c in sorted(ret_top.items(), key=lambda kv: (-kv[1], kv[0][1].lower()))]},
@@ -485,6 +533,31 @@ def build(db: Session, week: str | None = None, circle: str | None = None, allow
         "completedTotal": len(completed), "trend": _trend(db, weeks, circle, allowed),
         "pending": pending,
     }
+
+
+def _after_week(db: Session, week: str | None, circle: str | None, allowed: frozenset[str] | None, week_end: dt.date,
+                people_out: list[dict[str, Any]], role_rows: list[dict[str, Any]], cards: dict[str, Any]) -> None:
+    """The page keeps the 7 week days; the work done after the week on THIS week's tickets is added as totals: per
+    person "afterWeek" (submissions, GPs, days), per role and in the cards "submissionsAfterWeek". Same counting rules
+    as the days of the week (the Excel's extended build, app.tickets.report.build(extend=True))."""
+    ext = build(db, week, circle, allowed, extend=True)
+    key = lambda p: (p["role"], p["name"], p.get("email"), tuple(p.get("frtCodes") or ()))  # noqa: E731
+    after: dict[tuple, dict[str, int]] = {}
+    for p in ext.get("people", []):
+        cells = [c for d, c in p["days"].items() if d > week_end.isoformat()]
+        after[key(p)] = {"subs": sum(c["subs"] for c in cells), "gps": sum(c["gps"] for c in cells), "days": sum(1 for c in cells if c["subs"] or c.get("reviews"))}
+    total = 0
+    by_role: dict[str, int] = defaultdict(int)
+    for p in people_out:
+        a = after.get(key(p), {"subs": 0, "gps": 0, "days": 0})
+        p["afterWeek"] = a
+        total += a["subs"]
+        by_role[p["role"]] += a["subs"]
+    cards["submissionsAfterWeek"] = total
+    cards["afterWeekUntil"] = (ext.get("days") or [{}])[-1].get("date")
+    for row in role_rows:
+        if row["role"] in WORKERS:
+            row["submissionsAfterWeek"] = by_role.get(row["role"], 0)
 
 
 # ---------------------------------------------------------------- pending with
@@ -501,6 +574,8 @@ PENDING_BUCKETS = (
     ("closed", "Completed"),
 )
 OVERDUE_DAYS = 2  # waiting longer than this: shown as overdue
+# how far a GP got (a GP on two tickets: the further row tells its real state)
+PROGRESS_RANK = {"not_filled": 0, "field": 1, "nd": 2, "fe_verify": 3, "am": 4, "sme": 5, "coh": 6, "closed": 7}
 
 
 def _pending(db: Session, week_tasks: list[tuple[TicketTask, Ticket]], gps: list[TicketTaskGp], today: dt.date) -> dict[str, Any]:
@@ -600,6 +675,7 @@ def _pending(db: Session, week_tasks: list[tuple[TicketTask, Ticket]], gps: list
         items.append({
             "gpId": g.id, "gpCode": g.gp_code, "gpName": g.gp_name, "block": g.block, "ticketId": t.id, "ticket": t.code, "bucket": bucket, "stage": label,
             "who": who, "whoRole": who_role, "since": since.isoformat() if since else None, "days": days,
+            "why": _why(bucket, who_role, code, code in frt_codes[g.ticket_id] if code else False, g.fe_name),
         })
     counts = defaultdict(int)
     overdue = defaultdict(int)
@@ -608,7 +684,39 @@ def _pending(db: Session, week_tasks: list[tuple[TicketTask, Ticket]], gps: list
         if it["bucket"] != "closed" and it["days"] > OVERDUE_DAYS:
             overdue[it["bucket"]] += 1
     items.sort(key=lambda it: (it["bucket"] == "closed", -it["days"], it["gpCode"] or ""))
-    return {"buckets": [{"key": k, "label": lbl, "count": counts[k], "overdue": overdue[k]} for k, lbl in PENDING_BUCKETS], "items": items, "overdueDays": OVERDUE_DAYS}
+    # every GP once: a GP on two tickets of the week – its row that got FURTHEST is the "primary" one (equal: the newest
+    # ticket's); the others stay for the per-ticket views (e.g. the Area Manager's GPs); "tickets" names all of them
+    of_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for it in items:
+        of_code[it["gpCode"] or f"#{it['gpId']}"].append(it)
+    gps_n, gps_late = defaultdict(int), defaultdict(int)
+    for rows_ in of_code.values():
+        top = max(rows_, key=lambda x: (PROGRESS_RANK.get(x["bucket"], 0), x["ticketId"]))
+        codes = [x["ticket"] for x in sorted(rows_, key=lambda x: x["ticketId"])]
+        for it in rows_:
+            it["primary"] = it is top
+            it["tickets"] = codes
+        gps_n[top["bucket"]] += 1
+        if top["bucket"] != "closed" and top["days"] > OVERDUE_DAYS:
+            gps_late[top["bucket"]] += 1
+    return {
+        "buckets": [{"key": k, "label": lbl, "count": counts[k], "overdue": overdue[k], "gps": gps_n[k], "gpsOverdue": gps_late[k]} for k, lbl in PENDING_BUCKETS],
+        "items": items, "overdueDays": OVERDUE_DAYS,
+    }
+
+
+def _why(bucket: str, role: str, frt: str | None, frt_login: bool, fe: str | None) -> str:
+    """Why the GP waits with this person (plain words – the page and the Excel)."""
+    if bucket in ("not_filled", "field"):
+        if role == "FRT":
+            return f"FRT team {frt} reports this GP"
+        if role == "FE":
+            return f"FRT team {frt} has no login – the FE reports it" if frt and not frt_login else "No FRT team on this GP – the FE reports it"
+        if fe:
+            return f"FE {fe} has no login" + (f" and FRT team {frt} has none" if frt and not frt_login else "") + " – the AM reports it"
+        return "No FE on this GP" + (f" and FRT team {frt} has no login" if frt and not frt_login else "") + " – the AM reports it"
+    return {"fe_verify": "The FRT reported it – the FE checks it", "am": "Reported and verified – the AM approves it", "sme": "Approved by the AM – the SME checks it",
+            "coh": "Forwarded by the SME – the COH acts", "nd": "Open Non-Doable case", "closed": "Done"}.get(bucket, "")
 
 
 # SME / COH review steps: label per action
@@ -655,67 +763,389 @@ def _trend(db: Session, weeks: list[dict[str, Any]], circle: str | None, allowed
 
 LABEL = {"DONE": "Done (achieved)", "LETTER_SUBMITTED": "Letter submitted (done)", "AMC_CONVERTED": "AMC converted", "ND_APPROVED": "Non-Doable approved"}
 
+# What the person has to do now, per "pending with" bucket (the Excel)
+ACTION = {
+    "not_filled": "Fill the Daily Achievement",
+    "field": "Work on the GP again (revisit / returned)",
+    "fe_verify": "Verify the FRT's entry",
+    "am": "Approve or return",
+    "sme": "Check and forward to the COH",
+    "coh": "Submit the letter / record the AMC",
+    "nd": "Next step of the Non-Doable case",
+    "closed": "Nothing – done",
+}
+CAT_LABEL = {"A": "Rectification Done", "B": "Ready for Letter Submission", "C": "Revisit Required", "D": "Non-Doable – Proposed", "E": "Letter Submission Done"}
 
-def xlsx(data: dict[str, Any]) -> bytes:
-    """The report as an Excel workbook: Summary (per role), Daily tracker, Completed."""
+
+def _d(v: str | dt.date | dt.datetime | None, time: bool = False) -> str:
+    """A date (or date and time) as 19-Nov-2026 (19-Nov-2026 14:05); empty when unknown."""
+    if not v:
+        return ""
+    if isinstance(v, str):
+        try:
+            v = dt.datetime.fromisoformat(v) if "T" in v or " " in v else dt.date.fromisoformat(v[:10])
+        except ValueError:
+            return v
+    if isinstance(v, dt.datetime):
+        loc = _local_date(v)
+        if time:
+            from .monitor import _zone
+
+            return _utc(v).astimezone(_zone()).strftime("%d-%b-%Y %H:%M")
+        return loc.strftime("%d-%b-%Y") if loc else ""
+    return v.strftime("%d-%b-%Y")
+
+
+def excel_details(db: Session, data: dict[str, Any]) -> dict[str, Any]:
+    """What the Excel needs beyond the page: every GP ONCE (a GP on two tickets of the week: the newest ticket's row,
+    both ticket codes), its AM / FE / FRT team and whether that team has a login, WHO has to act now and WHY, the
+    people who have to act (one owner per GP), and the warnings (FRT teams without a login, tickets generated after
+    the week, GPs on two tickets, tickets without GPs). Read only."""
+    items = (data.get("pending") or {}).get("items", [])
+    gids = [it["gpId"] for it in items]
+    gp = {g.id: g for g in db.scalars(select(TicketTaskGp).where(TicketTaskGp.id.in_(gids)))} if gids else {}
+    tids = sorted({it["ticketId"] for it in items})
+    task = {k.ticket_id: k for k in db.scalars(select(TicketTask).where(TicketTask.ticket_id.in_(tids)))} if tids else {}
+    made = {t.id: _local_date(t.created_at) for t in db.scalars(select(Ticket).where(Ticket.id.in_(tids)))} if tids else {}
+    logins = {frt_norm(u.frt_code) for u in db.scalars(select(User).where(User.frt_code.is_not(None), User.is_active.is_(True)))} - {None}
+    active = set(db.scalars(select(User.id).where(User.is_active.is_(True))))
+    am_login: set[int] = set()
+    fe_login: set[tuple[int, Any]] = set()
+    for r in (db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id.in_(tids), TicketRecipient.role.in_(("AM", "FE")))) if tids else []):
+        if r.user_id is None or r.user_id not in active:
+            continue
+        if r.role == "AM":
+            am_login.add(r.ticket_id)
+        else:
+            fe_login.add((r.ticket_id, fe_key(r.name, r.fe_mail)))
+    # ---- the history of every GP (all its rows – a GP on two tickets: both): fills and review steps, every date
+    all_gids = list(gp)
+    hist: dict[str, dict[str, list[dt.datetime]]] = defaultdict(lambda: defaultdict(list))
+    returns_of: dict[str, list[tuple[dt.datetime, str]]] = defaultdict(list)
+    code_of = {gid: (g.gp_code or f"#{gid}") for gid, g in gp.items()}
+    if all_gids:
+        reviews = list(db.scalars(select(TicketGpReview).where(TicketGpReview.task_gp_id.in_(all_gids))))
+        step_keys = {(x.actor_id, _utc(x.at)) for x in reviews}  # review steps write a progress row too – not a fill
+        step_keys |= {(a, _utc(at)) for a, at in db.execute(select(NdEvent.actor_id, NdEvent.at).where(NdEvent.task_gp_id.in_(all_gids), NdEvent.action.in_(ND_PROGRESS_STEPS)))}
+        roles_on: dict[int, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
+        for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id.in_(tids), TicketRecipient.user_id.is_not(None), TicketRecipient.role.in_(WORKERS))):
+            roles_on[r.ticket_id][r.user_id].add(r.role)
+        assignee = {t.id: t.assignee_id for t in db.scalars(select(Ticket).where(Ticket.id.in_(tids)))} if tids else {}
+        for gid, by, at, tid in db.execute(
+            select(TicketProgressLine.task_gp_id, TicketProgress.submitted_by_id, TicketProgress.submitted_at, TicketProgress.ticket_id)
+            .join(TicketProgress, TicketProgress.id == TicketProgressLine.progress_id).where(TicketProgressLine.task_gp_id.in_(all_gids))
+        ):
+            if (by, _utc(at)) in step_keys:
+                continue
+            have = roles_on.get(tid, {}).get(by or -1, set())
+            role = next((x for x in ("FRT", "FE", "AM") if x in have), "AM" if by is not None and by == assignee.get(tid) else None)
+            if role:
+                hist[code_of[gid]][f"fill_{role}"].append(_utc(at))
+        TO = {"FE_RETURN": "FE → FRT", "AM_RETURN": "AM → FE", "SME_RETURN": "SME → AM", "COH_RETURN": "COH → SME"}
+        for x in reviews:
+            c = code_of.get(x.task_gp_id)
+            if c is None:
+                continue
+            if x.action in TO:
+                why_back = " ".join((x.remark or "").split())
+                returns_of[c].append((_utc(x.at), f"{TO[x.action]}" + (f" ({why_back[:80]})" if why_back else "")))
+            else:
+                hist[c][x.action].append(_utc(x.at))
+
+    def dates(code: str, key: str) -> str:
+        """Every date of the step, oldest first: 24-Nov, 26-Nov (×2 = done twice – e.g. after a return)."""
+        ev = [v for v in hist.get(code, {}).get(key, []) if v]
+        ds = sorted({d for d in (_local_date(v) for v in ev) if d})
+        text = ", ".join(d.strftime("%d-%b") for d in ds)
+        return f"{text} ({len(ev)}×)" if len(ev) > len(ds) else text  # done twice on one day
+
+    def returned(code: str) -> str:
+        return "; ".join(f"{_local_date(at).strftime('%d-%b')}: {what}" for at, what in sorted(returns_of.get(code, [])) if _local_date(at))
+
+    # login and last sign-in of the people of the report (Summary: the person the work is pending with)
+    seen = {(p["role"], p["name"]): p.get("lastLogin") for p in data.get("people", [])}
+    seen |= {(p["role"], c): p.get("lastLogin") for p in data.get("people", []) for c in (p.get("frtCodes") or [])}
+    has_login = {(p["role"], p["name"]): p["account"] for p in data.get("people", [])}
+    has_login |= {(p["role"], c): p["account"] for p in data.get("people", []) for c in (p.get("frtCodes") or [])}
+
+    def why(it: dict[str, Any], g: TicketTaskGp | None) -> str:
+        b, role = it["bucket"], it["whoRole"]
+        code = frt_norm(g.frt_code) if g is not None else None
+        if b in ("not_filled", "field"):
+            if role == "FRT":
+                return f"FRT team {code} reports this GP"
+            if role == "FE":
+                return f"FRT team {code} has no login – the FE reports this GP" if code else "No FRT team on this GP – the FE reports it"
+            if g is not None and g.fe_name:
+                return f"FE {g.fe_name} has no login" + (f" and FRT team {code} has none" if code else "") + " – the AM reports this GP"
+            return "No FE on this GP" + (f" and FRT team {code} has no login" if code else "") + " – the AM reports it"
+        return {"fe_verify": "The FRT reported it – the FE checks it", "am": "Reported and verified – the AM approves it", "sme": "Approved by the AM – the SME checks it",
+                "coh": "Forwarded by the SME – the COH acts", "nd": "Open Non-Doable case", "closed": "Done"}.get(b, "")
+
+    def status_now(it: dict[str, Any], cat: str | None) -> str:
+        filled = f"Filled as {cat}" if cat else "Filled"
+        return {
+            "not_filled": "NOT FILLED – no Daily Achievement yet",
+            "field": f"{filled} – needs work in the field again",
+            "fe_verify": f"{filled} – waiting for the FE to verify",
+            "am": f"{filled} – waiting for the AM to approve",
+            "sme": "Approved by the AM – waiting for the SME",
+            "coh": "Forwarded by the SME – waiting for the COH (letter / AMC)",
+            "nd": f"Non-Doable case – {it['stage']}",
+            "closed": f"DONE – {it['stage']}",
+        }.get(it["bucket"], it["stage"] or "")
+
+    # one row per GP code: the newest ticket's row; the GP's other tickets listed
+    by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for it in items:
+        by_code[it["gpCode"] or f"#{it['gpId']}"].append(it)
+    rows = []
+    for code, its in by_code.items():
+        its = sorted(its, key=lambda x: x["ticketId"], reverse=True)
+        it = next((x for x in its if x.get("primary")), its[0])  # the GP's row that got furthest (as on the page)
+        g = gp.get(it["gpId"])
+        k = task.get(it["ticketId"])
+        frt = frt_norm(g.frt_code) if g is not None else None
+        rows.append({
+            **it, "tickets": ", ".join(x["ticket"] for x in sorted(its, key=lambda x: x["ticketId"])), "onTickets": len(its),
+            "am": k.am_name if k is not None else "", "fe": (g.fe_name if g is not None else None) or "", "frt": frt or "",
+            "frtLogin": ("Yes" if frt in logins else "No") if frt else "", "achieved": g is not None and cumulative(g) >= g.target,
+            "amLogin": "Yes" if it["ticketId"] in am_login else "No",
+            "circle": (g.circle if g is not None else None) or (k.circle if k is not None else "") or "",
+            "ba": (g.business_area if g is not None else None) or "",
+            "generated": ", ".join(sorted({made[x["ticketId"]].strftime("%d-%b") for x in its if made.get(x["ticketId"])}, key=lambda v: dt.datetime.strptime(v, "%d-%b"))),
+            "dates": {key: dates(code, key) for key in ("fill_FRT", "fill_FE", "fill_AM", "FE_VERIFY", "AM_APPROVE", "SME_FORWARD", "COH_LETTER", "COH_AMC")},
+            "returned": returned(code),
+            "feLogin": (("Yes" if (it["ticketId"], fe_key(g.fe_name, g.fe_email)) in fe_login else "No") if g is not None and g.fe_name else ""),
+            "status": status_now(it, CAT_LABEL.get(g.gp_category) if g is not None and g.gp_category else None),
+            "category": CAT_LABEL.get(g.gp_category, "") if g is not None and g.gp_category else "Not filled",
+            "action": ACTION.get(it["bucket"], ""), "why": it.get("why") or why(it, g),
+        })
+    for r in rows:  # with the COH: the letter is already submitted – only the AMC is left
+        if r["bucket"] == "coh" and r["dates"]["COH_LETTER"]:
+            r["status"] = "Letter submitted – waiting for the COH to record the AMC"
+    rows.sort(key=lambda r: (r["bucket"] == "closed", -r["days"], r["gpCode"] or ""))
+
+    # who has to act now: one owner per GP (the GP's row above)
+    owners: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        if r["bucket"] == "closed":
+            continue
+        o = owners.setdefault((r["whoRole"], r["who"]), {
+            "who": r["who"], "role": r["whoRole"], "total": 0, "oldest": 0, **{b: 0 for b in ACTION if b != "closed"},
+            "login": "Yes" if has_login.get((r["whoRole"], r["who"])) or (r["whoRole"] == "FRT" and r["frt"] in logins) else "No",
+            "lastLogin": seen.get((r["whoRole"], r["who"])),
+        })
+        o[r["bucket"]] += 1
+        o["total"] += 1
+        o["oldest"] = max(o["oldest"], r["days"])
+    act = sorted(owners.values(), key=lambda o: (-o["total"], -o["oldest"], str(o["who"]).lower()))
+
+    w = data.get("week") or {}
+    week_end = dt.date.fromisoformat(w["end"]) if w.get("end") else None
+    frt_role = next((x for x in data.get("roles", []) if x["role"] == "FRT"), {})
+    late = sorted({(t, d) for t, d in made.items() if week_end and d and d > week_end}, key=lambda x: x[1])
+    code_of = {it["ticketId"]: it["ticket"] for it in items}
+    warnings = []
+    if frt_role.get("withoutAccount"):
+        warnings.append(f"{frt_role['withoutAccount']} of {frt_role.get('people', 0)} FRT teams have no login – their GPs are reported by the FE (or the AM). Create the FRT logins in User Management (FRT code).")
+    if late:
+        warnings.append(f"{len(late)} ticket(s) were generated after the week ended ({_d(week_end)}): " + ", ".join(f"{code_of.get(t, t)} on {_d(d)}" for t, d in late[:6]) + (" …" if len(late) > 6 else "") + ". The days run until today so their work shows.")
+    twice = [r for r in rows if r["onTickets"] > 1]
+    if twice:
+        pairs = sorted({r["tickets"] for r in twice})
+        warnings.append(f"{len(twice)} GP(s) are on two tickets of this week ({'; '.join(pairs[:4])}) – each GP is counted once here.")
+    empty = (data.get("cards") or {}).get("tickets", 0) - len(tids)
+    if empty > 0:
+        warnings.append(f"{empty} ticket(s) of this week have no GPs.")
+    return {"rows": rows, "act": act, "warnings": warnings, "made": made, "tickets": len(tids)}
+
+
+def xlsx(data: dict[str, Any], details: dict[str, Any] | None = None) -> bytes:
+    """The report as an Excel workbook, written to be read without the page: Summary (the week at a glance, who has to
+    act now, warnings, what the words mean), GP Status (every GP once, who acts and why), Team Activity (per person,
+    every day from the ticket's generation to today), AM Achievement, Returns, Completed."""
     import xlsxwriter
 
+    det = details or {"rows": [], "act": [], "warnings": [], "made": {}, "tickets": 0}
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
-    head = wb.add_format({"bold": True, "bg_color": "#0F766E", "font_color": "#FFFFFF", "border": 1})
-    bold = wb.add_format({"bold": True})
+    title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#0F766E"})
+    sub = wb.add_format({"bold": True, "font_size": 11, "font_color": "#0F172A", "bottom": 1})
+    head = wb.add_format({"bold": True, "bg_color": "#0F766E", "font_color": "#FFFFFF", "border": 1, "text_wrap": True, "valign": "vcenter"})
+    note = wb.add_format({"italic": True, "font_color": "#475569", "text_wrap": True, "valign": "top"})
+    warn = wb.add_format({"bold": True, "font_color": "#B45309", "text_wrap": True, "valign": "top"})
+    num = wb.add_format({"align": "right"})
+    big = wb.add_format({"bold": True, "align": "right"})
+    hot = wb.add_format({"bold": True, "font_color": "#B91C1C", "align": "right"})
     w = data.get("week") or {}
-    ws = wb.add_worksheet("Summary")
-    ws.write(0, 0, f"Ticket Report – {w.get('code', '')} ({w.get('start', '')} – {w.get('end', '')})" + (f" · {data['circle']}" if data.get("circle") else ""), bold)
     cards = data.get("cards") or {}
-    for i, (k, lbl) in enumerate((("tickets", "Tickets generated"), ("gps", "GPs"), ("done", "GPs achieved"), ("amcConverted", "AMC converted"), ("nonDoable", "Non-Doable cases"), ("submissions", "Daily submissions"))):
-        ws.write(2 + i, 0, lbl)
-        ws.write(2 + i, 1, cards.get(k, 0))
-    r0 = 10
-    cols = ["Role", "People", "Tickets", "GPs", "Achieved", "Pending", "Daily submissions", "People who submitted", "Reviews (SME / COH)"]
-    ws.write_row(r0, 0, cols, head)
-    for i, r in enumerate(data.get("roles", []), start=r0 + 1):
-        ws.write_row(i, 0, [r["role"], r["people"], r["tickets"], r["gps"], r["done"], r["pending"], r["submissions"], r["activePeople"], r.get("reviewed", "")])
-    ws.set_column(0, 0, 22)
-    ws.set_column(1, 8, 16)
+    rows = det["rows"]
+    open_rows = [r for r in rows if r["bucket"] != "closed"]
     days = [d["date"] for d in data.get("days", [])]
-    tr = wb.add_worksheet("Daily tracker")
-    st_cols = ["Rectification Done", "Ready for Letter", "Revisit Required", "Non-Doable", "Letter Submitted", "Not filled"]
-    tr.write_row(0, 0, ["Role", "FE (FRT)", "Name / FRT code", "Circle", "Login", "Last sign-in", "Last submission", "Tickets", "GPs", "Achieved", *st_cols, "Returns", *days, "Days submitted"], head)
+    first_day, last_day = (days[0], days[-1]) if days else ("", "")
+    where = f" · {data['circle']}" if data.get("circle") else ""
+
+    def table(ws, r0: int, cols: list[str], widths: list[int] | None = None) -> None:
+        ws.write_row(r0, 0, cols, head)
+        for i, wdt in enumerate(widths or []):
+            ws.set_column(i, i, wdt)
+
+    # ---------------------------------------------------------------- Summary
+    ws = wb.add_worksheet("Summary")
+    ws.set_column(0, 0, 34)
+    ws.set_column(1, 9, 15)
+    ws.write(0, 0, f"Ticket Report – {w.get('code', '')}{where}", title)
+    ws.write(1, 0, f"Week {_d(w.get('start'))} – {_d(w.get('end'))} · tickets generated on {', '.join(sorted({_d(d) for d in det['made'].values() if d})) or '—'}", note)
+    ws.write(2, 0, f"Work counted from {_d(first_day)} to {_d(last_day)} (report of {_d(data.get('today'))})", note)
+    r = 4
+    ws.write(r, 0, "The week at a glance", sub)
+    r += 1
+    unique = len(rows)
+    glance = [
+        ("Tickets", det["tickets"]),
+        ("GPs (each GP once)", unique),
+        ("GPs achieved (target met)", sum(1 for x in rows if x["achieved"])),
+        ("GPs waiting on a step", len(open_rows)),
+        ("GPs with no Daily Achievement yet", sum(1 for x in rows if x["bucket"] == "not_filled")),
+        ("Daily submissions (whole period)", cards.get("submissions", 0)),
+        ("Non-Doable cases", cards.get("nonDoable", 0)),
+        ("AMC converted", cards.get("amcConverted", 0)),
+    ]
+    for lbl, v in glance:
+        ws.write(r, 0, lbl)
+        ws.write(r, 1, v, big)
+        r += 1
+    r += 1
+    ws.write(r, 0, "Where the GPs are now (each GP once)", sub)
+    r += 1
+    flow = [(k, lbl) for k, lbl in PENDING_BUCKETS]
+    ws.write_row(r, 0, ["Step", *[lbl for _k, lbl in flow]], head)
+    ws.write(r + 1, 0, "GPs")
+    for j, (k, _l) in enumerate(flow, start=1):
+        ws.write(r + 1, j, sum(1 for x in rows if x["bucket"] == k), num)
+    r += 3
+    ws.write(r, 0, "Who has to act now (one person per GP – most GPs first)", sub)
+    r += 1
+    steps = [k for k in ACTION if k != "closed"]
+    step_lbl = dict(PENDING_BUCKETS)
+    ws.write_row(r, 0, ["Work is pending with", "Role", "Login", "Last signed in", "GPs pending with them", "Waiting longest (days)", *[step_lbl[k] for k in steps]], head)
+    for o in det["act"]:
+        r += 1
+        ws.write_row(r, 0, [o["who"], o["role"], o.get("login", ""), _d(o.get("lastLogin"), True) or ("Never" if o.get("login") == "Yes" else "—")])
+        ws.write(r, 4, o["total"], big)
+        ws.write(r, 5, o["oldest"], hot if o["oldest"] > OVERDUE_DAYS else num)
+        for j, k in enumerate(steps, start=6):
+            ws.write(r, j, o[k] or "", num)
+    if not det["act"]:
+        r += 1
+        ws.write(r, 0, "Nobody – every GP is done.", note)
+    r += 2
+    if det["warnings"]:
+        ws.write(r, 0, "Please note", sub)
+        for t in det["warnings"]:
+            r += 1
+            ws.merge_range(r, 0, r, 9, "⚠ " + t, warn)
+            ws.set_row(r, 32)
+        r += 2
+    ws.write(r, 0, "What the words mean", sub)
+    for t in (
+        "Daily Achievement = the daily entry for a GP (category + remark + photo). Who fills it: the FRT team if it has a login, else the FE (if the FE has a login), else the AM.",
+        "GP Status sheet: one row per GP – its team with their logins, 'Status now' (what happened to the GP) and 'Pending with' (whose hand the work is in, and why). Filter 'Status now' = NOT FILLED to see who has not filled.",
+        "Dates on GP Status: the day of each step. A step done twice shows both days (e.g. FE filled on 24-Nov, 26-Nov) and 'Returned' tells why: 25-Nov: AM → FE (photo not clear). Empty = not done yet.",
+        "Not filled = no Daily Achievement for the GP yet. It waits with its reporter only (never counted for the FE and the AM as well).",
+        "FE verify → AM approval → SME → COH = the review steps after the entry. Achieved = the GP met its target (Ready for Letter / Letter submitted / AMC).",
+        "Rectification Done / Ready for Letter / Revisit Required / Non-Doable / Letter Submission Done = the category chosen in the Daily Achievement.",
+        "Waiting (days) = days since the last thing happened to the GP (its ticket's generation when nothing happened yet).",
+    ):
+        r += 1
+        ws.merge_range(r, 0, r, 9, t, note)
+        ws.set_row(r, 30)
+    ws.freeze_panes(4, 0)
+
+    # ---------------------------------------------------------------- GP Status – every GP once
+    gs = wb.add_worksheet("GP Status")
+    # read left to right: the GP – its team and who can sign in – where it stands – whose hand it is in, and why
+    steps_d = [("fill_FRT", "FRT filled on"), ("fill_FE", "FE filled on"), ("fill_AM", "AM filled on"), ("FE_VERIFY", "FE verified on"),
+               ("AM_APPROVE", "AM approved (sent on) on"), ("SME_FORWARD", "SME forwarded on"), ("COH_LETTER", "Letter submitted on"), ("COH_AMC", "AMC converted on")]
+    gs.merge_range(0, 0, 0, 4, "GP", head)
+    gs.merge_range(0, 5, 0, 10, "Team of the GP (and whether each has a login)", head)
+    gs.write(0, 11, "Where the GP stands now", head)
+    gs.merge_range(0, 12, 0, 16, "Work is pending with", head)
+    gs.merge_range(0, 17, 0, 17 + len(steps_d) + 1, "Who did what, when (every date – a step done twice shows both dates)", head)
+    gs.write(0, 18 + len(steps_d) + 1, "", head)
+    cols = ["GP code", "GP name", "Circle", "BA", "Block", "AM", "AM login", "FE", "FE login", "FRT team", "FRT login", "Status now",
+            "Pending with (name)", "Role", "Why with them", "Pending (days)", "Pending since",
+            "Ticket generated on", *[lbl for _k, lbl in steps_d], "Returned (when: who → whom, why)", "Ticket(s)"]
+    table(gs, 1, cols, [10, 20, 12, 16, 14, 20, 9, 20, 9, 14, 9, 52, 24, 7, 52, 9, 12, 12, *[13] * len(steps_d), 46, 22])
+    yes = wb.add_format({"font_color": "#15803D", "align": "center"})
+    no = wb.add_format({"font_color": "#B91C1C", "bold": True, "align": "center"})
+    nf = wb.add_format({"bold": True, "font_color": "#B91C1C"})
+    for i, x in enumerate(rows, start=2):
+        gs.write_row(i, 0, [x["gpCode"] or "", x["gpName"] or "", x["circle"], x["ba"], x["block"] or ""])
+        for j, (name, login) in enumerate(((x["am"], x["amLogin"]), (x["fe"] or "No FE", x["feLogin"]), (x["frt"] or "No FRT team", x["frtLogin"]))):
+            gs.write(i, 5 + 2 * j, name)
+            if login:
+                gs.write(i, 6 + 2 * j, login, yes if login == "Yes" else no)
+        gs.write(i, 11, x["status"], nf if x["bucket"] == "not_filled" else None)
+        done = x["bucket"] == "closed"
+        gs.write_row(i, 12, ["—" if done else (x["who"] or ""), "" if done else (x["whoRole"] or ""), x["why"]])
+        gs.write(i, 15, "" if done else x["days"], hot if not done and x["days"] > OVERDUE_DAYS else num)
+        gs.write_row(i, 16, [_d(x["since"]), x["generated"], *[x["dates"][k] for k, _l in steps_d], x["returned"], x["tickets"]])
+    gs.freeze_panes(2, 2)
+    if rows:
+        gs.autofilter(1, 0, len(rows) + 1, len(cols) - 1)
+
+    # ---------------------------------------------------------------- Team Activity – per person, every day
+    ta = wb.add_worksheet("Team Activity")
+    owner = {(o["role"], o["who"]): o for o in det["act"]}
+    st_keys = [("A", "Rectification Done"), ("B", "Ready for Letter"), ("C", "Revisit Required"), ("D", "Non-Doable"), ("E", "Letter Submitted")]
+    cols = ["Role", "Name / FRT team", "E-mail", "FE of the FRT team", "Login", "Last sign-in", "Last daily submission", "Tickets", "GPs on their tickets",
+            "Has to act on (GPs)", *[lbl for _k, lbl in st_keys], "Returned to them", *[_d(d)[:6] for d in days], "Days with work"]
+    table(ta, 0, cols, [6, 26, 26, 20, 7, 17, 17, 8, 10, 10, *[11] * len(st_keys), 9, *[7] * len(days), 9])
     for i, p in enumerate(data.get("people", []), start=1):
-        cells = [(f"{p['days'][d]['gps']} GP" if d in p["days"] else "–") for d in days]
         st = p.get("status") or {}
+        who = p["name"]
+        o = owner.get((p["role"], who)) or next((v for (rl, nm), v in owner.items() if rl == p["role"] and p.get("frtCodes") and nm in p["frtCodes"]), None)
         name = p["name"] + (f" ({', '.join(p['frtCodes'])})" if p.get("frtCodes") and p["account"] else "")
-        tr.write_row(i, 0, [p["role"], ", ".join(p.get("fes") or []), name, ", ".join(p["circles"]), "Yes" if p["account"] else "No",
-                            (p.get("lastLogin") or "never")[:16].replace("T", " "), (p.get("lastSubmission") or "never")[:16].replace("T", " "),
-                            p["tickets"], p["gps"], p["done"], *[st.get(k, 0) for k in ("A", "B", "C", "D", "E", "none")], p.get("returns", 0), *cells, p["activeDays"]])
-    tr.set_column(0, 0, 8)
-    tr.set_column(1, 1, 26)
-    tr.set_column(2, 5 + len(days) + 1, 12)
-    pw = wb.add_worksheet("Pending with")
-    pw.write_row(0, 0, ["Waiting at", "Stage", "With", "Role", "Days waiting", "Since", "GP code", "GP name", "Block", "Ticket"], head)
-    label_of = {k: lbl for k, lbl in PENDING_BUCKETS}
-    for i, it in enumerate((data.get("pending") or {}).get("items", []), start=1):
-        pw.write_row(i, 0, [label_of.get(it["bucket"], it["bucket"]), it["stage"] or "", it["who"] or "", it["whoRole"] or "", it["days"], (it["since"] or "")[:10],
-                            it["gpCode"] or "", it["gpName"] or "", it["block"] or "", it["ticket"] or ""])
-    pw.set_column(0, 9, 18)
-    am = wb.add_worksheet("AM achievement")
-    am.write_row(0, 0, ["Area Manager", "Circle", "Tickets", "GPs", "Achieved", "Achievement %", *[lbl for k, lbl in PENDING_BUCKETS if k != "closed"]], head)
+        cells = []
+        for d in days:
+            c = p["days"].get(d)
+            cells.append((f"{c['gps']} GP" if c.get("gps") else f"{c.get('reviews', 0)} rev") if c else "")
+        ta.write_row(i, 0, [p["role"], name, p.get("email") or "", ", ".join(p.get("fes") or []), "Yes" if p["account"] else "No",
+                            _d(p.get("lastLogin"), True) or "Never signed in", _d(p.get("lastSubmission"), True) or "None yet",
+                            p["tickets"], p["gps"], (o or {}).get("total", 0), *[st.get(k, 0) for k, _l in st_keys], p.get("returns", 0), *cells, p["activeDays"]])
+    ta.freeze_panes(1, 2)
+    if data.get("people"):
+        ta.autofilter(0, 0, len(data["people"]), len(cols) - 1)
+
+    # ---------------------------------------------------------------- AM Achievement
+    am = wb.add_worksheet("AM Achievement")
+    am_cols = ["Area Manager", "Login", "Circle", "Tickets", "GPs", "Achieved", "Achievement %", *[lbl for k, lbl in PENDING_BUCKETS if k != "closed"]]
+    table(am, 0, am_cols, [24, 7, 14, 8, 8, 9, 12, *[12] * (len(PENDING_BUCKETS) - 1)])
     for i, a in enumerate(data.get("amAchievement") or [], start=1):
-        am.write_row(i, 0, [a["name"], ", ".join(a["circles"]), a["tickets"], a["gps"], a["done"], a["pct"], *[a["waiting"].get(k, 0) for k, _l in PENDING_BUCKETS if k != "closed"]])
-    am.set_column(0, 1, 24)
-    am.set_column(2, 13, 14)
+        am.write_row(i, 0, [a["name"], "Yes" if a.get("account") else "No", ", ".join(a["circles"]), a["tickets"], a["gps"], a["done"], a["pct"],
+                            *[a["waiting"].get(k, 0) for k, _l in PENDING_BUCKETS if k != "closed"]])
+    am.write(len(data.get("amAchievement") or []) + 2, 0, "A GP on two tickets counts on both of its tickets here (one row per ticket owner).", note)
+    am.freeze_panes(1, 1)
+
+    # ---------------------------------------------------------------- Returns
     rt = wb.add_worksheet("Returns")
-    rt.write_row(0, 0, ["When", "GP code", "GP name", "Block", "Ticket", "Returned by", "By role", "Returned to", "To role", "Reason (remark)"], head)
-    for i, x in enumerate((data.get("returns") or {}).get("items", []), start=1):
-        rt.write_row(i, 0, [x["at"][:16].replace("T", " "), x["gpCode"] or "", x["gpName"] or "", x["block"] or "", x["ticket"] or "", x["by"] or "", x["byRole"] or "",
+    table(rt, 0, ["When", "GP code", "GP name", "Block", "Ticket", "Returned by", "By role", "Returned to", "To role", "Reason (remark)"], [17, 10, 20, 14, 12, 20, 8, 20, 8, 50])
+    ret = (data.get("returns") or {}).get("items", [])
+    for i, x in enumerate(ret, start=1):
+        rt.write_row(i, 0, [_d(x["at"], True), x["gpCode"] or "", x["gpName"] or "", x["block"] or "", x["ticket"] or "", x["by"] or "", x["byRole"] or "",
                             x["to"] or "", x["toRole"] or "", x["remark"] or ""])
-    rt.set_column(0, 8, 16)
-    rt.set_column(9, 9, 50)
+    if not ret:
+        rt.write(1, 0, "No GP of this week was returned.", note)
+
+    # ---------------------------------------------------------------- Completed
     cp = wb.add_worksheet("Completed")
-    cp.write_row(0, 0, ["When", "What", "GP code", "GP name", "Block", "Ticket", "By", "Role"], head)
-    for i, c in enumerate(data.get("completed", []), start=1):
-        cp.write_row(i, 0, [c["at"] or "", LABEL.get(c["what"], c["what"]), c["gpCode"] or "", c["gpName"] or "", c["block"] or "", c["ticket"] or "", c["by"] or "", c["byRole"] or ""])
-    cp.set_column(0, 7, 18)
+    table(cp, 0, ["When", "What", "GP code", "GP name", "Block", "Ticket", "By", "Role"], [17, 24, 10, 20, 14, 12, 20, 8])
+    done = data.get("completed", [])
+    for i, c in enumerate(done, start=1):
+        cp.write_row(i, 0, [_d(c["at"], True), LABEL.get(c["what"], c["what"]), c["gpCode"] or "", c["gpName"] or "", c["block"] or "", c["ticket"] or "", c["by"] or "", c["byRole"] or ""])
+    if not done:
+        cp.write(1, 0, f"No GP was completed between {_d(first_day)} and {_d(last_day)}.", note)
     wb.close()
     return buf.getvalue()

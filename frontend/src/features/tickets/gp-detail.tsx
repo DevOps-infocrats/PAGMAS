@@ -2,9 +2,11 @@
 
 import { Eye, Send, Undo2 } from "lucide-react";
 import { useState } from "react";
+import { ErrorState } from "@/components/feedback/states";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/overlays";
-import type { GpReviewAction, GpReviewRecord, GpReviewRole, TicketDetail, TicketTask, TicketTaskGp } from "@/lib/api";
+import { useApiQuery } from "@/hooks/use-api-query";
+import { ticketApi, type GpReviewAction, type GpReviewRecord, type GpReviewRole, type GpTimelineEvent, type TicketDetail, type TicketTask, type TicketTaskGp } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
 import { CATEGORY, GpCategoryBadge } from "./gp-category";
 import { ticketDay, ticketTime, type Notice } from "./ticket-parts";
@@ -163,6 +165,87 @@ export function SmeGpTable({
   );
 }
 
+const DOT: Record<GpTimelineEvent["kind"], string> = {
+  generated: "bg-muted-foreground",
+  filled: "bg-[var(--series-1)]",
+  review: "bg-[var(--good)]",
+  return: "bg-[var(--critical)]",
+  nd: "bg-[var(--warning)]",
+};
+
+/**
+ * GP Timeline: everything that happened to this GP, oldest first – when, who (name and role), what (the category
+ * reported, the review step, a return with its reason, a Non-Doable step), the remark and the proof documents – and
+ * where it waits now. Read only (backend app/tickets/timeline.py).
+ */
+function GpTimelineCard({ t, g }: { t: TicketDetail; g: TicketTaskGp }) {
+  return <GpTimeline ticketId={t.id} gpId={g.id} refreshKey={t.updatedAt} />;
+}
+
+/** The GP Timeline of one GP row of a ticket – the GP detail, the GP Monitor and the Ticket Report use the same. */
+export function GpTimeline({ ticketId, gpId, refreshKey = "", title }: { ticketId: number; gpId: number; refreshKey?: string; title?: string }) {
+  const q = useApiQuery(`gp-timeline:${ticketId}:${gpId}:${refreshKey}`, () => ticketApi.getGpTimeline(ticketId, gpId));
+  const d = q.data;
+  return (
+    <section className="rounded-lg border border-primary/30">
+      <h3 className="border-b border-border bg-primary-soft/40 px-3 py-1.5 text-[0.75rem] font-semibold uppercase tracking-wide text-primary">{title ?? "GP Timeline – who did what, when"}</h3>
+      <div className="px-3 py-2.5 text-[0.8125rem]">
+        {q.error ? (
+          <ErrorState error={q.error} onRetry={q.reload} />
+        ) : !d ? (
+          <p className="text-muted-foreground">Loading the timeline…</p>
+        ) : (
+          <ol className="relative space-y-3 border-l-2 border-border pl-4">
+            {d.events.map((e, i) => (
+              <li key={i} className="relative">
+                <span className={cn("absolute -left-[1.4rem] top-1 size-3 rounded-full ring-2 ring-background", DOT[e.kind])} aria-hidden />
+                <p className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-[0.75rem] tabular text-muted-foreground">{e.at ? ticketTime(e.at) : "—"}</span>
+                  <span className={cn("font-semibold", e.kind === "return" && "text-critical-text")}>{e.label}</span>
+                </p>
+                <p className="text-[0.78125rem]">
+                  {e.by ?? "—"} <span className="rounded bg-muted px-1 py-0.5 text-[0.65625rem] font-semibold text-muted-foreground">{ROLE[e.role] ?? e.role}</span>
+                  {e.detail && <span className="text-muted-foreground"> · {e.detail}</span>}
+                </p>
+                {e.remark && <p className="text-[0.78125rem] text-muted-foreground">Remark: “{e.remark}”</p>}
+                {e.files.length > 0 && (
+                  <div className="mt-1">
+                    <ProofList files={e.files} compact />
+                  </div>
+                )}
+              </li>
+            ))}
+            <li className="relative">
+              <span className={cn("absolute -left-[1.4rem] top-1 size-3 rounded-full border-2 bg-background", d.now.done ? "border-[var(--good)]" : "border-[var(--warning)]")} aria-hidden />
+              <p className="font-semibold">{d.now.done ? "Done" : "Now"}: {d.now.label}</p>
+              {!d.now.done && d.now.waiting && <p className="text-[0.78125rem] text-muted-foreground">Waiting: {d.now.waiting}</p>}
+            </li>
+          </ol>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The GP Timeline in its own dialog (the Ticket Report's GP lists). */
+export function GpTimelineDialog({ gp, onClose }: { gp: { ticketId: number; gpId: number; label: string } | null; onClose: () => void }) {
+  return (
+    <Dialog open={!!gp} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="top-[5vh] max-h-[88vh] max-w-2xl overflow-y-auto">
+        {gp && (
+          <div className="space-y-3 p-5">
+            <div>
+              <DialogTitle className="text-lg font-bold">{gp.label}</DialogTitle>
+              <DialogDescription className="mt-1 text-sm text-muted-foreground">Who did what, when – remarks and proof documents, oldest first.</DialogDescription>
+            </div>
+            <GpTimeline ticketId={gp.ticketId} gpId={gp.gpId} />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function Section({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-lg border border-border">
@@ -228,6 +311,8 @@ export function GpDetailDialog({
                   {t.code} · {week(task)} · <StageBadge g={g} />
                 </DialogDescription>
               </div>
+
+              <GpTimelineCard t={t} g={g} />
 
               <Section n={1} title="GP Information">
                 <Fields

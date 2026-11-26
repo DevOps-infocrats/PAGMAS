@@ -190,6 +190,10 @@ def _gp_record(rows: list[Row], every: list[Row] | None = None, basis: str | Non
         "gpCategory": cat_row.g.gp_category if cat_row is not None else None,
         # review state of the same GP row as the category (AMC_CONVERTED = the COH recorded the AMC conversion)
         "review": (cat_row.g if cat_row is not None else g).review,
+        # the step the GP waits at (app.tickets.review.stage_of) and its FRT team / FE e-mail (who has to fill it)
+        "stage": _stage(cat_row.g if cat_row is not None else g),
+        "frtCode": g.frt_code,
+        "feEmail": g.fe_email,
         "categoryAt": iso(cat_at),
         "categoryTicket": cat_row.code if cat_row is not None else None,
         "_date": (_local_date(cat_at) if cat_at else _local_date(last)) if basis == "category" else (_local_date(when) if done else _local_date(last)),
@@ -211,6 +215,7 @@ def _matches(r: Row, f: dict[str, Any]) -> bool:
         and (not f.get("block") or _key(g.block) == _key(f["block"]))
         and (not f.get("week") or r.week == f["week"])
         and (not f.get("ticket") or r.code.lower() == f["ticket"].strip().lower())
+        and (f.get("ticketIds") is None or g.ticket_id in f["ticketIds"])  # Admin Tickets: the tickets of the list filters
     )
 
 
@@ -285,7 +290,10 @@ def _by_fe(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def summary(db: Session, f: dict[str, Any], basis: str | None = None) -> dict[str, Any]:
     recs, all_rows = _records(db, f | ({"basis": basis} if basis else {}))
-    return _counts(recs) | {"options": _options(all_rows, f), "byFe": _by_fe(recs)}
+    out = _counts(recs) | {"options": _options(all_rows, f), "byFe": _by_fe(recs)}
+    if f.get("withOwners"):  # Admin Tickets: who has to fill the not-filled GPs
+        out["notFilledOwners"] = fill_owners(db, recs)
+    return out
 
 
 def _counts(recs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -306,7 +314,56 @@ def _counts(recs: list[dict[str, Any]]) -> dict[str, Any]:
         # AMC conversion recorded by the COH (after the letter submission) – each GP once, like the categories
         "amcConverted": sum(1 for x in recs if x.get("review") == "AMC_CONVERTED"),
         "amcConvertedWithDocument": sum(1 for x in recs if x.get("review") == "AMC_CONVERTED" and x["files"]),
+        # no Daily Achievement yet (no category, not achieved) – each GP once
+        "notFilled": sum(1 for x in recs if not x["gpCategory"] and x["status"] != "DONE"),
+        # per category: where its GPs wait now (who has to act) – e.g. Rectification Done: FE verify 1, AM approval 2
+        "categoryWaiting": {c: _waiting([x for x in recs if x["gpCategory"] == c], c) for c in CATEGORIES},
     }
+
+
+# the step a GP waits at -> who has to act (plain words, the category KPIs)
+WAIT_LABEL = {
+    "PENDING_FE": "FE to verify", "RETURNED_FRT": "back with FRT", "RETURNED": "back with FE", "PENDING_AM": "AM to approve",
+    "SME_RETURNED": "AM to approve", "AM_APPROVED": "with SME", "COH_RETURNED": "with SME", "SME_FORWARDED": "with COH",
+    "LETTER_SUBMITTED": "COH to record AMC", "AMC_CONVERTED": "done", "ND_APPROVED": "done", "NONE": "with field team",
+}
+
+
+def _stage(g: TicketTaskGp) -> str:
+    from .review import stage_of
+
+    return stage_of(g)
+
+
+def _waiting(recs: list[dict[str, Any]], category: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for x in recs:
+        label = WAIT_LABEL.get(x.get("stage") or "NONE", "with field team")
+        if category == "D" and label == "with field team":
+            label = "Non-Doable case open"
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
+def fill_owners(db: Session, recs: list[dict[str, Any]]) -> dict[str, int]:
+    """Not-filled GPs (each once) per person who has to fill them – the same rule as the Ticket Report: the FRT team
+    if it has a login on the ticket, else the FE if the FE has one, else the Area Manager."""
+    from .task import fe_key, fe_owner_keys, frt_norm, frt_owner_codes
+
+    todo = [x for x in recs if not x["gpCategory"] and x["status"] != "DONE"]
+    tickets = {t.id: t for t in db.scalars(select(Ticket).where(Ticket.id.in_({x["ticketId"] for x in todo})))} if todo else {}
+    frt = {tid: frt_owner_codes(db, t) for tid, t in tickets.items()}
+    fe = {tid: fe_owner_keys(db, t) for tid, t in tickets.items()}
+    out = {"FRT": 0, "FE": 0, "AM": 0}
+    for x in todo:
+        code, tid = frt_norm(x.get("frtCode")), x["ticketId"]
+        if code and code in frt.get(tid, set()):
+            out["FRT"] += 1
+        elif x.get("fieldEngineer") and fe_key(x["fieldEngineer"], x.get("feEmail")) in fe.get(tid, set()):
+            out["FE"] += 1
+        else:
+            out["AM"] += 1
+    return out
 
 
 def listing(db: Session, f: dict[str, Any], status: str | None, sort: str, desc: bool, page: int, page_size: int, category: str | None = None) -> dict[str, Any]:
@@ -358,7 +415,7 @@ def gp_detail(db: Session, gp_code: str, circles: frozenset[str] | None = None) 
     rec.pop("_date", None)
     return rec | {
         "ticketRows": [
-            {"ticketId": r.g.ticket_id, "ticket": r.code, "ticketStatus": r.ticket_status, "week": r.week, "weekStart": r.week_start.isoformat(), "weekEnd": r.week_end.isoformat(),
+            {"ticketId": r.g.ticket_id, "gpId": r.g.id, "ticket": r.code, "ticketStatus": r.ticket_status, "week": r.week, "weekStart": r.week_start.isoformat(), "weekEnd": r.week_end.isoformat(),
              "areaManager": r.am, "fieldEngineer": r.g.fe_name, "kind": r.g.kind, "target": r.g.target, "achieved": cumulative(r.g), "gap": r.g.target - cumulative(r.g), "status": r.status,
              "gpCategory": r.g.gp_category}
             for r in sorted(rows, key=lambda r: (r.week_start, r.g.ticket_id), reverse=True)

@@ -1,4 +1,4 @@
-import type { AdminApi, DashboardApi, EscalationSheetQuery, FieldQuery, GeoFile, KpiListQuery, NonDoableApi, TicketApi } from "./contracts";
+import type { AdminApi, DashboardApi, EscalationSheetQuery, FieldQuery, GeoFile, KpiListQuery, NonDoableApi, TicketApi, TicketListFilters } from "./contracts";
 import { ApiError } from "./errors";
 
 /**
@@ -227,8 +227,17 @@ export const httpAdminApi: AdminApi = {
   listMailRuns: () => request("/mail/runs"),
 };
 
+/** The Admin Tickets list filters as query parameters (the names of GET /tickets) */
+const ticketFilterQs = (f?: TicketListFilters) =>
+  f
+    ? { search: f.search, status: f.status, priority: f.priority, date_from: f.dateFrom, date_to: f.dateTo, circle: f.circle, areaManager: f.areaManager, week: f.week, gp: f.gp, progressDate: f.progressDate }
+    : {};
+
 export const httpTicketApi: TicketApi = {
-  getKpis: (scope) => request(`/tickets/kpis${qs({ scope })}`),
+  getKpis: (scope, f) => request(`/tickets/kpis${qs({ scope, ...ticketFilterQs(f) })}`),
+  getGpCategories: (f) => request(`/tickets/gp-categories${qs(ticketFilterQs(f))}`),
+  getWorking: (f) => request(`/tickets/working${qs(ticketFilterQs(f))}`),
+  getGpTimeline: (ticketId, gpId) => request(`/tickets/${ticketId}/gps/${gpId}/timeline`),
   list: (q) =>
     request(
       `/tickets${qs({ scope: q.scope, search: q.search, status: q.status, priority: q.priority, date_from: q.dateFrom, date_to: q.dateTo, circle: q.circle, areaManager: q.areaManager, week: q.week, gp: q.gp, progressDate: q.progressDate, page: q.page, page_size: q.pageSize })}`,

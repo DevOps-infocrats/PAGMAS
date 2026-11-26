@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleCheck, FolderOpen, Hourglass, Loader2, Plus, RotateCcw, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { ChevronDown, CircleCheck, CirclePause, Layers, Loader2, Plus, RotateCcw, ShieldCheck, Trash2, UserRound, Wrench } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ErrorState, PageSkeleton } from "@/components/feedback/states";
@@ -8,9 +8,10 @@ import { SearchableSelect } from "@/components/filters/searchable-select";
 import { MiniKpi } from "@/components/kpi/mini-kpi";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/overlays";
 import { Card, Input } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { IS_LIVE, ticketApi, type GpReviewState, type TicketDetail, type TicketKpis, type TicketSummary } from "@/lib/api";
+import { IS_LIVE, ticketApi, type GpReviewState, type TicketDetail, type TicketKpis, type TicketListFilters, type TicketSummary, type TicketWorkTotals } from "@/lib/api";
 import { formatCount } from "@/lib/utils/format";
 import {
   ActivityLog,
@@ -64,6 +65,31 @@ const COLUMNS: TicketColumn[] = [
       ) : (
         <span className="text-muted-foreground">—</span>
       ),
+  },
+  {
+    key: "progress",
+    header: "Progress",
+    render: (t) => {
+      const w = t.work;
+      if (!w) return <span className="text-muted-foreground">—</span>;
+      const pct = w.gps ? Math.round((w.filled * 100) / w.gps) : 0;
+      return (
+        <span className="block min-w-[10rem] whitespace-nowrap text-[0.75rem]" title="GPs with a Daily Achievement (or achieved) · who of the ticket's AM, FEs and FRT teams has worked on it">
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+              <span className="block h-full rounded-full bg-[var(--good)]" style={{ width: `${pct}%` }} />
+            </span>
+            <b>
+              {w.filled}/{w.gps}
+            </b>{" "}
+            GPs filled
+          </span>
+          <span className="block text-muted-foreground">
+            AM {w.amWorked ? "✓" : "✗"} · FE {w.feWorked}/{w.fe} · FRT {w.frtWorked}/{w.frt}
+          </span>
+        </span>
+      );
+    },
   },
   SUBJECT_COL,
   PRIORITY_COL,
@@ -144,29 +170,54 @@ function AdminTickets() {
   );
 }
 
-function AdminKpis({ k }: { k?: TicketKpis }) {
+function AdminKpis({ k, filtered, onWorking }: { k?: TicketKpis; filtered: boolean; onWorking?: () => void }) {
   const L = !k;
+  // work started = the first Daily Achievement (or Start) moved the ticket on from Open; not yet closed
+  const inProgress = k ? k.byStatus.IN_PROGRESS + k.byStatus.PENDING_REVIEW + k.byStatus.CHANGES_REQUESTED : undefined;
+  const w = k?.work;
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="space-y-2">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <MiniKpi
         loading={L}
-        icon={FolderOpen}
-        tone="var(--series-1)"
-        label="Open Tickets"
-        info="Tickets not yet submitted: status Open (not started) plus In Progress (being worked on)."
-        value={formatCount(k?.open)}
-        unit="tickets"
-        caption={k ? `${formatCount(k.byStatus.OPEN)} open · ${formatCount(k.byStatus.IN_PROGRESS)} in progress · ${formatCount(k.byStatus.CHANGES_REQUESTED)} changes requested` : undefined}
+        icon={Layers}
+        tone="var(--series-2)"
+        label="Total Tickets"
+        info={`One ticket is generated per Area Manager and goes to its FEs and FRT teams too – each of them has this ticket to work on. Total = AM + FE + FRT (each counted per ticket)${filtered ? ", for the tickets matching the filters above" : ""}.`}
+        value={formatCount(w ? w.total : k?.total)}
+        unit={w ? "assigned" : "tickets"}
+        caption={w ? `AM ${formatCount(w.am)} · FE ${formatCount(w.fe)} · FRT ${formatCount(w.frt)} · ${formatCount(k?.total)} tickets generated` : filtered ? "Matching the filters" : "All tickets"}
       />
       <MiniKpi
         loading={L}
-        icon={Hourglass}
-        tone="var(--series-7)"
-        label="Pending Tickets"
-        info="Work submitted by the user and waiting for your review (status Pending Review)."
-        value={formatCount(k?.pending)}
-        unit="tickets"
-        caption="Waiting for your review"
+        icon={Wrench}
+        tone="var(--series-4)"
+        label="Tickets in Progress"
+        onClick={w ? onWorking : undefined}
+        info="Of the assigned (AM + FE + FRT, per ticket): who has worked on their ticket – a Daily Achievement, a verify / approve / return or a Non-Doable step on it. Click to see which tickets and what is being done."
+        value={formatCount(w ? w.worked : inProgress)}
+        unit={w ? `of ${formatCount(w.total)} working` : "tickets"}
+        caption={
+          w
+            ? `AM ${formatCount(w.amWorked)}/${formatCount(w.am)} · FE ${formatCount(w.feWorked)}/${formatCount(w.fe)} · FRT ${formatCount(w.frtWorked)}/${formatCount(w.frt)}`
+            : k
+              ? `${formatCount(k.byStatus.IN_PROGRESS)} in progress · ${formatCount(k.byStatus.PENDING_REVIEW)} pending review · ${formatCount(k.byStatus.CHANGES_REQUESTED)} changes requested`
+              : undefined
+        }
+      />
+      <MiniKpi
+        loading={L}
+        icon={CirclePause}
+        tone="var(--warning)"
+        label="Tickets Not Started"
+        info="Of the assigned (AM + FE + FRT, per ticket): who has done nothing on their ticket yet. An FRT team without a login cannot work – its GPs are reported by the FE (or the AM)."
+        value={formatCount(w ? w.total - w.worked : k?.byStatus.OPEN)}
+        unit={w ? "not started" : "tickets"}
+        caption={
+          w
+            ? `AM ${formatCount(w.am - w.amWorked)} · FE ${formatCount(w.fe - w.feWorked)} · FRT ${formatCount(w.frt - w.frtWorked)}${w.frtNoLogin ? ` · ${formatCount(w.frtNoLogin)} FRT have no login` : ""}`
+            : "No work submitted yet"
+        }
       />
       <MiniKpi
         loading={L}
@@ -179,6 +230,155 @@ function AdminKpis({ k }: { k?: TicketKpis }) {
         caption={k ? `of ${formatCount(k.total)} tickets in total` : undefined}
       />
     </div>
+    {w && <TeamDropdown w={w} />}
+    </div>
+  );
+}
+
+/** "Team on these tickets": a dropdown under the KPIs – closed by default; open = the people of the tickets per role. */
+function TeamDropdown({ w }: { w: TicketWorkTotals }) {
+  const [open, setOpen] = useState(false);
+  const rows = [
+    { role: "AM", label: "Area Managers", n: w.am, worked: w.amWorked, login: w.amLogin ?? w.am },
+    { role: "FE", label: "Field Engineers", n: w.fe, worked: w.feWorked, login: w.feLogin ?? w.fe },
+    { role: "FRT", label: "FRT teams", n: w.frt, worked: w.frtWorked, login: w.frtLogin ?? w.frt - w.frtNoLogin },
+  ];
+  const sum = (f: (r: (typeof rows)[number]) => number) => rows.reduce((a, r) => a + f(r), 0);
+  const cols = [
+    { key: "Assigned", info: "People on the tickets (each counted per ticket)" },
+    { key: "Working", info: "Did something on their ticket – a Daily Achievement, a verify / approve / return or a Non-Doable step" },
+    { key: "Not started", info: "Nothing done on their ticket yet" },
+    { key: "No login", info: "No dashboard login – cannot work on the ticket" },
+  ];
+  return (
+    <Card className="overflow-hidden p-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls="team-on-tickets"
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-accent/40"
+      >
+        <ChevronDown className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} aria-hidden />
+        <span className="text-[0.875rem] font-semibold text-subheading">Team on these tickets</span>
+        <span className="text-[0.75rem] text-muted-foreground">
+          AM / FE / FRT · {formatCount(sum((r) => r.n))} assigned · {formatCount(sum((r) => r.worked))} working
+        </span>
+        <span className="ml-auto text-[0.75rem] font-medium text-primary">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div id="team-on-tickets" className="overflow-x-auto border-t border-border">
+          <table className="w-full min-w-[36rem] text-[0.8125rem]">
+            <thead className="bg-muted/60 text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2 text-left font-semibold">Role</th>
+                {cols.map((c) => (
+                  <th key={c.key} className="px-4 py-2 text-right font-semibold" title={c.info}>
+                    {c.key}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="tabular">
+              {rows.map((r) => (
+                <tr key={r.role} className="border-t border-border">
+                  <td className="px-4 py-2">
+                    <span className="font-semibold">{r.role}</span> <span className="text-[0.75rem] text-muted-foreground">{r.label}</span>
+                  </td>
+                  <td className="px-4 py-2 text-right font-semibold">{formatCount(r.n)}</td>
+                  <td className="px-4 py-2 text-right">{formatCount(r.worked)}</td>
+                  <td className="px-4 py-2 text-right">{formatCount(r.n - r.worked)}</td>
+                  <td className={`px-4 py-2 text-right ${r.n - r.login > 0 ? "font-semibold text-critical-text" : "text-muted-foreground"}`}>{formatCount(r.n - r.login)}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-border bg-muted/30 font-semibold">
+                <td className="px-4 py-2">Total</td>
+                <td className="px-4 py-2 text-right">{formatCount(sum((r) => r.n))}</td>
+                <td className="px-4 py-2 text-right">{formatCount(sum((r) => r.worked))}</td>
+                <td className="px-4 py-2 text-right">{formatCount(sum((r) => r.n - r.worked))}</td>
+                <td className="px-4 py-2 text-right">{formatCount(sum((r) => r.n - r.login))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** "Tickets in Progress": the tickets someone works on (the filters above) – who worked, what was done, where it waits. */
+function WorkingTickets({ open, onClose, f, tick, onOpen }: { open: boolean; onClose: () => void; f: TicketListFilters; tick: number; onOpen: (id: number) => void }) {
+  const q = useApiQuery(open ? `ticket-working:${tick}:${JSON.stringify(f)}` : null, () => ticketApi.getWorking(f));
+  const items = q.data?.items ?? [];
+  const chips = (m: Record<string, number>, tone: string) =>
+    Object.entries(m).map(([lbl, n]) => (
+      <span key={lbl} className={`mr-1 inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[0.6875rem] font-semibold ${tone}`}>
+        {n} {lbl}
+      </span>
+    ));
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="top-[5vh] max-h-[90dvh] max-w-6xl p-0">
+        <div className="border-b border-border px-5 py-3">
+          <DialogTitle className="text-lg font-bold">
+            Tickets in progress <span className="font-normal text-muted-foreground">({items.length})</span>
+          </DialogTitle>
+          <DialogDescription className="text-[0.8125rem] text-muted-foreground">
+            Tickets someone of the AM, FEs or FRT teams has worked on – who, what was reported and who has to act next. Latest activity first; click a ticket to open it.
+          </DialogDescription>
+        </div>
+        <div className="max-h-[72dvh] overflow-auto">
+          {q.error ? (
+            <div className="p-5">
+              <ErrorState error={q.error} onRetry={q.reload} />
+            </div>
+          ) : !q.data ? (
+            <p className="flex items-center gap-2 p-5 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Loading…
+            </p>
+          ) : !items.length ? (
+            <p className="p-5 text-center text-sm text-muted-foreground">No ticket is being worked on yet.</p>
+          ) : (
+            <table className="w-full min-w-[60rem] text-[0.8125rem]">
+              <thead className="sticky top-0 z-10 bg-muted text-left text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  {["Ticket", "Area Manager", "GPs filled", "Who worked", "What was reported", "Waiting for", "Last activity"].map((h) => (
+                    <th key={h} className="px-3 py-2 font-semibold">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((t) => (
+                  <tr key={t.id} onClick={() => onOpen(t.id)} className="cursor-pointer border-b border-border align-top last:border-0 hover:bg-accent/40">
+                    <td className="whitespace-nowrap px-3 py-2">
+                      <span className="font-semibold text-primary">{t.code}</span>
+                      <span className="block text-[0.6875rem] text-muted-foreground">
+                        {t.circle ?? "—"} · {t.week?.replace("W-", "Wk ")}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2">{t.areaManager ?? "—"}</td>
+                    <td className="whitespace-nowrap px-3 py-2">
+                      <b>
+                        {t.work.filled}/{t.work.gps}
+                      </b>
+                      <span className="block text-[0.6875rem] text-muted-foreground">
+                        AM {t.work.amWorked ? "✓" : "✗"} · FE {t.work.feWorked}/{t.work.fe} · FRT {t.work.frtWorked}/{t.work.frt}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-[0.75rem]">{(t.work.workers ?? []).join(", ") || "—"}</td>
+                    <td className="px-3 py-2">{chips(t.categories, "bg-good-soft text-good-text") }</td>
+                    <td className="px-3 py-2">{Object.keys(t.waiting).length ? chips(t.waiting, "bg-warning-soft text-warning-text") : <span className="text-muted-foreground">—</span>}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{t.work.lastAt ? new Date(t.work.lastAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -258,26 +458,34 @@ function AdminTicketList({ tick, onOpen, onChanged }: { tick: number; onOpen: (i
     setFilters((f) => ({ ...f, page: 1 }));
   }, []);
   const q = { ...listQuery(filters), circle: mon.circle, areaManager: mon.areaManager, week: mon.week, gp: mon.gp || undefined, progressDate: mon.progressDate || undefined };
-  const kpis = useApiQuery(`tickets-kpis:all:${tick}`, () => ticketApi.getKpis("all"));
-  const gpKpis = useApiQuery(`gp-monitor-summary:${tick}`, () => ticketApi.getGpMonitorSummary({}, "category"));
+  // the KPIs and the GP categories follow the filters (the tickets the list shows)
+  const kf = { search: q.search, status: q.status, priority: q.priority, dateFrom: q.dateFrom, dateTo: q.dateTo, circle: q.circle, areaManager: q.areaManager, week: q.week, gp: q.gp, progressDate: q.progressDate };
+  const kpis = useApiQuery(`tickets-kpis:all:${tick}:${JSON.stringify(kf)}`, () => ticketApi.getKpis("all", kf));
+  const gpKpis = useApiQuery(`ticket-gp-categories:${tick}:${JSON.stringify(kf)}`, () => ticketApi.getGpCategories(kf));
   const list = useApiQuery(`tickets:all:${tick}:${JSON.stringify(q)}`, () => ticketApi.list({ scope: "all", ...q }));
   const pathname = usePathname();
+  const [workingOpen, setWorkingOpen] = useState(false);
   const filtered = !!(filters.search || filters.status !== "all" || filters.priority !== "all" || filters.dateFrom || filters.dateTo || mon.circle || mon.areaManager || mon.week || mon.gp || mon.progressDate);
   return (
     <>
+      {/* the filters first: the KPIs, the GP categories and the list below follow them */}
+      <Card className="overflow-hidden p-0">
+        <TicketFilterBar value={filters} onChange={setFilters} searchHint="Ticket ID, user name or subject" withDates />
+        <MonitorBar value={mon} onChange={setMonitor} tick={tick} />
+      </Card>
       {kpis.error ? (
         <Card>
           <ErrorState error={kpis.error} onRetry={kpis.reload} />
         </Card>
       ) : (
-        <AdminKpis k={kpis.data} />
+        <AdminKpis k={kpis.data ?? kpis.staleData} filtered={filtered} onWorking={() => setWorkingOpen(true)} />
       )}
       {gpKpis.error ? (
         <Card>
           <ErrorState error={gpKpis.error} onRetry={gpKpis.reload} />
         </Card>
       ) : (
-        <CategoryKpiCards k={gpKpis.data} loading={!gpKpis.data} hrefFor={(c) => `${pathname}?gps=${c.toLowerCase()}`} />
+        <CategoryKpiCards k={gpKpis.data ?? gpKpis.staleData} loading={!(gpKpis.data ?? gpKpis.staleData)} hrefFor={(c) => `${pathname}?gps=${c.toLowerCase()}`} />
       )}
       <TicketTable
         title="All tickets"
@@ -304,12 +512,17 @@ function AdminTicketList({ tick, onOpen, onChanged }: { tick: number; onOpen: (i
             <Trash2 /> Delete
           </Button>
         )}
-        filters={
-          <>
-            <TicketFilterBar value={filters} onChange={setFilters} searchHint="Ticket ID, user name or subject" withDates />
-            <MonitorBar value={mon} onChange={setMonitor} tick={tick} />
-          </>
-        }
+        filters={null}
+      />
+      <WorkingTickets
+        open={workingOpen}
+        onClose={() => setWorkingOpen(false)}
+        f={kf}
+        tick={tick}
+        onOpen={(id) => {
+          setWorkingOpen(false);
+          onOpen(id);
+        }}
       />
       <ConfirmDialog
         open={toDelete != null}
