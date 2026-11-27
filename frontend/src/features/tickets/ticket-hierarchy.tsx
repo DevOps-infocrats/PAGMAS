@@ -39,6 +39,13 @@ export function LevelBadge({ level }: { level: TicketLevel }) {
   return <span className={cn("inline-block w-9 rounded px-1 py-0.5 text-center text-[0.625rem] font-bold", LEVEL_TONE[level])}>{level}</span>;
 }
 
+/** What the target of each level means (tooltips) */
+export const TARGET_INFO: Record<TicketLevel, string> = {
+  AM: "AM ticket target = all GPs of the Area Manager's ticket",
+  FE: "FE ticket target = the GPs of this Field Engineer on the AM ticket",
+  FRT: "FRT ticket target = its one GP",
+};
+
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Something went wrong");
 
 // ---------------------------------------------------------------- Admin: every level in one list
@@ -146,7 +153,7 @@ export function HierarchyAdminView({ onOpenTicket }: { onOpenTicket: (ticketId: 
             <table className="w-full min-w-[64rem] text-[0.8125rem]">
               <thead className="bg-muted/60 text-left text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  {["Level", "Ticket ID", "Status", "Area Manager", "FE", "FRT", "GP", "Under it", "Updated", ""].map((h) => (
+                  {["Level", "Ticket ID", "Status", "Target GPs", "Area Manager", "FE", "FRT", "GP", "Under it", "Updated", ""].map((h) => (
                     <th key={h} className="px-3 py-2 font-semibold">
                       {h}
                     </th>
@@ -172,6 +179,9 @@ export function HierarchyAdminView({ onOpenTicket }: { onOpenTicket: (ticketId: 
                     </td>
                     <td className="px-3 py-2">
                       <UnitStatusBadge status={r.status} label={r.statusLabel} />
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold tabular" title={TARGET_INFO[r.level]}>
+                      {r.targetGps ?? "—"}
                     </td>
                     <td className="px-3 py-2">{r.am ?? "—"}</td>
                     <td className="px-3 py-2">{r.fe ?? "—"}</td>
@@ -273,6 +283,7 @@ export function UnitDialog({ unit, onClose, onChanged }: { unit: { ticketId: num
               <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[0.8125rem] sm:grid-cols-3">
                 {(
                   [
+                    ["Target GPs", d.targetGps != null ? `${d.targetGps} GP${d.targetGps === 1 ? "" : "s"}` : null],
                     ["Area Manager", d.am],
                     ["FE", d.fe],
                     ...(d.level === "FRT" ? [["FRT team", d.frt], ["GP", d.gpCode ? `${d.gpCode} · ${d.gpName ?? ""}` : null], ["Block", d.block], ["GP now", d.gpStage]] : []),
@@ -397,6 +408,11 @@ export function TicketHierarchyPanel({ t }: { t: TicketDetail }) {
       </button>
       <UnitStatusBadge status={u.status} label={u.statusLabel} />
       <span className="text-muted-foreground">{u.level === "FE" ? u.fe : `GP ${u.gpCode} · ${u.gpName ?? ""} · FRT ${u.frt}`}</span>
+      {u.targetGps != null && (
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[0.6875rem] font-semibold" title={TARGET_INFO[u.level]}>
+          target {u.targetGps} GP{u.targetGps === 1 ? "" : "s"}
+        </span>
+      )}
       {extra && <span className="ml-auto text-[0.75rem] text-muted-foreground">{extra}</span>}
     </li>
   );
@@ -406,7 +422,7 @@ export function TicketHierarchyPanel({ t }: { t: TicketDetail }) {
         <Layers className="size-4 text-primary" aria-hidden />
         <h3 className="text-[0.9375rem] font-bold text-subheading">Ticket hierarchy</h3>
         <span className="text-[0.75rem] text-muted-foreground">
-          {d.ticket.code} → {d.fe.length} FE ticket{d.fe.length === 1 ? "" : "s"} → {d.fe.reduce((n, f) => n + f.frt.length, 0) + d.frtDirect.length} FRT ticket(s). Each has its own status.
+          {d.ticket.code}{d.ticket.targetGps != null ? ` (target ${d.ticket.targetGps} GPs)` : ""} → {d.fe.length} FE ticket{d.fe.length === 1 ? "" : "s"} → {d.fe.reduce((n, f) => n + f.frt.length, 0) + d.frtDirect.length} FRT ticket(s). Each has its own status.
           {d.canCloseFe ? " As the Area Manager you close the FE tickets." : ""}
         </span>
       </div>

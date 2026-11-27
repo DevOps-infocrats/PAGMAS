@@ -94,8 +94,10 @@ def test_excel_counts_work_after_the_week_and_every_gp_once(client, frt_org, mai
     rows = [r for r in gs[2:] if r and r[0]]
     codes = [r[head.index("GP code")] for r in rows]
     assert len(codes) == len(set(codes)) == unique
-    t_codes = {r[head.index("Ticket(s)")] for r in rows}
-    assert any("," in c for c in t_codes)
+    # the ticket number is only in the AM / FE / FRT ticket ID columns (no separate "Ticket(s)" column); a GP on two
+    # tickets is named in the Summary warning above
+    assert "Ticket(s)" not in head and "Ticket" not in head
+    assert all(str(r[head.index("AM Ticket ID")]).startswith("TKT-") for r in rows)
     assert all(r[head.index("Why with them")] for r in rows)
     # the team's logins and one plain status per GP; a not-filled GP names the person it is pending with
     assert {r[head.index("AM login")] for r in rows} <= {"Yes", "No"}

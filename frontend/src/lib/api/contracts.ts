@@ -2813,6 +2813,8 @@ export interface TicketUnitRow {
   closedAt: string | null;
   closedBy: string | null;
   closeRemark: string | null;
+  /** target GPs: AM ticket = all its GPs · FE ticket = the FE's GPs · FRT ticket = its one GP */
+  targetGps?: number | null;
   /** Admin list: tickets under it (AM: FE + FRT; FE: FRT) and how many of them are not closed */
   children?: { fe: number; frt: number; open: number };
 }
@@ -2863,6 +2865,8 @@ export interface TicketUnitBrief {
 /** The signed-in FE's / FRT's own ticket under the AM ticket: FE = their FE ticket; FRT = their GP-wise FRT tickets
  * (code = the first still open one, codes = all of them) */
 export interface MyTicketUnit extends TicketUnitBrief {
+  /** FE: the FE's GPs · FRT: their GPs (one per FRT ticket) */
+  targetGps?: number;
   count: number;
   open: number;
   codes: string[];

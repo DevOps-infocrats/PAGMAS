@@ -540,7 +540,7 @@ def ticket_report_xlsx(week: ReportWeek = None, circle: ReportCircle = None, use
     from ..tickets import report
 
     # the Excel: the days from the ticket's generation to today (work after the week counts), every GP once, who acts
-    data = report.build(db, week, circle, area_circles(db, user), extend=True)
+    data = report.build(db, week, circle, area_circles(db, user), extend=True, with_ids=True)
     code = (data.get("week") or {}).get("code", "no-week")
     import re
 
