@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/overlays";
 import { Card, Input } from "@/components/ui/primitives";
 import { useApiQuery } from "@/hooks/use-api-query";
-import { IS_LIVE, ticketApi, type GpReviewState, type TicketDetail, type TicketKpis, type TicketListFilters, type TicketSummary, type TicketWorkTotals } from "@/lib/api";
+import { IS_LIVE, ticketApi, type GpReviewState, type TicketDetail, type TicketKpis, type TicketListFilters, type TicketPeopleTotals, type TicketSummary } from "@/lib/api";
 import { formatCount } from "@/lib/utils/format";
 import {
   ActivityLog,
@@ -248,22 +248,23 @@ function AdminKpis({ k, filtered, onWorking }: { k?: TicketKpis; filtered: boole
         caption={split("closed")}
       />
     </div>
-    {w && <TeamDropdown w={w} />}
+    {k?.people ? <TeamDropdown p={k.people} /> : null}
     </div>
   );
 }
 
-/** "Team on these tickets": a dropdown under the KPIs – closed by default; open = the people of the tickets per role. */
-function TeamDropdown({ w }: { w: TicketWorkTotals }) {
+/** "Team on these tickets": a dropdown under the KPIs – closed by default; open = the people of the tickets per role,
+ * each person / FRT team ONCE (the same numbers as the Ticket Report's "Tickets generated for AM / FE / FRT"). */
+function TeamDropdown({ p }: { p: TicketPeopleTotals }) {
   const [open, setOpen] = useState(false);
   const rows = [
-    { role: "AM", label: "Area Managers", n: w.am, worked: w.amWorked, login: w.amLogin ?? w.am },
-    { role: "FE", label: "Field Engineers", n: w.fe, worked: w.feWorked, login: w.feLogin ?? w.fe },
-    { role: "FRT", label: "FRT teams", n: w.frt, worked: w.frtWorked, login: w.frtLogin ?? w.frt - w.frtNoLogin },
+    { role: "AM", label: "Area Managers", n: p.am, worked: p.amWorked, login: p.amLogin, tickets: p.amTickets },
+    { role: "FE", label: "Field Engineers", n: p.fe, worked: p.feWorked, login: p.feLogin, tickets: p.feTickets },
+    { role: "FRT", label: "FRT teams", n: p.frt, worked: p.frtWorked, login: p.frtLogin, tickets: p.frtTickets },
   ];
   const sum = (f: (r: (typeof rows)[number]) => number) => rows.reduce((a, r) => a + f(r), 0);
   const cols = [
-    { key: "Assigned", info: "People on the tickets (each counted per ticket)" },
+    { key: "Assigned", info: "Different people on the tickets – each person (FRT: each FRT team) counted once, however many tickets they are on. AM / FE = the people the tickets were sent to" },
     { key: "Working", info: "Did something on their ticket – a Daily Achievement, a verify / approve / return or a Non-Doable step" },
     { key: "Not started", info: "Nothing done on their ticket yet" },
     { key: "No login", info: "No dashboard login – cannot work on the ticket" },
@@ -302,6 +303,9 @@ function TeamDropdown({ w }: { w: TicketWorkTotals }) {
                 <tr key={r.role} className="border-t border-border">
                   <td className="px-4 py-2">
                     <span className="font-semibold">{r.role}</span> <span className="text-[0.75rem] text-muted-foreground">{r.label}</span>
+                    <span className="block text-[0.6875rem] text-muted-foreground">
+                      on {formatCount(r.tickets)} ticket{r.tickets === 1 ? "" : "s"}
+                    </span>
                   </td>
                   <td className="px-4 py-2 text-right font-semibold">{formatCount(r.n)}</td>
                   <td className="px-4 py-2 text-right">{formatCount(r.worked)}</td>

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     smtp_approval_emails_enabled: bool = False
     # Master switch of the scheduled AMC Conversion e-mails (off by default).
     amc_report_emails_enabled: bool = False
+    # Master switch of the scheduled O&M Daily Dashboard e-mails (off by default; separate from the AMC switch).
+    # "Send test mail" works without it; scheduled sending needs it AND the setting switched on in Mail Configuration.
+    om_daily_emails_enabled: bool = False
     # Timezone of the schedules: send times are wall-clock times in this zone.
     mail_timezone: str = "Asia/Kolkata"
 

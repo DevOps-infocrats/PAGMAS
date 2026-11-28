@@ -187,19 +187,31 @@ def deliver(db: Session, cfg: MailConfig) -> tuple[str, int, int, int, str | Non
 # ---------------------------------------------------------------- background thread
 
 
+def _om_tick() -> None:
+    """The O&M Daily Dashboard e-mail (app.mail.om_service) – its own switch; nothing happens while it is off."""
+    from . import om_service
+
+    with SessionLocal() as db:
+        om_service.run_due(db)
+
+
 def _loop() -> None:
     while not _stop.wait(TICK_SECONDS):  # first tick one interval after start-up
         try:
             run_due()
         except Exception:
             log.exception("Mail scheduler tick failed")
+        try:
+            _om_tick()
+        except Exception:
+            log.exception("O&M daily mail tick failed")
 
 
 def start_scheduler() -> bool:
-    """Start the background thread when the switch is on (never in tests). Returns whether it runs."""
+    """Start the background thread when a switch is on (never in tests). Returns whether it runs."""
     global _thread
     s = get_settings()
-    if not s.amc_report_emails_enabled or s.app_env == "test":
+    if not (s.amc_report_emails_enabled or s.om_daily_emails_enabled) or s.app_env == "test":
         log.info("Scheduled AMC e-mails are off (AMC_REPORT_EMAILS_ENABLED=false) – scheduler not started")
         return False
     if _thread and _thread.is_alive():

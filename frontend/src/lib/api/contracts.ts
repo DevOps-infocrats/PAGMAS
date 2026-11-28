@@ -1985,6 +1985,16 @@ export interface AdminApi {
   deleteMailConfig(id: number): Promise<{ deleted: number }>;
   previewMailRecipients(id: number): Promise<MailRecipientPreview>;
   listMailRuns(): Promise<MailRunItem[]>;
+  /** O&M Daily Dashboard e-mail (one e-mail per circle) */
+  getOmMail(): Promise<OmMailConfig>;
+  saveOmMailSettings(body: OmMailSettingsBody): Promise<OmMailConfig>;
+  saveOmMailCircle(circleId: string, body: OmMailCircleBody): Promise<OmMailCircle>;
+  refreshOmAreaManagers(circleId: string): Promise<{ areaManagers: OmAreaManager[] }>;
+  previewOmMail(circleId: string): Promise<{ html: string; subject: string; dataAsOf: string; week: string; sizeBytes: number }>;
+  sendOmTestMail(circleId: string): Promise<{ ok: boolean; status: string; message: string | null; to: string }>;
+  sendOmMailNow(circleId?: string): Promise<{ ok: boolean; status: string; message: string | null; sent: number; failed: number; skipped: number }>;
+  testOmConnection(): Promise<{ ok: boolean; message: string }>;
+  listOmDeliveries(q: { status?: string; circle?: string; kind?: string; q?: string; page?: number }): Promise<OmDeliveryPage>;
 }
 
 /* ---------------------------------------------------------------- Ticket Management (backend: app/tickets) */
@@ -2006,6 +2016,8 @@ export interface TicketKpis {
   byStatus: Record<TicketStatus, number>;
   /** Admin Tickets: the people of the tickets (one ticket per AM, shared with its FEs and FRT teams) and who worked */
   work?: TicketWorkTotals;
+  /** Admin Tickets – "Team on these tickets": each person / FRT team once (the same people as the Ticket Report) */
+  people?: TicketPeopleTotals;
   /** Admin Tickets: FE tickets and GP-wise FRT tickets under these AM tickets, per status (ticket hierarchy) */
   units?: Record<"FE" | "FRT", Record<TicketUnitStatus, number> & { total: number }>;
 }
@@ -2028,6 +2040,102 @@ export interface TicketWorkTotals {
   frtLogin?: number;
   gps: number;
   filled: number;
+}
+
+/** Each person / FRT team once across the tickets: how many, how many worked, how many have a login, on how many AM tickets */
+/** O&M Daily Dashboard e-mail */
+export interface OmAreaManager {
+  name: string;
+  email: string;
+  source: "matrix" | "manual";
+  enabled: boolean;
+}
+export interface OmMailCircle {
+  circleId: string;
+  circleName: string;
+  enabled: boolean;
+  to: string[];
+  cc: string[];
+  subject: string;
+  includeAms: boolean;
+  areaManagers: OmAreaManager[];
+  remarks: string;
+  remarksUpdatedBy: string | null;
+  remarksUpdatedAt: string | null;
+  /** what the next e-mail really uses: To incl. the enabled AMs, CC incl. the central CC */
+  effective: { to: string[]; cc: string[] };
+  /** the latest real e-mail of the circle (scheduled / Send now; tests not counted) */
+  lastStatus?: "SENT" | "FAILED" | "SKIPPED" | "UNKNOWN" | "SENDING" | "PENDING" | null;
+  lastAt?: string | null;
+}
+export type OmMailCircleBody = Pick<OmMailCircle, "enabled" | "to" | "cc" | "subject" | "includeAms" | "areaManagers" | "remarks">;
+export interface OmMailSettings {
+  enabled: boolean;
+  centralCc: string[];
+  /** "0" = Monday … "6" = Sunday → ["HH:MM"] */
+  schedule: Record<string, string[]>;
+  windowStart: string;
+  windowEnd: string;
+  subjectTemplate: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: string | null;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+export type OmMailSettingsBody = Pick<OmMailSettings, "enabled" | "centralCc" | "schedule" | "windowStart" | "windowEnd" | "subjectTemplate">;
+export interface OmMailConfig {
+  settings: OmMailSettings;
+  circles: OmMailCircle[];
+  tiles: { nextRunAt: string | null; sentToday: number; sent7d: number; failed7d: number; switchOn: boolean };
+  smtpConfigured: boolean;
+  smtpProblems: string[];
+  timezone: string;
+  placeholders: string[];
+  maxTimesPerDay: number;
+  /** the management e-mail with every circle on one page – own To / CC / subject / on-off (never with the circles) */
+  allCircles?: OmMailCircle;
+  allSubjectDefault?: string;
+}
+export interface OmDelivery {
+  id: number;
+  runId: number;
+  kind: "SCHEDULED" | "MANUAL" | "TEST";
+  triggeredBy: string | null;
+  circleId: string;
+  status: "SENT" | "FAILED" | "SKIPPED" | "UNKNOWN" | "SENDING" | "PENDING";
+  to: string[];
+  cc: string[];
+  subject: string;
+  error: string | null;
+  attempts: number;
+  sizeBytes: number | null;
+  dataAsOf: string | null;
+  createdAt: string | null;
+  sentAt: string | null;
+}
+export interface OmDeliveryPage {
+  items: OmDelivery[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketPeopleTotals {
+  am: number;
+  amWorked: number;
+  amLogin: number;
+  amTickets: number;
+  fe: number;
+  feWorked: number;
+  feLogin: number;
+  feTickets: number;
+  frt: number;
+  frtWorked: number;
+  frtLogin: number;
+  frtTickets: number;
+  total: number;
+  worked: number;
 }
 
 /** Admin Tickets – "Tickets in Progress": a ticket someone works on – who, what was done, where its GPs wait */

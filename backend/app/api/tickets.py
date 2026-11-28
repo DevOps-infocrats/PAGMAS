@@ -199,6 +199,8 @@ def kpis(scope: Scope = "mine", f: dict = Depends(_list_filters), user: CurrentU
     if scope == "all":
         ids = service.filtered_ids(db, user.circles, f)
         out["work"] = service.work_totals(db, ids)
+        # "Team on these tickets": each person / FRT team once – the same people as the Ticket Report (a new field)
+        out["people"] = service.people_totals(db, ids)
         # ticket hierarchy: the FE / FRT tickets under these AM tickets, per status (a new field – nothing above changes)
         out["units"] = units.level_counts(db, ids)
     return out

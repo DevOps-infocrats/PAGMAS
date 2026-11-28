@@ -142,6 +142,96 @@ class MailRun(Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)  # counts and reasons only: no addresses or content
 
 
+# ---------------------------------------------------------------- O&M Daily Dashboard e-mail (app.mail.om_service)
+# One e-mail per circle (To / CC / subject chosen by an admin) with that circle's daily dashboard as the HTML body.
+# Separate from the AMC Conversion schedules above (nothing there changes). JSON lists are stored as text.
+
+
+class OmMailSetting(Base):
+    """The one settings row: on / off, the central CC added to every circle's e-mail, the weekly send times and the
+    permitted sending window (wall-clock times in MAIL_TIMEZONE; next_run_at is UTC)."""
+
+    __tablename__ = "om_mail_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    central_cc: Mapped[str] = mapped_column(Text, default="[]")
+    # {"0": ["09:00"], … "6": []} – 0 = Monday … 6 = Sunday
+    schedule: Mapped[str] = mapped_column(Text, default="{}")
+    window_start: Mapped[str] = mapped_column(String(5), default="08:00")
+    window_end: Mapped[str] = mapped_column(String(5), default="20:00")
+    subject_template: Mapped[str] = mapped_column(String(200), default="O&M Daily Dashboard – {circle} – {date}")
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OmMailCircle(Base):
+    """One circle's e-mail: To (circle head etc.), CC, own subject (blank = the settings' subject), the Area Managers
+    who also receive it ([{"name", "email", "source": "matrix" | "manual", "enabled"}]) and the remarks shown in it."""
+
+    __tablename__ = "om_mail_circles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    circle_id: Mapped[str] = mapped_column(String(40), unique=True)
+    circle_name: Mapped[str] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    to_emails: Mapped[str] = mapped_column(Text, default="[]")
+    cc_emails: Mapped[str] = mapped_column(Text, default="[]")
+    subject: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    include_ams: Mapped[bool] = mapped_column(Boolean, default=False)
+    area_managers: Mapped[str] = mapped_column(Text, default="[]")
+    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remarks_updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    remarks_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OmMailRun(Base):
+    """One send: a scheduled slot, a manual "Send now" or a test. `slot_key` is unique – the first process to insert it
+    sends, any other attempt for the same slot is refused (no double e-mails)."""
+
+    __tablename__ = "om_mail_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slot_key: Mapped[str] = mapped_column(String(80), unique=True)
+    kind: Mapped[str] = mapped_column(String(10))  # SCHEDULED | MANUAL | TEST
+    status: Mapped[str] = mapped_column(String(20))  # RUNNING | SUCCESS | PARTIAL | FAILED | SKIPPED
+    dataset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    data_as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OmMailDelivery(Base):
+    """One circle's e-mail of a run – the delivery log (status, To, CC, subject, error; never the content).
+    status: PENDING -> SENDING -> SENT | FAILED; SKIPPED (no To); UNKNOWN (stopped while sending – never re-sent)."""
+
+    __tablename__ = "om_mail_deliveries"
+    __table_args__ = (UniqueConstraint("run_id", "circle_id", name="uq_om_delivery_circle"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("om_mail_runs.id", ondelete="CASCADE"), index=True)
+    circle_id: Mapped[str] = mapped_column(String(40))
+    to_emails: Mapped[str] = mapped_column(Text, default="[]")
+    cc_emails: Mapped[str] = mapped_column(Text, default="[]")
+    subject: Mapped[str] = mapped_column(String(250))
+    status: Mapped[str] = mapped_column(String(10), index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    html_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

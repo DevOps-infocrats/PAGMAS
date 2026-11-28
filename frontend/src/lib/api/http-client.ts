@@ -225,6 +225,15 @@ export const httpAdminApi: AdminApi = {
   deleteMailConfig: (id) => request(`/mail/configs/${id}/delete`, { method: "POST" }),
   previewMailRecipients: (id) => request(`/mail/configs/${id}/recipients`),
   listMailRuns: () => request("/mail/runs"),
+  getOmMail: () => request("/mail/om"),
+  saveOmMailSettings: (body) => request("/mail/om/settings", { method: "PUT", body: JSON.stringify(body) }),
+  saveOmMailCircle: (circleId, body) => request(`/mail/om/circles/${encodeURIComponent(circleId)}`, { method: "PUT", body: JSON.stringify(body) }),
+  refreshOmAreaManagers: (circleId) => request(`/mail/om/circles/${encodeURIComponent(circleId)}/area-managers/refresh`, { method: "POST" }),
+  previewOmMail: (circleId) => request(`/mail/om/preview/${encodeURIComponent(circleId)}`),
+  sendOmTestMail: (circleId) => request("/mail/om/test", { method: "POST", body: JSON.stringify({ circleId }) }),
+  sendOmMailNow: (circleId) => request("/mail/om/send-now", { method: "POST", body: JSON.stringify(circleId ? { circleId } : {}) }),
+  testOmConnection: () => request("/mail/om/test-connection", { method: "POST" }),
+  listOmDeliveries: (q) => request(`/mail/om/deliveries${qs({ ...q })}`),
 };
 
 /** The Admin Tickets list filters as query parameters (the names of GET /tickets) */

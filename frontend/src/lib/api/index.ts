@@ -65,6 +65,15 @@ export const adminApi: AdminApi = IS_LIVE
       deleteMailConfig: unavailable,
       previewMailRecipients: unavailable,
       listMailRuns: unavailable,
+      getOmMail: unavailable,
+      saveOmMailSettings: unavailable,
+      saveOmMailCircle: unavailable,
+      refreshOmAreaManagers: unavailable,
+      previewOmMail: unavailable,
+      sendOmTestMail: unavailable,
+      sendOmMailNow: unavailable,
+      testOmConnection: unavailable,
+      listOmDeliveries: unavailable,
     };
 
 /** Ticket Management (live backend only). */

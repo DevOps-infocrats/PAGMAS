@@ -215,6 +215,24 @@ def test_who_sees_what_and_the_admin_list(client, unit_org, mail):  # noqa: F811
     assert k["total"] == 1 and k["work"]["fe"] == 2  # the existing numbers are unchanged (people per ticket)
     assert k["units"]["FE"]["total"] == 2 and k["units"]["FRT"]["total"] == len(unit_org["one"]) + 1
     assert k["units"]["FE"]["OPEN"] == 2 and k["units"]["FRT"]["CLOSED"] == 0
+    # "Team on these tickets": each person / FRT team once – the same people as the Ticket Report
+    p = k["people"]
+    assert (p["am"], p["fe"], p["frt"]) == (1, 2, 2) and (p["amTickets"], p["feTickets"], p["frtTickets"]) == (1, 1, 1)
+    assert p["frtLogin"] == 1 and p["total"] == 5  # FRT-T1 has an account, FRT-T2 none
+    # a second ticket for the same people: still each person once, on 2 tickets (the per-ticket "work" doubles)
+    _ticket(client, unit_org)
+    login(client)
+    from app.db import SessionLocal as _S
+    from app.tickets import report, service
+
+    with _S() as db:
+        ids = service.filtered_ids(db, None, {"week": unit_org["week"], "area_manager": unit_org["am"]})
+        p2 = service.people_totals(db, ids)
+        rep = {r["role"]: r for r in report.build(db, unit_org["week"], None, None)["roles"]}
+        all_ids = service.filtered_ids(db, None, {"week": unit_org["week"]})
+        p_all = service.people_totals(db, all_ids)
+    assert p2["am"] == 1 and p2["amTickets"] >= 2 and p2["fe"] == 2
+    assert (p_all["am"], p_all["fe"], p_all["frt"]) == (rep["AM"]["people"], rep["FE"]["people"], rep["FRT"]["people"])  # = Ticket Report
     login(client, FE1)
     assert "units" not in client.get("/api/v1/tickets/kpis").json()  # a user's own KPIs (scope mine): unchanged
 
