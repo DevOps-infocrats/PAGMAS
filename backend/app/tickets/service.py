@@ -1145,6 +1145,64 @@ def ticket_work(db: Session, ticket_ids) -> dict[int, dict[str, Any]]:
     }
 
 
+def people_totals(db: Session, ticket_ids) -> dict[str, int]:
+    """Admin Tickets – "Team on these tickets": each person / FRT team ONCE across these tickets – the same people as
+    the Ticket Report's "Tickets generated for AM / FE / FRT" (app.tickets.report): AM and FE = the people the tickets
+    were sent to (a person = their login and name, or e-mail and name without a login); FRT = the FRT teams of the
+    GPs. working = did something on one of their tickets (Daily Achievement, a review step or a Non-Doable step);
+    login = has a dashboard account (FRT: an active account with the team's FRT code); xTickets = the AM tickets they
+    are on. Read only."""
+    from collections import defaultdict
+
+    from ..models import NdEvent, TicketGpReview, User
+    from .task import frt_norm
+
+    ids = list(db.scalars(select(TicketTask.ticket_id).where(TicketTask.ticket_id.in_(list(ticket_ids))))) if ticket_ids else []
+    out = {f"{r}{s}": 0 for r in ("am", "fe", "frt") for s in ("", "Worked", "Login", "Tickets")}
+    if not ids:
+        return out | {"total": 0, "worked": 0}
+    actors: dict[int, set[int]] = defaultdict(set)
+    for q in (
+        select(TicketProgress.ticket_id, TicketProgress.submitted_by_id).where(TicketProgress.ticket_id.in_(ids)),
+        select(TicketGpReview.ticket_id, TicketGpReview.actor_id).where(TicketGpReview.ticket_id.in_(ids)),
+        select(NdEvent.ticket_id, NdEvent.actor_id).where(NdEvent.ticket_id.in_(ids)),
+    ):
+        for tid, uid in db.execute(q):
+            if uid is not None:
+                actors[tid].add(uid)
+
+    def norm(v: str | None) -> str:
+        return " ".join((v or "").split()).lower()
+
+    people: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id.in_(ids), TicketRecipient.role.in_(("AM", "FE")))):
+        key = f"u{r.user_id}|{norm(r.name)}" if r.user_id is not None else f"{r.role}:{(r.email or '').strip().lower()}|{norm(r.name)}"
+        p = people.setdefault((r.role, key), {"tickets": set(), "worked": False, "login": False})
+        p["tickets"].add(r.ticket_id)
+        p["login"] = p["login"] or r.user_id is not None
+        p["worked"] = p["worked"] or (r.user_id is not None and r.user_id in actors.get(r.ticket_id, set()))
+    for role in ("AM", "FE"):
+        ps = [p for (rl, _k), p in people.items() if rl == role]
+        lo = role.lower()
+        out[lo], out[f"{lo}Worked"], out[f"{lo}Login"] = len(ps), sum(1 for p in ps if p["worked"]), sum(1 for p in ps if p["login"])
+        out[f"{lo}Tickets"] = len({t for p in ps for t in p["tickets"]})
+    # FRT teams: the FRT codes of the GPs; who of them worked = an FRT account of the team acted on one of its tickets
+    teams: dict[str, set[int]] = defaultdict(set)
+    for tid, code in db.execute(select(TicketTaskGp.ticket_id, TicketTaskGp.frt_code).where(TicketTaskGp.ticket_id.in_(ids))):
+        if (c := frt_norm(code)):
+            teams[c].add(tid)
+    frt_users: dict[tuple[int, str], set[int]] = defaultdict(set)
+    for r in db.scalars(select(TicketRecipient).where(TicketRecipient.ticket_id.in_(ids), TicketRecipient.role == "FRT", TicketRecipient.user_id.is_not(None))):
+        if (c := frt_norm(r.frt_code)):
+            frt_users[(r.ticket_id, c)].add(r.user_id)
+    logins = {frt_norm(c) for c in db.scalars(select(User.frt_code).where(User.frt_code.is_not(None), User.is_active.is_(True)))} - {None}
+    out["frt"] = len(teams)
+    out["frtWorked"] = sum(1 for c, ts in teams.items() if any(frt_users.get((t, c), set()) & actors.get(t, set()) for t in ts))
+    out["frtLogin"] = sum(1 for c in teams if c in logins)
+    out["frtTickets"] = len({t for ts in teams.values() for t in ts})
+    return out | {"total": out["am"] + out["fe"] + out["frt"], "worked": out["amWorked"] + out["feWorked"] + out["frtWorked"]}
+
+
 def work_totals(db: Session, ticket_ids) -> dict[str, int]:
     """Admin Tickets KPIs: the people of the tickets (AM + FEs + FRT teams, each per ticket) and how many of them worked."""
     w = ticket_work(db, ticket_ids).values()

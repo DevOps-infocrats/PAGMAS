@@ -27,12 +27,13 @@ import {
   type ScopeLevel,
 } from "@/lib/api";
 import { cn } from "@/lib/utils/cn";
+import { OmDailyTab } from "./om-daily-tab";
 
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const AUDIENCE_LABEL: Record<MailAudience, string> = { am: "Area Managers", sme: "SME", coh: "COH", users: "Dashboard users" };
 const RUN_TONE: Record<MailRunItem["status"], "good" | "warning" | "critical" | "neutral" | "info"> = { SUCCESS: "good", PARTIAL: "warning", FAILED: "critical", SKIPPED: "neutral", RUNNING: "info" };
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-type Tab = "schedules" | "templates" | "runs" | "smtp";
+type Tab = "schedules" | "templates" | "runs" | "om" | "smtp";
 
 /** Date-time in the mail timezone (send times are defined there, whatever the browser's zone). */
 function inZone(iso: string | null, tz: string) {
@@ -73,6 +74,7 @@ function MailContent() {
     { id: "schedules", label: "Schedules" },
     { id: "templates", label: "Templates" },
     { id: "runs", label: "Run history" },
+    { id: "om", label: "O&M Daily Dashboard" },
     { id: "smtp", label: "SMTP & test mail" },
   ];
 
@@ -101,6 +103,7 @@ function MailContent() {
       {tab === "schedules" && <SchedulesTab tz={tz} options={options.data} templates={templates.data ?? []} onChanged={refresh} />}
       {tab === "templates" && <TemplatesTab templates={templates} options={options.data} onChanged={refresh} />}
       {tab === "runs" && <RunsTab tz={tz} tick={tick} />}
+      {tab === "om" && <OmDailyTab />}
       {tab === "smtp" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <StatusCard status={status.data} error={status.error} onRetry={status.reload} />

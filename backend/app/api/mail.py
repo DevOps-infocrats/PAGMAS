@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from threading import Lock
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -425,3 +425,255 @@ def list_runs(config: Annotated[int | None, Query(ge=1)] = None, limit: Annotate
         for r, name in db.execute(q).all()
     ]
 
+
+
+# ---------------------------------------------------------------- O&M Daily Dashboard e-mail (app.mail.om_service)
+# One e-mail per circle with that circle's daily dashboard as the HTML body. Saving never sends; "Send test mail"
+# goes to the admin's own address only; "Send now" is an explicit admin action; scheduled sending also needs
+# OM_DAILY_EMAILS_ENABLED=true.
+
+from ..mail import om_service as om  # noqa: E402
+from ..models import OmMailCircle, OmMailDelivery, OmMailRun  # noqa: E402
+
+CircleKey = Annotated[str, Path(pattern=r"^[a-z0-9-]{1,40}$")]
+
+
+def _om_fail(exc: om.OmMailError) -> HTTPException:
+    return HTTPException(exc.status, exc.message)
+
+
+def _om_rate(admin_id: int) -> None:
+    """The same limit as the plain test mail (shared counter): at most TEST_LIMIT mails per admin per window."""
+    now = time.monotonic()
+    with _test_lock:
+        hits = _test_hits[admin_id]
+        while hits and now - hits[0] > TEST_WINDOW_S:
+            hits.popleft()
+        if len(hits) >= TEST_LIMIT:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"At most {TEST_LIMIT} test mails per {TEST_WINDOW_S // 60} minutes - try again later")
+        hits.append(now)
+
+
+def _om_last(db: Session) -> dict[str, tuple[str, dt.datetime | None]]:
+    """circle id -> (status, when) of its latest real e-mail (scheduled or Send now – tests not counted)."""
+    out: dict[str, tuple[str, dt.datetime | None]] = {}
+    q = (select(OmMailDelivery.circle_id, OmMailDelivery.status, OmMailDelivery.sent_at, OmMailDelivery.created_at)
+         .join(OmMailRun, OmMailRun.id == OmMailDelivery.run_id).where(OmMailRun.kind != "TEST").order_by(OmMailDelivery.created_at.desc(), OmMailDelivery.id.desc()))
+    for cid, st, sent, made in db.execute(q):
+        out.setdefault(cid, (st, sent or made))
+    return out
+
+
+def _om_circle_json(c: OmMailCircle, s, last: tuple[str, dt.datetime | None] | None = None) -> dict:
+    to, cc = om.recipients(c, s)
+    return {
+        "lastStatus": last[0] if last else None, "lastAt": _iso(last[1]) if last else None,
+        "circleId": c.circle_id, "circleName": c.circle_name, "enabled": c.enabled, "to": om.jlist(c.to_emails), "cc": om.jlist(c.cc_emails),
+        "subject": c.subject or "", "includeAms": c.include_ams, "areaManagers": om.jlist(c.area_managers),
+        "remarks": c.remarks or "", "remarksUpdatedBy": c.remarks_updated_by, "remarksUpdatedAt": _iso(c.remarks_updated_at),
+        "effective": {"to": to, "cc": cc},  # what the next e-mail would really use (central CC and AMs included)
+    }
+
+
+def _om_settings_json(s) -> dict:
+    return {
+        "enabled": s.enabled, "centralCc": om.jlist(s.central_cc), "schedule": om.jdict(s.schedule), "windowStart": s.window_start, "windowEnd": s.window_end,
+        "subjectTemplate": s.subject_template, "nextRunAt": _iso(s.next_run_at) if s.enabled else None, "lastRunAt": _iso(s.last_run_at), "lastStatus": s.last_status,
+        "updatedBy": s.updated_by, "updatedAt": _iso(s.updated_at),
+    }
+
+
+@router.get("/om")
+def om_config(db: Session = Depends(get_db)) -> dict:
+    """Settings, the circles of the active data with their recipients, the status tiles and the SMTP state."""
+    s = om.settings_row(db)
+    store = _store_or_none()
+    if store is not None:
+        from ..mail.om_data import Context
+
+        circles = om.ensure_circles(db, Context.build(store).circles())
+    else:
+        circles = list(db.scalars(select(OmMailCircle).order_by(OmMailCircle.circle_id)))
+    st = smtp_status()
+    last = _om_last(db)
+    circles = [c for c in circles if c.circle_id != om.ALL_CIRCLES]
+    return {
+        "settings": _om_settings_json(s), "circles": [_om_circle_json(c, s, last.get(c.circle_id)) for c in circles], "tiles": om.tiles(db),
+        # the management e-mail with every circle on one page (own To / CC / subject / on-off)
+        "allCircles": _om_circle_json(om.all_row(db), s, last.get(om.ALL_CIRCLES)), "allSubjectDefault": om.ALL_SUBJECT,
+        "smtpConfigured": st.configured, "smtpProblems": st.problems, "timezone": get_settings().mail_timezone,
+        "placeholders": list(om.PLACEHOLDERS), "maxTimesPerDay": om.MAX_TIMES_PER_DAY,
+    }
+
+
+class OmSettingsIn(BaseModel):
+    enabled: bool = False
+    centralCc: list[str] = Field(default_factory=list, max_length=30)
+    schedule: dict[str, list[str]] = Field(default_factory=dict)
+    windowStart: str = Field("08:00", pattern=r"^\d{2}:\d{2}$")
+    windowEnd: str = Field("20:00", pattern=r"^\d{2}:\d{2}$")
+    subjectTemplate: str = Field(om.DEFAULT_SUBJECT, max_length=200)
+
+
+@router.put("/om/settings")
+def om_save_settings(body: OmSettingsIn, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Save the settings; the next run time is always in the future (saving never sends)."""
+    s = om.settings_row(db)
+    try:
+        sched = om.clean_schedule(body.schedule, body.windowStart, body.windowEnd)
+        central = om.clean_emails(body.centralCc, "Central CC")
+    except om.OmMailError as exc:
+        raise _om_fail(exc) from None
+    nxt = om.next_slot(sched, om.now_utc()) if body.enabled else None
+    if body.enabled and nxt is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Choose at least one day and time before switching the daily mail on")
+    s.central_cc, s.schedule, s.window_start, s.window_end = json.dumps(central), json.dumps(sched), body.windowStart, body.windowEnd
+    s.subject_template = om.clean_subject(body.subjectTemplate) or om.DEFAULT_SUBJECT
+    s.enabled, s.next_run_at = body.enabled, nxt
+    s.updated_by, s.updated_at = admin.name, om.now_utc()
+    db.commit()
+    audit(db, "om_mail_settings", request, admin.id, f"enabled={body.enabled} times={sum(len(v) for v in sched.values())} central_cc={len(central)}")
+    return om_config(db)
+
+
+class OmAreaManagerIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    source: Literal["matrix", "manual"] = "manual"
+    enabled: bool = True
+
+
+class OmCircleIn(BaseModel):
+    enabled: bool = False
+    to: list[str] = Field(default_factory=list, max_length=30)
+    cc: list[str] = Field(default_factory=list, max_length=30)
+    subject: str = Field("", max_length=200)
+    includeAms: bool = False
+    areaManagers: list[OmAreaManagerIn] = Field(default_factory=list, max_length=60)
+    remarks: str = Field("", max_length=4000)
+
+
+@router.put("/om/circles/{circle_id}")
+def om_save_circle(circle_id: CircleKey, body: OmCircleIn, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Save one circle's recipients, subject, Area Managers and remarks (nothing is sent)."""
+    c = om.all_row(db) if circle_id == om.ALL_CIRCLES else db.scalars(select(OmMailCircle).where(OmMailCircle.circle_id == circle_id)).first()
+    if c is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Circle not found")
+    if circle_id == om.ALL_CIRCLES:  # the All Circles mail: only To / CC / subject / on-off (remarks come from each circle)
+        body = body.model_copy(update={"includeAms": False, "areaManagers": [], "remarks": ""})
+    try:
+        to, cc = om.clean_emails(body.to, "To"), om.clean_emails(body.cc, "CC")
+        ams = om.clean_area_managers([m.model_dump() for m in body.areaManagers])
+    except om.OmMailError as exc:
+        raise _om_fail(exc) from None
+    if body.enabled and not to and not (body.includeAms and any(m["enabled"] for m in ams)):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Add at least one To address for {c.circle_name} before switching it on")
+    remarks = "\n".join(ln.rstrip() for ln in body.remarks.replace("\r", "").split("\n")).strip() or None
+    if remarks != c.remarks:
+        c.remarks, c.remarks_updated_by, c.remarks_updated_at = remarks, admin.name, om.now_utc()
+    c.enabled, c.to_emails, c.cc_emails = body.enabled, json.dumps(to), json.dumps(cc)
+    c.subject = om.clean_subject(body.subject) or None
+    c.include_ams, c.area_managers, c.updated_at = body.includeAms, json.dumps(ams), om.now_utc()
+    db.commit()
+    audit(db, "om_mail_circle", request, admin.id, f"{circle_id} enabled={body.enabled} to={len(to)} cc={len(cc)} ams={len(ams)} include_ams={body.includeAms}")
+    return _om_circle_json(c, om.settings_row(db), _om_last(db).get(circle_id))
+
+
+@router.post("/om/circles/{circle_id}/area-managers/refresh")
+def om_refresh_ams(circle_id: CircleKey, db: Session = Depends(get_db)) -> dict:
+    """The circle's Area Managers from the Escalation Matrix (manual entries and on / off choices kept). Not saved
+    until the circle is saved."""
+    c = db.scalars(select(OmMailCircle).where(OmMailCircle.circle_id == circle_id)).first()
+    store = _store_or_none()
+    if c is None or store is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Circle or active data not found")
+    return {"areaManagers": om.merge_area_managers(om.jlist(c.area_managers), om.matrix_area_managers(store, circle_id))}
+
+
+@router.get("/om/preview/{circle_id}")
+def om_preview(circle_id: CircleKey, db: Session = Depends(get_db)) -> dict:
+    """The circle's e-mail as it would be sent now (HTML + subject). Nothing is sent or stored."""
+    try:
+        html, subject, view = om.preview(db, circle_id)
+    except om.OmMailError as exc:
+        raise _om_fail(exc) from None
+    return {"html": html, "subject": subject, "dataAsOf": view["dataAsOf"], "week": view["week"], "sizeBytes": len(html.encode())}
+
+
+class OmTestIn(BaseModel):
+    circleId: str = Field(pattern=r"^[a-z0-9-]{1,40}$")
+
+
+@router.post("/om/test")
+def om_test(body: OmTestIn, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """The circle's e-mail to the signed-in admin's own address only ("[TEST]" subject)."""
+    _om_rate(admin.id)
+    try:
+        run = om.send_test(db, admin.name, admin.email, body.circleId)
+    except om.OmMailError as exc:
+        raise _om_fail(exc) from None
+    audit(db, "om_mail_test", request, admin.id, f"{body.circleId} {run.status}")
+    return {"ok": run.status == "SUCCESS", "status": run.status, "message": run.message, "to": admin.email}
+
+
+class OmSendNowIn(BaseModel):
+    circleId: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,40}$")
+
+
+@router.post("/om/send-now")
+def om_send_now(body: OmSendNowIn, request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Send the enabled circles' e-mails (or one circle's) right now - the admin confirmed it on the page."""
+    try:
+        run = om.send_now(db, admin.name, body.circleId)
+    except om.OmMailError as exc:
+        raise _om_fail(exc) from None
+    audit(db, "om_mail_send_now", request, admin.id, f"{body.circleId or 'all'} {run.status} {run.message}")
+    return {"ok": run.status == "SUCCESS", "status": run.status, "message": run.message, "sent": run.sent, "failed": run.failed, "skipped": run.skipped}
+
+
+@router.post("/om/test-connection")
+def om_test_connection(request: Request, admin: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Connect and sign in to the mail server, then close - nothing is sent."""
+    from ..mail.smtp import SmtpSession
+
+    try:
+        with SmtpSession():
+            pass
+    except MailError as exc:
+        return {"ok": False, "message": str(exc)}
+    audit(db, "om_mail_test_connection", request, admin.id, "ok")
+    return {"ok": True, "message": "Connected and signed in to the mail server"}
+
+
+@router.get("/om/deliveries")
+def om_deliveries(
+    status_: Annotated[Literal["SENT", "FAILED", "SKIPPED", "UNKNOWN", "SENDING", "PENDING"] | None, Query(alias="status")] = None,
+    circle: Annotated[str | None, Query(pattern=r"^[a-z0-9-]{1,40}$")] = None,
+    kind: Annotated[Literal["SCHEDULED", "MANUAL", "TEST"] | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    page: Annotated[int, Query(ge=1, le=10_000)] = 1,
+    db: Session = Depends(get_db),
+) -> dict:
+    """The delivery log: one row per circle e-mail - status, kind, To, CC, subject, error, when (never the content)."""
+    sel = select(OmMailDelivery, OmMailRun).join(OmMailRun, OmMailRun.id == OmMailDelivery.run_id)
+    if status_:
+        sel = sel.where(OmMailDelivery.status == status_)
+    if circle:
+        sel = sel.where(OmMailDelivery.circle_id == circle)
+    if kind:
+        sel = sel.where(OmMailRun.kind == kind)
+    if q and q.strip():
+        term = f"%{q.strip().lower()}%"
+        sel = sel.where(func.lower(OmMailDelivery.subject).like(term) | func.lower(OmMailDelivery.to_emails).like(term) | func.lower(OmMailDelivery.cc_emails).like(term))
+    total = db.scalar(select(func.count()).select_from(sel.subquery())) or 0
+    size = 50
+    rows = db.execute(sel.order_by(OmMailDelivery.created_at.desc(), OmMailDelivery.id.desc()).offset((page - 1) * size).limit(size)).all()
+    return {
+        "total": total, "page": page, "pageSize": size,
+        "items": [
+            {"id": d.id, "runId": r.id, "kind": r.kind, "triggeredBy": r.triggered_by, "circleId": d.circle_id, "status": d.status, "to": om.jlist(d.to_emails),
+             "cc": om.jlist(d.cc_emails), "subject": d.subject, "error": d.error, "attempts": d.attempts, "sizeBytes": d.size_bytes,
+             "dataAsOf": r.data_as_of.isoformat() if r.data_as_of else None, "createdAt": _iso(d.created_at), "sentAt": _iso(d.sent_at)}
+            for d, r in rows
+        ],
+    }
